@@ -9,7 +9,7 @@ proxying, caching, and output encoding so plugins stay minimal.
 
 ```
 ┌─────────────────────────────────────────────────┐
-│  wtmcp (Go)                              │
+│  wtmcp (Go)                                     │
 │                                                 │
 │  MCP Server ─── Plugin Manager ─── HTTP Proxy   │
 │  (mcp-go)       Discovery         Auth inject   │
