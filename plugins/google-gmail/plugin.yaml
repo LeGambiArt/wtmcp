@@ -6,6 +6,14 @@ execution: persistent
 handler: ./handler
 credential_group: google
 
+services:
+  auth:
+    type: oauth2
+    token_file: token-gmail.json
+    credentials_file: client-credentials.json
+    scopes:
+      - https://www.googleapis.com/auth/gmail.modify
+
 context_files:
   - context.md
 

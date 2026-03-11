@@ -14,8 +14,8 @@ import (
 	"golang.org/x/oauth2/google"
 )
 
-// tokenJSON matches the on-disk format saved by oauth2flow.
-type tokenJSON struct {
+// TokenJSON matches the on-disk format saved by oauth2flow.
+type TokenJSON struct {
 	AccessToken  string `json:"access_token"`
 	TokenType    string `json:"token_type"`
 	RefreshToken string `json:"refresh_token"`
@@ -60,7 +60,7 @@ func NewHTTPClientFromDir(ctx context.Context, credDir, tokenFile string, scopes
 	}
 
 	// Load token
-	tok, err := loadToken(tokenPath)
+	tok, err := LoadToken(tokenPath)
 	if err != nil {
 		return nil, fmt.Errorf("load token from %s: %w", tokenPath, err)
 	}
@@ -102,13 +102,13 @@ func (s *savingTokenSource) Token() (*oauth2.Token, error) {
 	return tok, nil
 }
 
-func loadToken(path string) (*oauth2.Token, error) {
+func LoadToken(path string) (*oauth2.Token, error) {
 	data, err := os.ReadFile(path) //nolint:gosec // known token path
 	if err != nil {
 		return nil, err
 	}
 
-	var tj tokenJSON
+	var tj TokenJSON
 	if err := json.Unmarshal(data, &tj); err != nil {
 		return nil, fmt.Errorf("parse token: %w", err)
 	}
@@ -131,7 +131,7 @@ func loadToken(path string) (*oauth2.Token, error) {
 }
 
 func saveToken(path string, tok *oauth2.Token) error {
-	tj := tokenJSON{
+	tj := TokenJSON{
 		AccessToken:  tok.AccessToken,
 		TokenType:    tok.TokenType,
 		RefreshToken: tok.RefreshToken,

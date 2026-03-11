@@ -1,5 +1,6 @@
-# Binary
-wtmcp
+# Binaries
+/wtmcp
+/wtmcpctl
 plugins/google-*/handler
 
 # Test/coverage

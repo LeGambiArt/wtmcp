@@ -10,7 +10,9 @@ all: build
 # Build the binary and plugin handlers
 build:
 	@echo "Building wtmcp..."
-	go build -ldflags "$(LDFLAGS)" -o wtmcp ./cmd/...
+	go build -ldflags "$(LDFLAGS)" -o wtmcp ./cmd/wtmcp
+	@echo "Building wtmcpctl..."
+	go build -ldflags "$(LDFLAGS)" -o wtmcpctl ./cmd/wtmcpctl
 	@echo "Building plugin handlers..."
 	@for plugin in plugins/google-*/; do \
 		if ls $$plugin*.go >/dev/null 2>&1; then \
@@ -57,7 +59,7 @@ pre-commit:
 # Clean build artifacts
 clean:
 	@echo "Cleaning..."
-	rm -f wtmcp
+	rm -f wtmcp wtmcpctl
 	rm -f coverage.out
 	rm -f plugins/google-*/handler
 

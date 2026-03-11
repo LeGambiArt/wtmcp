@@ -222,7 +222,27 @@ its PID to `~/.config/wtmcp/control/mcp.pid` for process tracking.
 
 MCP clients are automatically notified when tools or resources change.
 
-## Jira Plugin
+### OAuth Plugin Management
+
+Plugin authentication (particularly for OAuth-enabled plugins) is managed through the `wtmcpctl` command-line utility. See [README-wtmcpctl.md](README-wtmcpctl.md) for usage instructions and setup.
+
+## Included Plugins
+
+### Google Plugins
+
+Google plugins provide access to Google Workspace services using OAuth2
+authentication:
+
+| Plugin | Description |
+|--------|-------------|
+| google-drive | File metadata, search, and export |
+| google-calendar | Calendar events and management |
+| google-gmail | Email reading and sending |
+
+All Google plugins require OAuth2 authentication. See [README-wtmcpctl.md](README-wtmcpctl.md)
+for setup instructions.
+
+### Jira Plugin
 
 The included Jira plugin covers read, write, sprint, and export
 operations:
@@ -271,22 +291,31 @@ pre-commit run --all-files
 ## Project Layout
 
 ```
-cmd/                    Entry point
+cmd/
+  wtmcp/                MCP server entry point
+  wtmcpctl/             Plugin management CLI tool
 internal/
   auth/                 Auth providers (bearer, basic, kerberos, oauth2)
   cache/                Key-value cache with TTL
   config/               Env var resolution, YAML config
   encoding/             TOON output encoding
+  google/               Google OAuth helper (shared by Google plugins)
   plugin/               Manager, manifest, transport, dispatch
   protocol/             Wire protocol message types
   proxy/                HTTP proxy with auth injection
   server/               MCP server integration
 plugins/
+  google-drive/         Google Drive plugin (Go)
+  google-calendar/      Google Calendar plugin (Go)
+  google-gmail/         Gmail plugin (Go)
   jira/                 Jira plugin (Python, zero external deps)
+  confluence/           Confluence plugin (Python)
+  gitlab/               GitLab plugin (Python)
 tests/
   plugins/              Plugin unit tests
 docs/
   plugin-guide.md       Plugin development guide
+  wtmcpctl.md           OAuth management tool guide
 ```
 
 ## License

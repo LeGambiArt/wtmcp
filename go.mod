@@ -10,6 +10,7 @@ require github.com/sassoftware/gssapi v0.0.0-20210121192716-4ccd52fd8e05
 
 require (
 	github.com/JohannesKaufmann/html-to-markdown/v2 v2.5.0
+	github.com/LeGambiArt/oauth2flow v0.2.0
 	gitlab.com/gitlab-org/api/client-go v1.46.0
 	golang.org/x/oauth2 v0.34.0
 	google.golang.org/api v0.214.0
