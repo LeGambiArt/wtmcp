@@ -1,15 +1,21 @@
 name: google-docs
-version: "0.1.0"
-description: "Google Docs — retrieve and summarize documents"
+version: "0.2.0"
+description: "Google Docs — retrieve, summarize, and write to documents"
 
 execution: persistent
 handler: ./handler
+credential_group: google
+
+services:
+  auth:
+    type: oauth2
+    token_file: token-docs.json
+    credentials_file: client-credentials.json
+    scopes:
+      - https://www.googleapis.com/auth/documents
 
 context_files:
   - context.md
-
-env:
-  - GOOGLE_CREDENTIALS_DIR
 
 tools:
   - name: gdocs_get_document
@@ -44,8 +50,8 @@ tools:
         description: "Document ID or Google Docs URL"
       save_to_file:
         type: boolean
-        default: true
-        description: "Save to local file (default: true)"
+        default: false
+        description: "Save to local file"
       output_path:
         type: string
         description: "Custom output path (default: ./docs/<title>.md)"
@@ -73,3 +79,37 @@ tools:
         type: integer
         default: 5
         description: "Maximum number of documents to fetch"
+
+  - name: gdocs_write_text
+    description: "Write or append text to a Google Doc with optional markdown formatting"
+    access: write
+    params:
+      document_id_or_url:
+        type: string
+        required: true
+        description: "Document ID or Google Docs URL"
+      text:
+        type: string
+        required: true
+        description: "Text content to write"
+      is_markdown:
+        type: boolean
+        default: true
+        description: "Parse text as markdown and apply rich formatting (headings, bold, italic, underline, links)"
+      append_to_end:
+        type: boolean
+        default: true
+        description: "Append text to the end of the document"
+      insert_index:
+        type: integer
+        default: 0
+        description: "Character index for insertion (used if append_to_end is false)"
+
+  - name: gdocs_create_document
+    description: "Create a new Google Doc with a specified title"
+    access: write
+    params:
+      title:
+        type: string
+        required: true
+        description: "Title for the new document"

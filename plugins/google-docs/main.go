@@ -19,11 +19,22 @@ var docsSvc *docs.Service
 func main() {
 	p := handler.New()
 
-	p.OnInit(func(_ json.RawMessage) error {
-		client, err := googleauth.NewHTTPClient(
+	p.OnInit(func(cfgRaw json.RawMessage) error {
+		var cfg map[string]string
+		if err := json.Unmarshal(cfgRaw, &cfg); err != nil {
+			return fmt.Errorf("parse config: %w", err)
+		}
+
+		credDir := cfg["_credentials_dir"]
+		if credDir == "" {
+			credDir = googleauth.CredentialsDir()
+		}
+
+		client, err := googleauth.NewHTTPClientFromDir(
 			context.Background(),
+			credDir,
 			"token-docs.json",
-			[]string{"https://www.googleapis.com/auth/documents.readonly"},
+			[]string{"https://www.googleapis.com/auth/documents"},
 		)
 		if err != nil {
 			return fmt.Errorf("google auth: %w", err)
@@ -42,6 +53,8 @@ func main() {
 	p.Handle("gdocs_get_document_markdown", toolGetDocumentMarkdown)
 	p.Handle("gdocs_summarize_document", toolSummarizeDocument)
 	p.Handle("gdocs_extract_and_get_from_text", toolExtractAndGet)
+	p.Handle("gdocs_write_text", toolWriteText)
+	p.Handle("gdocs_create_document", toolCreateDocument)
 
 	if err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "handler: %v\n", err)
