@@ -1,0 +1,75 @@
+name: google-docs
+version: "0.1.0"
+description: "Google Docs — retrieve and summarize documents"
+
+execution: persistent
+handler: ./handler
+
+context_files:
+  - context.md
+
+env:
+  - GOOGLE_CREDENTIALS_DIR
+
+tools:
+  - name: gdocs_get_document
+    description: "Get a Google Doc's full content and structure"
+    params:
+      document_id_or_url:
+        type: string
+        required: true
+        description: "Document ID or Google Docs URL"
+
+  - name: gdocs_get_document_text
+    description: "Get a Google Doc as plain text content"
+    params:
+      document_id_or_url:
+        type: string
+        required: true
+        description: "Document ID or Google Docs URL"
+      save_to_file:
+        type: boolean
+        default: false
+        description: "Save to local file"
+      output_path:
+        type: string
+        description: "Custom output path (default: ./docs/<title>.txt)"
+
+  - name: gdocs_get_document_markdown
+    description: "Get a Google Doc converted to Markdown format"
+    params:
+      document_id_or_url:
+        type: string
+        required: true
+        description: "Document ID or Google Docs URL"
+      save_to_file:
+        type: boolean
+        default: true
+        description: "Save to local file (default: true)"
+      output_path:
+        type: string
+        description: "Custom output path (default: ./docs/<title>.md)"
+
+  - name: gdocs_summarize_document
+    description: "Get a concise summary of a Google Doc's content and structure"
+    params:
+      document_id_or_url:
+        type: string
+        required: true
+        description: "Document ID or Google Docs URL"
+      include_structure:
+        type: boolean
+        default: true
+        description: "Include document structure analysis (headings, lists, tables)"
+
+  - name: gdocs_extract_and_get_from_text
+    description: "Extract Google Docs links from text and fetch their content"
+    params:
+      text:
+        type: string
+        required: true
+        description: "Text to scan for Google Docs URLs"
+      max_docs:
+        type: integer
+        default: 5
+        description: "Maximum number of documents to fetch"
