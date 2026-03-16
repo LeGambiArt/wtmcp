@@ -1,0 +1,182 @@
+name: snyk
+version: "0.1.0"
+description: "Snyk integration for browsing security issues and managing ignores"
+
+execution: persistent
+handler: ./handler.py
+credential_group: snyk
+
+context_files:
+  - context.md
+
+services:
+  auth:
+    type: bearer
+    token: "${SNYK_TOKEN}"
+    prefix: "token"
+  http:
+    base_url: "${SNYK_API_URL:-https://api.snyk.io}"
+
+config:
+  api_version: "2024-10-15"
+
+tools:
+  # --- Read Tools (REST API) ---
+
+  - name: snyk_list_orgs
+    access: read
+    visibility: primary
+    description: >
+      List all Snyk organizations accessible with the configured token.
+      Returns id, name, and slug for each org.
+    params: {}
+
+  - name: snyk_list_projects
+    access: read
+    visibility: primary
+    description: >
+      List projects in a Snyk organization. Optionally filter by name.
+    params:
+      org_id:
+        type: string
+        required: true
+        description: "Organization ID (use snyk_list_orgs to discover)"
+      name_filter:
+        type: string
+        description: "Substring to filter project names"
+
+  - name: snyk_list_issues
+    access: read
+    visibility: primary
+    description: >
+      List issues for a Snyk organization, optionally filtered by project,
+      severity, or type. Each issue has two identifiers: "id" (global,
+      use with snyk_get_issue) and "key" (project-scoped, use with
+      snyk_ignore_issue / snyk_delete_ignore).
+    params:
+      org_id:
+        type: string
+        required: true
+        description: "Organization ID"
+      project_id:
+        type: string
+        description: "Filter by a specific project ID"
+      severity:
+        type: string
+        description: "Filter by severity: critical, high, medium, low"
+      issue_type:
+        type: string
+        description: "Filter by scan type: package_vulnerability, code, license, cloud, custom"
+
+  - name: snyk_get_issue
+    access: read
+    description: >
+      Get full details of a specific Snyk issue including remediation info.
+    params:
+      org_id:
+        type: string
+        required: true
+        description: "Organization ID"
+      issue_id:
+        type: string
+        required: true
+        description: "The issue ID (the 'id' field from snyk_list_issues)"
+
+  # --- Ignore Tools (V1 API) ---
+
+  - name: snyk_list_ignores
+    access: read
+    description: >
+      List all ignored issues for a Snyk project. Returns a map of
+      issue keys (project-scoped finding IDs) to their ignore details.
+    params:
+      org_id:
+        type: string
+        required: true
+        description: "Organization ID"
+      project_id:
+        type: string
+        required: true
+        description: "The project ID"
+
+  - name: snyk_ignore_issue
+    access: write
+    description: >
+      Ignore (suppress) an issue in a Snyk project. Use this to mark
+      findings as false positive, won't fix, or temporary ignore.
+      IMPORTANT: issue_id must be the "key" field from snyk_list_issues
+      (the project-scoped finding ID), NOT the "id" field.
+      Defaults to dry_run=true.
+    params:
+      org_id:
+        type: string
+        required: true
+        description: "Organization ID"
+      project_id:
+        type: string
+        required: true
+        description: "The project ID"
+      issue_id:
+        type: string
+        required: true
+        description: "The issue 'key' (project-scoped finding ID) from snyk_list_issues"
+      reason:
+        type: string
+        required: true
+        description: "Free-text explanation for the ignore"
+      reason_type:
+        type: string
+        default: "not-vulnerable"
+        description: "One of: not-vulnerable (false positive), wont-fix, temporary-ignore"
+      dry_run:
+        type: boolean
+        default: true
+        description: "Preview only (true) or apply for real (false)"
+
+  - name: snyk_delete_ignore
+    access: write
+    description: >
+      Remove an ignore from an issue in a Snyk project.
+      IMPORTANT: issue_id must be the "key" field from snyk_list_issues.
+      Defaults to dry_run=true.
+    params:
+      org_id:
+        type: string
+        required: true
+        description: "Organization ID"
+      project_id:
+        type: string
+        required: true
+        description: "The project ID"
+      issue_id:
+        type: string
+        required: true
+        description: "The issue 'key' (project-scoped finding ID) to un-ignore"
+      dry_run:
+        type: boolean
+        default: true
+        description: "Preview only (true) or apply for real (false)"
+
+setup:
+  credentials:
+    SNYK_TOKEN:
+      description: "Snyk Personal Access Token (PAT) or API token"
+      help_url: "https://app.snyk.io/account"
+      instructions: >
+        Log in to Snyk, go to Account Settings > General > Auth Token.
+        Click Generate or copy your existing token.
+      secret: true
+    SNYK_API_URL:
+      description: "Snyk API base URL (default: https://api.snyk.io)"
+      example: "https://api.snyk.io"
+      secret: false
+  variants:
+    default:
+      label: "Snyk (PAT authentication)"
+      description: "For Snyk Enterprise with Personal Access Token"
+      required: [SNYK_TOKEN]
+  validation_tool: snyk_list_orgs
+  post_setup_message: "Restart the MCP server for changes to take effect."
+
+enabled: true
+priority: 50
