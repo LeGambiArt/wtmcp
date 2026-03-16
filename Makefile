@@ -1,4 +1,4 @@
-.PHONY: all build test lint fmt vet clean help
+.PHONY: all build google-plugins test lint fmt vet clean help
 
 VERSION ?= $(shell cat VERSION 2>/dev/null || echo "dev")
 BUILD_DATE := $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
@@ -7,12 +7,21 @@ LDFLAGS := -s -w -X main.Version=$(VERSION) -X main.BuildDate=$(BUILD_DATE)
 # Default target
 all: build
 
-# Build the binary and plugin handlers
-build:
+# Build everything
+build: wtmcp wtmcpctl google-plugins
+
+# Build wtmcp binary
+wtmcp: $(shell find cmd/wtmcp -name '*.go') $(shell find internal -name '*.go')
 	@echo "Building wtmcp..."
 	go build -ldflags "$(LDFLAGS)" -o wtmcp ./cmd/wtmcp
+
+# Build wtmcpctl binary
+wtmcpctl: $(shell find cmd/wtmcpctl -name '*.go') $(shell find internal -name '*.go')
 	@echo "Building wtmcpctl..."
 	go build -ldflags "$(LDFLAGS)" -o wtmcpctl ./cmd/wtmcpctl
+
+# Build google-plugins
+google-plugins:
 	@echo "Building plugin handlers..."
 	@for plugin in plugins/google-*/; do \
 		if ls $$plugin*.go >/dev/null 2>&1; then \
@@ -68,14 +77,17 @@ help:
 	@echo "wtmcp Makefile"
 	@echo ""
 	@echo "Available targets:"
-	@echo "  all         - Build (default)"
-	@echo "  build       - Build the binary"
-	@echo "  test        - Run tests"
-	@echo "  test-cover  - Run tests with coverage report"
-	@echo "  lint        - Run golangci-lint"
-	@echo "  fmt         - Format code with gofmt"
-	@echo "  vet         - Run go vet"
-	@echo "  hooks       - Install pre-commit hooks"
-	@echo "  pre-commit  - Run pre-commit on all files"
-	@echo "  clean       - Remove build artifacts"
-	@echo "  help        - Show this help"
+	@echo "  all            - Build everything (default)"
+	@echo "  build          - Build all binaries and plugins"
+	@echo "  wtmcp          - Build wtmcp binary"
+	@echo "  wtmcpctl       - Build wtmcpctl binary"
+	@echo "  google-plugins - Build all Google plugin handlers"
+	@echo "  test           - Run tests"
+	@echo "  test-cover     - Run tests with coverage report"
+	@echo "  lint           - Run golangci-lint"
+	@echo "  fmt            - Format code with gofmt"
+	@echo "  vet            - Run go vet"
+	@echo "  hooks          - Install pre-commit hooks"
+	@echo "  pre-commit     - Run pre-commit on all files"
+	@echo "  clean          - Remove build artifacts"
+	@echo "  help           - Show this help"
