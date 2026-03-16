@@ -145,36 +145,30 @@ func runCheck() error {
 		}
 	}
 
-	workdir := config.WorkDir()
-	if workdirOverride != "" {
-		workdir = workdirOverride
-	}
-
-	envResult, err := config.LoadEnvGroups(workdir)
-	if err != nil {
-		return err
-	}
-
-	cfg, err := config.Load(configPath, workdir)
+	// Discover plugins using shared discovery logic
+	result, err := plugin.Discover(plugin.DiscoveryOptions{
+		ConfigPath:      configPath,
+		WorkdirOverride: workdirOverride,
+	})
 	if err != nil {
 		return err
 	}
 
 	fmt.Printf("wtmcp %s\n", Version)
-	fmt.Printf("workdir: %s\n", workdir)
-	fmt.Printf("user plugins: %v\n", cfg.Plugins.UserPlugins)
-	fmt.Printf("env groups: %d\n", len(envResult.Groups))
-	for group := range envResult.Groups {
+	fmt.Printf("workdir: %s\n", result.Workdir)
+	fmt.Printf("user plugins: %v\n", result.Config.Plugins.UserPlugins)
+	fmt.Printf("env groups: %d\n", len(result.EnvGroups))
+	for group := range result.EnvGroups {
 		fmt.Printf("  - %s\n", group)
 	}
-	if len(envResult.Errors) > 0 {
-		fmt.Printf("env group errors: %d\n", len(envResult.Errors))
-		for group, msg := range envResult.Errors {
+	if len(result.EnvErrors) > 0 {
+		fmt.Printf("env group errors: %d\n", len(result.EnvErrors))
+		for group, msg := range result.EnvErrors {
 			fmt.Printf("  - %s: %s\n", group, msg)
 		}
 	}
 	fmt.Printf("\nplugin search path:\n")
-	for i, dir := range cfg.PluginDirs {
+	for i, dir := range result.Config.PluginDirs {
 		exists := "missing"
 		if info, statErr := os.Stat(dir); statErr == nil && info.IsDir() {
 			exists = "ok"
@@ -182,13 +176,7 @@ func runCheck() error {
 		fmt.Printf("  %d. %s [%s]\n", i+1, dir, exists)
 	}
 
-	// Discover plugins (without loading/starting them)
-	mgr := plugin.NewManager(nil, nil, nil, cfg, envResult.Groups, envResult.Errors, workdir)
-	if err := mgr.Discover(cfg.PluginDirs, cfg.UserPluginDir); err != nil {
-		return err
-	}
-
-	manifests := mgr.Manifests()
+	manifests := result.Manager.Manifests()
 	fmt.Printf("\ndiscovered plugins: %d\n", len(manifests))
 	var totalPrimary, totalDeferred int
 	for _, m := range manifests {
@@ -207,7 +195,7 @@ func runCheck() error {
 			m.Handler, m.Execution, len(m.Tools), primaryCount, deferredCount)
 	}
 
-	fmt.Printf("\ntool discovery: %s\n", cfg.Tools.Discovery)
+	fmt.Printf("\ntool discovery: %s\n", result.Config.Tools.Discovery)
 	fmt.Printf("primary tools: %d\n", totalPrimary)
 	fmt.Printf("deferred tools: %d\n", totalDeferred)
 
