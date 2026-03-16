@@ -221,6 +221,40 @@ tools:
 	}
 }
 
+func TestLoadConfigDisabledPlugins(t *testing.T) {
+	dir := t.TempDir()
+	cfgFile := filepath.Join(dir, "config.yaml")
+	cfgYAML := `
+plugins:
+  disabled:
+    - testing-farm
+    - gitlab
+`
+	if err := os.WriteFile(cfgFile, []byte(cfgYAML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(cfgFile, dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.Plugins.Disabled) != 2 {
+		t.Fatalf("Disabled = %v, want 2 entries", cfg.Plugins.Disabled)
+	}
+	if cfg.Plugins.Disabled[0] != "testing-farm" {
+		t.Errorf("Disabled[0] = %q, want testing-farm", cfg.Plugins.Disabled[0])
+	}
+	if cfg.Plugins.Disabled[1] != "gitlab" {
+		t.Errorf("Disabled[1] = %q, want gitlab", cfg.Plugins.Disabled[1])
+	}
+}
+
+func TestLoadConfigDisabledPluginsDefault(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.Plugins.Disabled != nil {
+		t.Errorf("Disabled should default to nil, got %v", cfg.Plugins.Disabled)
+	}
+}
+
 func TestDefaultPluginDirs(t *testing.T) {
 	userDir := "/tmp/test-user-plugins"
 

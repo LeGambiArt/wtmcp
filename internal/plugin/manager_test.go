@@ -92,6 +92,26 @@ func TestManagerDiscover(t *testing.T) {
 	}
 }
 
+func TestManagerDiscoverSkipsConfigDisabled(t *testing.T) {
+	dir := setupTestPlugin(t, "hello", echoScript)
+
+	cfg := config.DefaultConfig()
+	cfg.Plugins.Disabled = []string{"hello"}
+	authReg := auth.NewRegistry()
+	cacheStore := cache.NewMemoryStore()
+	p := proxy.New(nil, cfg.Plugins.MaxMessageSize)
+	m := NewManager(authReg, p, cacheStore, cfg, nil, nil, "")
+
+	if err := m.Discover([]string{dir}, ""); err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+
+	manifests := m.Manifests()
+	if len(manifests) != 0 {
+		t.Errorf("got %d manifests, want 0 (plugin should be disabled via config)", len(manifests))
+	}
+}
+
 func TestManagerDiscoverSkipsNonexistentDir(t *testing.T) {
 	m := newTestManager(t)
 	if err := m.Discover([]string{"/nonexistent/path"}, ""); err != nil {

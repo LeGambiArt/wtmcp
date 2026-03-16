@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -103,6 +104,10 @@ func (m *Manager) Discover(dirs []string, userDir string) error {
 			}
 			if !manifest.IsEnabled() {
 				log.Printf("plugin %s is disabled", manifest.Name)
+				continue
+			}
+			if slices.Contains(m.cfg.Plugins.Disabled, manifest.Name) {
+				log.Printf("plugin %s is disabled via config", manifest.Name)
 				continue
 			}
 			if existing, ok := m.manifests[manifest.Name]; ok {
