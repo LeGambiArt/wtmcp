@@ -1,7 +1,7 @@
 # Binaries
 /wtmcp
 /wtmcpctl
-plugins/google-*/handler
+plugins/*/handler
 
 # Test/coverage
 coverage.out
@@ -20,6 +20,10 @@ Thumbs.db
 # Python
 .venv/
 __pycache__/
+uv.lock
+
+# Plugin runtime artifacts
+control/
 
 # Environment
 .env
