@@ -443,6 +443,99 @@ def add_issues_to_backlog(params):
     return {"success": True, "issue_keys": issue_keys}
 
 
+def set_parent(params):
+    """Set the parent of one or more issues.
+
+    Works for any hierarchy level: Outcome → Feature → Epic → Story/Task.
+    Tries the standard REST API first; if that fails (screen restrictions),
+    falls back to the Agile API (epic-level parents only).
+    """
+    parent_key = validate_issue_key(params.get("parent_key", ""))
+    issue_keys = params.get("issue_keys", [])
+    dry_run = params.get("dry_run", True)
+
+    if isinstance(issue_keys, str):
+        issue_keys = [k.strip() for k in issue_keys.split(",") if k.strip()]
+
+    if not issue_keys:
+        raise ValueError("issue_keys must contain at least one issue key")
+
+    if dry_run:
+        return {
+            "dry_run": True,
+            "action": "jira_set_parent",
+            "parent_key": parent_key,
+            "issue_keys": issue_keys,
+        }
+
+    # Try standard REST API (works for all hierarchy levels)
+    rest_failed = []
+    for key in issue_keys:
+        status, body, _ = handler.http(
+            "PUT", f"/rest/api/2/issue/{key}",
+            body={"fields": {"parent": {"key": parent_key}}},
+        )
+        if status < 200 or status >= 300:
+            rest_failed.append(key)
+
+    if not rest_failed:
+        return {"success": True, "parent_key": parent_key, "issue_keys": issue_keys}
+
+    # Fallback: Agile API for issues that failed (handles epic screen restrictions)
+    status, body, _ = handler.http(
+        "POST", f"/rest/agile/1.0/epic/{parent_key}/issue",
+        body={"issues": rest_failed},
+    )
+    if status < 200 or status >= 300:
+        return http_error(status, body)
+    return {"success": True, "parent_key": parent_key, "issue_keys": issue_keys}
+
+
+def clear_parent(params):
+    """Remove the parent from one or more issues.
+
+    Tries the standard REST API first; if that fails, falls back to the
+    Agile API "none" epic endpoint.
+    """
+    issue_keys = params.get("issue_keys", [])
+    dry_run = params.get("dry_run", True)
+
+    if isinstance(issue_keys, str):
+        issue_keys = [k.strip() for k in issue_keys.split(",") if k.strip()]
+
+    if not issue_keys:
+        raise ValueError("issue_keys must contain at least one issue key")
+
+    if dry_run:
+        return {
+            "dry_run": True,
+            "action": "jira_clear_parent",
+            "issue_keys": issue_keys,
+        }
+
+    # Try standard REST API ({"key": null} clears the parent on Cloud)
+    rest_failed = []
+    for key in issue_keys:
+        status, body, _ = handler.http(
+            "PUT", f"/rest/api/2/issue/{key}",
+            body={"fields": {"parent": {"key": None}}},
+        )
+        if status < 200 or status >= 300:
+            rest_failed.append(key)
+
+    if not rest_failed:
+        return {"success": True, "issue_keys": issue_keys}
+
+    # Fallback: Agile API moves issues out of any epic
+    status, body, _ = handler.http(
+        "POST", "/rest/agile/1.0/epic/none/issue",
+        body={"issues": rest_failed},
+    )
+    if status < 200 or status >= 300:
+        return http_error(status, body)
+    return {"success": True, "issue_keys": issue_keys}
+
+
 TOOLS = {
     "jira_create_issue": create_issue,
     "jira_add_comment": add_comment,
@@ -462,4 +555,6 @@ TOOLS = {
     "jira_issue_worklog": issue_worklog,
     "jira_add_issues_to_sprint": add_issues_to_sprint,
     "jira_add_issues_to_backlog": add_issues_to_backlog,
+    "jira_set_parent": set_parent,
+    "jira_clear_parent": clear_parent,
 }

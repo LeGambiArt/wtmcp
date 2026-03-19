@@ -514,6 +514,43 @@ tools:
         type: boolean
         default: true
 
+  - name: jira_set_parent
+    access: write
+    visibility: primary
+    description: >
+      Set the parent of one or more issues. Works for any hierarchy
+      level: Outcome → Feature, Feature → Epic, Epic → Story/Task, etc.
+      First tries the standard REST API; if that fails due to screen
+      restrictions, automatically falls back to the Agile API (for epic
+      parents). Defaults to dry_run=true.
+    params:
+      parent_key:
+        type: string
+        required: true
+        description: "Parent issue key (e.g. PROJ-100). Can be an Outcome, Feature, Epic, or any issue type."
+      issue_keys:
+        type: string
+        required: true
+        description: "Comma-separated child issue keys to add under the parent (e.g. PROJ-101,PROJ-102)"
+      dry_run:
+        type: boolean
+        default: true
+
+  - name: jira_clear_parent
+    access: write
+    description: >
+      Remove the parent from one or more issues (unlink from any
+      parent). First tries the standard REST API; falls back to the
+      Agile API "none" epic endpoint if needed. Defaults to dry_run=true.
+    params:
+      issue_keys:
+        type: string
+        required: true
+        description: "Comma-separated issue keys to unlink from their parent"
+      dry_run:
+        type: boolean
+        default: true
+
   # --- Phase 3: Sprint Tools ---
 
   - name: jira_list_available_sprints

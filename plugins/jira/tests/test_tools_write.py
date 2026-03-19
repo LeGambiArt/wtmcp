@@ -578,3 +578,150 @@ class TestSprintOps:
                 }
             )
             assert result["success"] is True
+
+
+# --- jira_set_parent / jira_clear_parent ---
+
+
+class TestSetParent:
+    def test_dry_run(self):
+        result = tools_write.set_parent(
+            {
+                "parent_key": "PROJ-100",
+                "issue_keys": "PROJ-101,PROJ-102",
+                "dry_run": True,
+            }
+        )
+        assert result["dry_run"] is True
+        assert result["parent_key"] == "PROJ-100"
+        assert result["issue_keys"] == ["PROJ-101", "PROJ-102"]
+
+    def test_dry_run_list_input(self):
+        result = tools_write.set_parent(
+            {
+                "parent_key": "PROJ-100",
+                "issue_keys": ["PROJ-101"],
+                "dry_run": True,
+            }
+        )
+        assert result["issue_keys"] == ["PROJ-101"]
+
+    def test_empty_issue_keys_raises(self):
+        import pytest
+
+        with pytest.raises(ValueError, match="at least one issue key"):
+            tools_write.set_parent({"parent_key": "PROJ-100", "issue_keys": [], "dry_run": True})
+
+    def test_success_via_rest_api(self):
+        with _mock_http(204, {}) as mock_http:
+            result = tools_write.set_parent(
+                {
+                    "parent_key": "PROJ-100",
+                    "issue_keys": "PROJ-101",
+                    "dry_run": False,
+                }
+            )
+            assert result["success"] is True
+            assert result["parent_key"] == "PROJ-100"
+            call_args = mock_http.call_args
+            assert "/rest/api/2/issue/PROJ-101" in call_args[0][1]
+            call_body = call_args[1].get("body") or call_args[0][2]
+            assert call_body == {"fields": {"parent": {"key": "PROJ-100"}}}
+
+    def test_fallback_to_agile_api(self):
+        responses = [
+            (400, {"errors": {"parent": "not on screen"}}, {}),
+            (204, {}, {}),
+        ]
+        with patch.object(handler, "http", side_effect=responses) as mock_http:
+            result = tools_write.set_parent(
+                {
+                    "parent_key": "PROJ-100",
+                    "issue_keys": "PROJ-101",
+                    "dry_run": False,
+                }
+            )
+            assert result["success"] is True
+            agile_call = mock_http.call_args_list[1]
+            assert "/rest/agile/1.0/epic/PROJ-100/issue" in agile_call[0][1]
+
+    def test_multiple_issues_partial_fallback(self):
+        responses = [
+            (204, {}, {}),
+            (400, {"errors": {"parent": "not on screen"}}, {}),
+            (204, {}, {}),
+        ]
+        with patch.object(handler, "http", side_effect=responses) as mock_http:
+            result = tools_write.set_parent(
+                {
+                    "parent_key": "PROJ-100",
+                    "issue_keys": "PROJ-101,PROJ-102",
+                    "dry_run": False,
+                }
+            )
+            assert result["success"] is True
+            assert mock_http.call_count == 3
+            agile_call = mock_http.call_args_list[2]
+            agile_body = agile_call[1].get("body") or agile_call[0][2]
+            assert agile_body == {"issues": ["PROJ-102"]}
+
+    def test_agile_fallback_error(self):
+        responses = [
+            (400, {}, {}),
+            (500, {"errorMessages": ["Server error"]}, {}),
+        ]
+        with patch.object(handler, "http", side_effect=responses):
+            result = tools_write.set_parent(
+                {
+                    "parent_key": "PROJ-100",
+                    "issue_keys": "PROJ-101",
+                    "dry_run": False,
+                }
+            )
+            assert "error" in result
+
+
+class TestClearParent:
+    def test_dry_run(self):
+        result = tools_write.clear_parent(
+            {
+                "issue_keys": "PROJ-101,PROJ-102",
+                "dry_run": True,
+            }
+        )
+        assert result["dry_run"] is True
+        assert result["issue_keys"] == ["PROJ-101", "PROJ-102"]
+
+    def test_empty_issue_keys_raises(self):
+        import pytest
+
+        with pytest.raises(ValueError, match="at least one issue key"):
+            tools_write.clear_parent({"issue_keys": [], "dry_run": True})
+
+    def test_success_via_rest_api(self):
+        with _mock_http(204, {}) as mock_http:
+            result = tools_write.clear_parent(
+                {
+                    "issue_keys": "PROJ-101",
+                    "dry_run": False,
+                }
+            )
+            assert result["success"] is True
+            call_body = mock_http.call_args[1].get("body") or mock_http.call_args[0][2]
+            assert call_body == {"fields": {"parent": {"key": None}}}
+
+    def test_fallback_to_agile_none_epic(self):
+        responses = [
+            (400, {}, {}),
+            (204, {}, {}),
+        ]
+        with patch.object(handler, "http", side_effect=responses) as mock_http:
+            result = tools_write.clear_parent(
+                {
+                    "issue_keys": "PROJ-101",
+                    "dry_run": False,
+                }
+            )
+            assert result["success"] is True
+            agile_call = mock_http.call_args_list[1]
+            assert "/rest/agile/1.0/epic/none/issue" in agile_call[0][1]
