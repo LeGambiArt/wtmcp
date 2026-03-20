@@ -1,6 +1,6 @@
 # wtmcpctl - wtmcp Plugin Management Tool
 
-`wtmcpctl` is a command-line utility for managing wtmcp plugins, particularly for handling OAuth authentication for Google plugins.
+`wtmcpctl` is a command-line utility for managing wtmcp, including configuring wtmcp for AI agents and handling OAuth authentication for Google plugins.
 
 ## Installation
 
@@ -21,6 +21,7 @@ This will create the `wtmcpctl` binary in the project root directory.
 ```
 wtmcpctl/
 ├── main.go          # Entry point, command routing, global flags
+├── agent.go         # Agent configuration command implementation
 └── oauth.go         # OAuth command implementation
 ```
 
@@ -361,6 +362,98 @@ go build -o wtmcpctl ./cmd/wtmcpctl
    - Test error cases and edge conditions
 
 ## Commands
+
+### agent enable
+
+Configures an AI agent to use wtmcp as an MCP server by adding the appropriate configuration to the agent's config file.
+
+```bash
+wtmcpctl agent enable [--dir <path>] <agent-name>
+```
+
+**Options:**
+- `--dir <path>` - Project directory where the config file should be created (default: current directory)
+- `-h, --help` - Show help information
+
+**Supported agents:**
+- `claude` or `claude-code` - Claude Code (creates `.mcp.json`)
+- `gemini` - Gemini CLI (creates `.gemini/settings.json`)
+- `cursor` - Cursor (creates `.cursor/mcp.json`)
+
+**Examples:**
+
+```bash
+# Enable wtmcp for Claude Code in current directory
+$ wtmcpctl agent enable claude
+✓ Enabled wtmcp for claude
+Config file: /path/to/project/.mcp.json
+
+# Enable wtmcp for Gemini in a specific project
+$ wtmcpctl agent enable --dir /path/to/my/project gemini
+✓ Enabled wtmcp for gemini
+Config file: /path/to/my/project/.gemini/settings.json
+
+# Enable wtmcp for Cursor
+$ wtmcpctl agent enable cursor
+✓ Enabled wtmcp for cursor
+Config file: /path/to/project/.cursor/mcp.json
+```
+
+### agent disable
+
+Removes the wtmcp MCP server configuration from an AI agent's config file.
+
+```bash
+wtmcpctl agent disable [--dir <path>] <agent-name>
+```
+
+**Options:**
+- `--dir <path>` - Project directory where the config file is located (default: current directory)
+- `-h, --help` - Show help information
+
+**Supported agents:**
+- `claude` or `claude-code` - Claude Code
+- `gemini` - Gemini CLI
+- `cursor` - Cursor
+
+**Examples:**
+
+```bash
+# Disable wtmcp for Claude Code
+$ wtmcpctl agent disable claude
+✓ Disabled wtmcp for claude (removed config file)
+Config file: /path/to/project/.mcp.json
+
+# Disable wtmcp for Gemini (preserves other settings)
+$ wtmcpctl agent disable gemini
+✓ Disabled wtmcp for gemini
+Config file: /path/to/project/.gemini/settings.json
+
+# Disable when config doesn't exist (not an error)
+$ wtmcpctl agent disable cursor
+what-the-mcp is not configured for cursor in /path/to/project
+```
+
+### Agent Configuration Details
+
+**Claude Code:**
+- Config file: `.mcp.json` in project root
+- Version-controlled: Recommended (team-shared configuration)
+- Includes `"type": "stdio"` field
+- File is removed if it becomes empty after disabling
+
+**Gemini CLI:**
+- Config file: `.gemini/settings.json` in project root
+- May contain other settings (theme, language, etc.)
+- Does not include `"type"` field (inferred from `command`)
+- File is never removed (may have other settings)
+- Avoid underscores in server names (use hyphens)
+
+**Cursor:**
+- Config file: `.cursor/mcp.json` in project root
+- MCP-specific file (no other settings)
+- Does not include `"type"` field (inferred from `command`)
+- File is removed if it becomes empty after disabling
 
 ### oauth list
 
