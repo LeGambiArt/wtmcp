@@ -49,7 +49,7 @@ func init() {
 	oauthAuthCmd.Flags().BoolP("all", "a", false,
 		"Authenticate all non-authenticated plugins")
 
-	oauthCmd.AddCommand(oauthListCmd, oauthAuthCmd)
+	oauthCmd.AddCommand(oauthListCmd, oauthAuthCmd, credentialsCmd)
 }
 
 // completeOAuthPlugins returns discovered OAuth plugin names for completion,
