@@ -2,6 +2,7 @@
 /wtmcp
 /wtmcpctl
 plugins/google-*/handler
+plugins/gitlab/handler
 
 # Test/coverage
 coverage.out
@@ -28,7 +29,13 @@ __pycache__/
 # Claude Code
 CLAUDE.md
 
+# Runtime state
+control/
+
 # Staging area for temp files
 staging/
+
+# Python lock file
+uv.lock
 
 .serena/
