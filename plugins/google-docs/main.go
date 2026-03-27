@@ -54,6 +54,7 @@ func main() {
 	p.Handle("gdocs_summarize_document", toolSummarizeDocument)
 	p.Handle("gdocs_extract_and_get_from_text", toolExtractAndGet)
 	p.Handle("gdocs_write_text", toolWriteText)
+	p.Handle("gdocs_write_markdown", toolWriteMarkdown)
 	p.Handle("gdocs_create_document", toolCreateDocument)
 
 	if err := p.Run(); err != nil {

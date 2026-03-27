@@ -94,11 +94,53 @@ tools:
         description: "Text content to write"
       is_markdown:
         type: boolean
-        default: true
+        default: false
         description: "Parse text as markdown and apply rich formatting (headings, bold, italic, underline, links)"
       append_to_end:
         type: boolean
-        default: true
+        default: false
+        description: "Append text to the end of the document"
+      insert_index:
+        type: integer
+        default: 0
+        description: "Character index for insertion (used if append_to_end is false)"
+
+  - name: gdocs_write_markdown
+    description: "Write Markdown-formatted text to a Google Doc with rich formatting (headings, bold, italic, links, etc.)"
+    access: write
+    params:
+      document_id_or_url:
+        type: string
+        required: true
+        description: "Document ID or Google Docs URL"
+      markdown:
+        type: string
+        required: true
+        description: "Markdown content to write"
+      append_to_end:
+        type: boolean
+        default: false
+        description: "Append text to the end of the document"
+      insert_index:
+        type: integer
+        default: 0
+        description: "Character index for insertion (used if append_to_end is false)"
+
+  - name: gdocs_write_markdown
+    description: "Write Markdown-formatted text to a Google Doc with rich formatting (headings, bold, italic, links, etc.)"
+    access: write
+    params:
+      document_id_or_url:
+        type: string
+        required: true
+        description: "Document ID or Google Docs URL"
+      markdown:
+        type: string
+        required: true
+        description: "Markdown content to write"
+      append_to_end:
+        type: boolean
+        default: false
         description: "Append text to the end of the document"
       insert_index:
         type: integer

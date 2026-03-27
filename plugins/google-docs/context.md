@@ -102,9 +102,20 @@ Write or append text to a Google Doc with optional markdown formatting. When mar
 **Supported markdown formatting:**
 - Headings: `# H1`, `## H2`, `### H3`, `#### H4`, `##### H5`, `###### H6`
 - Bold: `**text**`
-- Italic: `*text*`
+- Italic: `*text*` or `_text_`
 - Underline: `__text__`
 - Links: `[text](url)`
+- Ordered lists: `1. Item`, `2. Item`, etc.
+- Unordered lists: `- Item`, `* Item`, or `+ Item`
+- Nested lists: indent by 4 spaces (or 1 tab) per nesting level
+- Date smart chips: `@today` (current date) or `@date(YYYY-MM-DD)` (specific date)
+- Person smart chips: `@(email)` (e.g., `@(user@example.com)`)
+
+**Escaping special syntax:**
+To insert literal text that looks like smart chip syntax, use backslash escaping:
+- `\@today` → displays as "@today" (not a date field)
+- `\@date(2025-01-01)` → displays as "@date(2025-01-01)" (not a date field)
+- `\@(John Doe)` → displays as "@(John Doe)" (not a person field)
 
 When `is_markdown` is false, text is inserted as plain text without formatting.
 
@@ -127,6 +138,150 @@ The plugin can extract document IDs from various Google Docs URL formats:
 - Any URL with `?id={id}` parameter
 
 It also accepts raw document IDs directly.
+
+## Markdown Writing Support
+
+The `gdocs_write_text` and `gdocs_write_markdown` tools support converting Markdown to Google Docs rich formatting. This section documents all supported features and syntax.
+
+### Text Formatting
+
+| Feature | Markdown Syntax | Example | Result |
+|---------|----------------|---------|---------|
+| Bold | `**text**` | `**important**` | **important** |
+| Italic | `*text*` or `_text_` | `*emphasis*` or `_emphasis_` | *emphasis* |
+| Underline | `__text__` | `__underlined__` | <u>underlined</u> |
+| Link | `[text](url)` | `[Google](https://google.com)` | Hyperlinked text |
+
+### Headings
+
+Headings use hash symbols (`#`) at the start of a line:
+
+| Markdown | Google Docs Style |
+|----------|-------------------|
+| `# Heading 1` | Heading 1 |
+| `## Heading 2` | Heading 2 |
+| `### Heading 3` | Heading 3 |
+| `#### Heading 4` | Heading 4 |
+| `##### Heading 5` | Heading 5 |
+| `###### Heading 6` | Heading 6 |
+
+### Lists
+
+**Ordered Lists (Numbered):**
+```markdown
+1. First item
+2. Second item
+3. Third item
+```
+
+**Unordered Lists (Bullets):**
+```markdown
+- First item
+- Second item
+- Third item
+```
+
+Alternative bullet markers: `*` or `+` also work:
+```markdown
+* Item one
++ Item two
+```
+
+**Nested Lists:**
+
+Indent by **4 spaces** (or 1 tab) per nesting level. Ordered and unordered lists can be mixed at different levels:
+
+```markdown
+1. Top-level ordered item
+    * Nested unordered item
+    * Another nested unordered item
+2. Second ordered item
+    1. Nested ordered item
+3. Third ordered item
+
+* Top-level bullet
+    * Nested bullet
+    * Another nested bullet
+        * Double-nested bullet
+```
+
+Nested items are rendered at the correct indentation level in Google Docs. The outer list numbering is preserved even when nested items of a different type appear inside.
+
+When using nested lists, the inner list format might not match the expected one due to Google Docs management of inner lists.
+
+### Smart Chips
+
+Smart chips are interactive Google Docs elements that provide rich functionality.
+
+**Date Smart Chips:**
+
+| Syntax | Description | Example |
+|--------|-------------|---------|
+| `@today` | Inserts current date | `Meeting scheduled for @today` |
+| `@date(YYYY-MM-DD)` | Inserts specific date | `Deadline: @date(2026-12-31)` |
+
+Date chips display according to the user's Google Docs date format preferences.
+
+**Person Smart Chips:**
+
+| Syntax | Description | Example |
+|--------|-------------|---------|
+| `@(email)` | Inserts person by email | `Contact @(user@example.com)` |
+
+Person chips link to the person's profile and show their avatar in Google Docs.
+
+**Escaping Smart Chip Syntax:**
+
+To insert literal text that looks like smart chip syntax, use backslash escaping:
+
+```markdown
+\@today → displays as "@today" (not a date field)
+\@date(2025-01-01) → displays as "@date(2025-01-01)" (not a date field)
+\@(John Doe) → displays as "@(John Doe)" (not a person field)
+```
+
+### Complete Example
+
+```markdown
+# Project Meeting Notes
+
+Meeting Date: @today
+Attendees: @(Alice Smith), @(bob@company.com)
+
+## Action Items
+
+1. **Review** the quarterly report by @date(2026-04-15)
+2. _Follow up_ with @(Charlie Brown) on budget
+3. Update the [documentation](https://docs.example.com)
+
+## Discussion Points
+
+- Revenue **increased** by 15%
+- New product launch scheduled for @date(2026-06-01)
+- Team lead: @(dana@company.com)
+```
+
+### Feature Support Matrix
+
+| Feature | Supported | Notes |
+|---------|-----------|-------|
+| Bold (`**text**`) | ✅ Yes | |
+| Italic (`*text*`, `_text_`) | ✅ Yes | Both asterisk and underscore |
+| Underline (`__text__`) | ✅ Yes | Double underscore |
+| Links (`[text](url)`) | ✅ Yes | |
+| Headings (`# H1` to `###### H6`) | ✅ Yes | |
+| Ordered lists (`1.`, `2.`, etc.) | ✅ Yes | Converted to Google Docs numbered lists |
+| Unordered lists (`-`, `*`, `+`) | ✅ Yes | Converted to Google Docs bullet lists |
+| Nested lists (4 spaces or 1 tab per level) | ✅ Yes | Mixed ordered/unordered nesting supported |
+| Date chips (`@today`) | ✅ Yes | Current date |
+| Date chips (`@date(YYYY-MM-DD)`) | ✅ Yes | Specific date |
+| Person chips (`@(email)`) | ✅ Yes | |
+| Tables | ❌ No | Not yet supported |
+| Code blocks | ❌ No | Not yet supported |
+| Inline code | ❌ No | Not yet supported |
+| Blockquotes | ❌ No | Not yet supported |
+| Strikethrough | ❌ No | Not yet supported |
+| Images | ❌ No | Not yet supported |
 
 ## Examples
 
@@ -217,11 +372,9 @@ Files are saved with permissions `0600` (owner read/write only).
 
 ## Current Limitations
 
-This is an **initial implementation** of document creation and modification support. The markdown-to-Google Docs formatting conversion has several limitations:
+This is an **initial implementation** of document creation and modification support. The markdown-to-Google Docs formatting conversion has the following limitations:
 
-- **Lists**: Bullet points and numbered lists are not yet converted to Google Docs list format (they appear as plain text with list markers)
 - **Tables**: Markdown tables are not converted to Google Docs table structures
-- **Nested formatting**: Complex nested formatting combinations may not render correctly
 - **Code blocks**: Code blocks and inline code formatting are not yet supported
 - **Blockquotes**: Blockquotes are not converted to Google Docs quote styling
 - **Strikethrough**: Strikethrough formatting is not supported
