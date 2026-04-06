@@ -26,11 +26,6 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Create venv for local hooks
-        run: |
-          python -m venv .venv
-          .venv/bin/pip install pytest ty
-
       - uses: pre-commit/action@v3.0.1
 
   go:

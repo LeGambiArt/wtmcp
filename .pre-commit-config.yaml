@@ -32,15 +32,17 @@ repos:
 
       - id: ty
         name: ty
-        entry: bash -c 'fail=0; for d in plugins/*/; do [ -f "$d/handler.py" ] && { .venv/bin/ty check --extra-search-path "$d" "$d" || fail=1; }; done; exit $fail'
-        language: system
+        entry: bash -c 'fail=0; for d in plugins/*/; do [ -f "$d/handler.py" ] && { ty check --extra-search-path "$d" "$d" || fail=1; }; done; exit $fail'
+        language: python
+        additional_dependencies: [ty, pytest]
         types: [python]
         pass_filenames: false
 
       - id: pytest
         name: pytest
-        entry: .venv/bin/pytest -x -q
-        language: system
+        entry: pytest -x -q
+        language: python
+        additional_dependencies: [pytest]
         types: [python]
         pass_filenames: false
 
