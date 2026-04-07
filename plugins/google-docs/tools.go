@@ -594,26 +594,26 @@ func indentDepth(indent string) int {
 
 // parseMarkdown parses markdown text and returns segments with formatting info.
 func parseMarkdown(markdown string) []markdownSegment {
+	// Normalize line endings
+	markdown = strings.ReplaceAll(markdown, "\r\n", "\n")
+	markdown = strings.ReplaceAll(markdown, "\r", "\n")
+
 	var segments []markdownSegment
 	lines := strings.Split(markdown, "\n")
 
-	for idx, line := range lines {
+	lastWasHeading := false
+
+	for _, line := range lines {
 		trimmedLine := strings.TrimSpace(line)
 
 		if trimmedLine == "" {
-			// Blank lines before headings are skipped — headings carry their own
-			// paragraph break. Blank lines elsewhere become a paragraph separator
-			// so that visual gaps between blocks are preserved in the document.
-			nextIsHeading := false
-			for _, next := range lines[idx+1:] {
-				if t := strings.TrimSpace(next); t != "" {
-					nextIsHeading = strings.HasPrefix(t, "#")
-					break
-				}
+			if lastWasHeading {
+				// Skip blank lines immediately after headings —
+				// headings create their own paragraph break via \n
+				continue
 			}
-			if !nextIsHeading {
-				segments = append(segments, markdownSegment{text: "\n"})
-			}
+			// Preserve blank lines between normal text as empty paragraphs
+			segments = append(segments, markdownSegment{text: "\n"})
 			continue
 		}
 
@@ -636,19 +636,24 @@ func parseMarkdown(markdown string) []markdownSegment {
 		}
 
 		if headingLevel > 0 && headingLevel <= 6 {
-			// Heading line
-			segments = append(segments, markdownSegment{
-				text:    trimmedLine + "\n",
-				heading: headingLevel,
-			})
+			lastWasHeading = true
+			// Heading line - parse inline formatting within heading text
+			// Note: Headings don't include trailing newline - they're standalone paragraphs
+			inlineSegs := parseSimpleFormatting(trimmedLine)
+			for i := range inlineSegs {
+				inlineSegs[i].heading = headingLevel
+			}
+			segments = append(segments, inlineSegs...)
 			continue
 		}
+
+		lastWasHeading = false
 
 		// Check for ordered list (e.g., "1. Item", "2. Item") with optional leading indent
 		if orderedListMatch := reOrderedList.FindStringSubmatch(line); orderedListMatch != nil {
 			depth := indentDepth(orderedListMatch[1])
 			listItemText := orderedListMatch[2]
-			inlineSegs := parseInlineFormatting(listItemText + "\n")
+			inlineSegs := parseSimpleFormatting(listItemText + "\n")
 			for i := range inlineSegs {
 				inlineSegs[i].orderedListItem = true
 				inlineSegs[i].listDepth = depth
@@ -661,7 +666,7 @@ func parseMarkdown(markdown string) []markdownSegment {
 		if unorderedListMatch := reUnorderedList.FindStringSubmatch(line); unorderedListMatch != nil {
 			depth := indentDepth(unorderedListMatch[1])
 			listItemText := unorderedListMatch[3]
-			inlineSegs := parseInlineFormatting(listItemText + "\n")
+			inlineSegs := parseSimpleFormatting(listItemText + "\n")
 			for i := range inlineSegs {
 				inlineSegs[i].unorderedListItem = true
 				inlineSegs[i].listDepth = depth
@@ -671,24 +676,92 @@ func parseMarkdown(markdown string) []markdownSegment {
 		}
 
 		// Parse inline formatting
-		segments = append(segments, parseInlineFormatting(line+"\n")...)
+		segments = append(segments, parseSimpleFormatting(line+"\n")...)
 	}
 
 	return segments
 }
 
-// parseInlineFormatting parses inline markdown formatting (bold, italic, links, smart chips, etc).
-func parseInlineFormatting(text string) []markdownSegment {
+// parseSimpleFormatting parses bold, italic, and underline formatting.
+func parseSimpleFormatting(text string) []markdownSegment {
 	var segments []markdownSegment
 	pos := 0
 
 	for pos < len(text) {
-		// Check for @date(YYYY-MM-DD) - must come before @today check
-		if dateMatch := reDateChip.FindStringSubmatchIndex(text[pos:]); dateMatch != nil {
-			// Add text before date field
-			if dateMatch[0] > 0 {
-				segments = append(segments, parseSimpleFormatting(text[pos:pos+dateMatch[0]])...)
+		// Check for **bold**
+		if strings.HasPrefix(text[pos:], "**") {
+			endPos := strings.Index(text[pos+2:], "**")
+			if endPos != -1 {
+				endPos += pos + 2
+				innerSegs := parseSimpleFormatting(text[pos+2 : endPos])
+				for i := range innerSegs {
+					innerSegs[i].bold = true
+				}
+				segments = append(segments, innerSegs...)
+				pos = endPos + 2
+				continue
 			}
+		}
+
+		// Check for __underline__
+		if strings.HasPrefix(text[pos:], "__") {
+			endPos := strings.Index(text[pos+2:], "__")
+			if endPos != -1 {
+				endPos += pos + 2
+				innerSegs := parseSimpleFormatting(text[pos+2 : endPos])
+				for i := range innerSegs {
+					innerSegs[i].underline = true
+				}
+				segments = append(segments, innerSegs...)
+				pos = endPos + 2
+				continue
+			}
+		}
+
+		// Check for *italic*
+		if strings.HasPrefix(text[pos:], "*") && !strings.HasPrefix(text[pos:], "**") {
+			endPos := strings.Index(text[pos+1:], "*")
+			if endPos != -1 {
+				endPos += pos + 1
+				// Make sure it's not part of **
+				if endPos+1 < len(text) && text[endPos+1] == '*' {
+					segments = append(segments, markdownSegment{text: text[pos : pos+1]})
+					pos++
+					continue
+				}
+				innerSegs := parseSimpleFormatting(text[pos+1 : endPos])
+				for i := range innerSegs {
+					innerSegs[i].italic = true
+				}
+				segments = append(segments, innerSegs...)
+				pos = endPos + 1
+				continue
+			}
+		}
+
+		// Check for _italic_ (single underscore, not double)
+		if strings.HasPrefix(text[pos:], "_") && !strings.HasPrefix(text[pos:], "__") {
+			endPos := strings.Index(text[pos+1:], "_")
+			if endPos != -1 {
+				endPos += pos + 1
+				// Make sure it's not part of __
+				if endPos+1 < len(text) && text[endPos+1] == '_' {
+					segments = append(segments, markdownSegment{text: text[pos : pos+1]})
+					pos++
+					continue
+				}
+				innerSegs := parseSimpleFormatting(text[pos+1 : endPos])
+				for i := range innerSegs {
+					innerSegs[i].italic = true
+				}
+				segments = append(segments, innerSegs...)
+				pos = endPos + 1
+				continue
+			}
+		}
+
+		// Check for @date(YYYY-MM-DD) - must come before @today check
+		if dateMatch := reDateChip.FindStringSubmatchIndex(text[pos:]); dateMatch != nil && dateMatch[0] == 0 {
 			// Add date field with specific date
 			dateValue := text[pos+dateMatch[2] : pos+dateMatch[3]]
 			segments = append(segments, markdownSegment{
@@ -712,11 +785,7 @@ func parseInlineFormatting(text string) []markdownSegment {
 		}
 
 		// Check for @(name or email) - person smart chip
-		if personMatch := rePersonChip.FindStringSubmatchIndex(text[pos:]); personMatch != nil {
-			// Add text before person field
-			if personMatch[0] > 0 {
-				segments = append(segments, parseSimpleFormatting(text[pos:pos+personMatch[0]])...)
-			}
+		if personMatch := rePersonChip.FindStringSubmatchIndex(text[pos:]); personMatch != nil && personMatch[0] == 0 {
 			// Add person field
 			identifier := text[pos+personMatch[2] : pos+personMatch[3]]
 			segments = append(segments, markdownSegment{
@@ -729,11 +798,7 @@ func parseInlineFormatting(text string) []markdownSegment {
 		}
 
 		// Check for link: [text](url)
-		if linkMatch := reLinkInline.FindStringSubmatchIndex(text[pos:]); linkMatch != nil {
-			// Add text before link
-			if linkMatch[0] > 0 {
-				segments = append(segments, parseSimpleFormatting(text[pos:pos+linkMatch[0]])...)
-			}
+		if linkMatch := reLinkInline.FindStringSubmatchIndex(text[pos:]); linkMatch != nil && linkMatch[0] == 0 {
 			// Add link
 			linkText := text[pos+linkMatch[2] : pos+linkMatch[3]]
 			linkURL := text[pos+linkMatch[4] : pos+linkMatch[5]]
@@ -743,88 +808,6 @@ func parseInlineFormatting(text string) []markdownSegment {
 			})
 			pos += linkMatch[1]
 			continue
-		}
-
-		// No more special formatting, process rest as simple formatting
-		segments = append(segments, parseSimpleFormatting(text[pos:])...)
-		break
-	}
-
-	return segments
-}
-
-// parseSimpleFormatting parses bold, italic, and underline formatting.
-func parseSimpleFormatting(text string) []markdownSegment {
-	var segments []markdownSegment
-	pos := 0
-
-	for pos < len(text) {
-		// Check for **bold**
-		if strings.HasPrefix(text[pos:], "**") {
-			endPos := strings.Index(text[pos+2:], "**")
-			if endPos != -1 {
-				endPos += pos + 2
-				segments = append(segments, markdownSegment{
-					text: text[pos+2 : endPos],
-					bold: true,
-				})
-				pos = endPos + 2
-				continue
-			}
-		}
-
-		// Check for __underline__
-		if strings.HasPrefix(text[pos:], "__") {
-			endPos := strings.Index(text[pos+2:], "__")
-			if endPos != -1 {
-				endPos += pos + 2
-				segments = append(segments, markdownSegment{
-					text:      text[pos+2 : endPos],
-					underline: true,
-				})
-				pos = endPos + 2
-				continue
-			}
-		}
-
-		// Check for *italic*
-		if strings.HasPrefix(text[pos:], "*") && !strings.HasPrefix(text[pos:], "**") {
-			endPos := strings.Index(text[pos+1:], "*")
-			if endPos != -1 {
-				endPos += pos + 1
-				// Make sure it's not part of **
-				if endPos+1 < len(text) && text[endPos+1] == '*' {
-					segments = append(segments, markdownSegment{text: text[pos : pos+1]})
-					pos++
-					continue
-				}
-				segments = append(segments, markdownSegment{
-					text:   text[pos+1 : endPos],
-					italic: true,
-				})
-				pos = endPos + 1
-				continue
-			}
-		}
-
-		// Check for _italic_ (single underscore, not double)
-		if strings.HasPrefix(text[pos:], "_") && !strings.HasPrefix(text[pos:], "__") {
-			endPos := strings.Index(text[pos+1:], "_")
-			if endPos != -1 {
-				endPos += pos + 1
-				// Make sure it's not part of __
-				if endPos+1 < len(text) && text[endPos+1] == '_' {
-					segments = append(segments, markdownSegment{text: text[pos : pos+1]})
-					pos++
-					continue
-				}
-				segments = append(segments, markdownSegment{
-					text:   text[pos+1 : endPos],
-					italic: true,
-				})
-				pos = endPos + 1
-				continue
-			}
 		}
 
 		// Plain character
@@ -877,6 +860,16 @@ func convertMarkdownToRequests(segments []markdownSegment, startIndex int64) []*
 	// Merge consecutive segments with identical formatting to reduce API requests
 	segments = mergeSegments(segments)
 
+	// Remove trailing \n from the last text segment.
+	// The document already ends with \n, so our trailing \n
+	// would create an unwanted empty paragraph.
+	for i := len(segments) - 1; i >= 0; i-- {
+		if segments[i].text != "" && !segments[i].isDateField && !segments[i].isPersonField {
+			segments[i].text = strings.TrimSuffix(segments[i].text, "\n")
+			break
+		}
+	}
+
 	// Track list ranges for batch processing
 	type listRange struct {
 		startIndex int64
@@ -887,9 +880,20 @@ func convertMarkdownToRequests(segments []markdownSegment, startIndex int64) []*
 	var currentListStart int64 = -1
 	var currentListIsOrdered bool
 
+	// Track text style requests for headings - we defer them until after UpdateParagraphStyle
+	// to prevent the paragraph style from wiping out the text formatting
+	var headingTextStyleRequests []*docs.Request
+	var inHeading bool
+
 	for i, seg := range segments {
 		if seg.text == "" && !seg.isDateField && !seg.isPersonField {
 			continue
+		}
+
+		// Detect start of a new heading
+		if seg.heading > 0 && (i == 0 || segments[i-1].heading != seg.heading) {
+			inHeading = true
+			headingTextStyleRequests = nil
 		}
 
 		var endIndex int64
@@ -965,6 +969,49 @@ func convertMarkdownToRequests(segments []markdownSegment, startIndex int64) []*
 			// Date elements take 1 character in the document index
 			endIndex = currentIndex + 1
 			currentIndex = endIndex
+
+			// Apply paragraph style (heading or normal text)
+			// Always apply to prevent heading styles from persisting
+			var paragraphStyle string
+			if seg.heading > 0 {
+				paragraphStyle = fmt.Sprintf("HEADING_%d", seg.heading)
+			} else {
+				paragraphStyle = "NORMAL_TEXT"
+			}
+			requests = append(requests, &docs.Request{
+				UpdateParagraphStyle: &docs.UpdateParagraphStyleRequest{
+					Range: &docs.Range{
+						StartIndex: currentIndex - 1,
+						EndIndex:   currentIndex,
+					},
+					ParagraphStyle: &docs.ParagraphStyle{
+						NamedStyleType: paragraphStyle,
+					},
+					Fields: "namedStyleType",
+				},
+			})
+
+			// Apply text formatting (bold, italic, underline) to the date chip
+			if seg.bold || seg.italic || seg.underline {
+				textStyle := &docs.TextStyle{
+					Bold:      seg.bold,
+					Italic:    seg.italic,
+					Underline: seg.underline,
+				}
+				fields := []string{"bold", "italic", "underline"}
+
+				requests = append(requests, &docs.Request{
+					UpdateTextStyle: &docs.UpdateTextStyleRequest{
+						Range: &docs.Range{
+							StartIndex: currentIndex - 1,
+							EndIndex:   currentIndex,
+						},
+						TextStyle: textStyle,
+						Fields:    strings.Join(fields, ","),
+					},
+				})
+			}
+
 			continue
 		}
 
@@ -1000,6 +1047,49 @@ func convertMarkdownToRequests(segments []markdownSegment, startIndex int64) []*
 			// Person elements take 1 character in the index
 			endIndex = currentIndex + 1
 			currentIndex = endIndex
+
+			// Apply paragraph style (heading or normal text)
+			// Always apply to prevent heading styles from persisting
+			var paragraphStyle string
+			if seg.heading > 0 {
+				paragraphStyle = fmt.Sprintf("HEADING_%d", seg.heading)
+			} else {
+				paragraphStyle = "NORMAL_TEXT"
+			}
+			requests = append(requests, &docs.Request{
+				UpdateParagraphStyle: &docs.UpdateParagraphStyleRequest{
+					Range: &docs.Range{
+						StartIndex: currentIndex - 1,
+						EndIndex:   currentIndex,
+					},
+					ParagraphStyle: &docs.ParagraphStyle{
+						NamedStyleType: paragraphStyle,
+					},
+					Fields: "namedStyleType",
+				},
+			})
+
+			// Apply text formatting (bold, italic, underline) to the person chip
+			if seg.bold || seg.italic || seg.underline {
+				textStyle := &docs.TextStyle{
+					Bold:      seg.bold,
+					Italic:    seg.italic,
+					Underline: seg.underline,
+				}
+				fields := []string{"bold", "italic", "underline"}
+
+				requests = append(requests, &docs.Request{
+					UpdateTextStyle: &docs.UpdateTextStyleRequest{
+						Range: &docs.Range{
+							StartIndex: currentIndex - 1,
+							EndIndex:   currentIndex,
+						},
+						TextStyle: textStyle,
+						Fields:    strings.Join(fields, ","),
+					},
+				})
+			}
+
 			continue
 		}
 
@@ -1056,6 +1146,17 @@ func convertMarkdownToRequests(segments []markdownSegment, startIndex int64) []*
 			insertText = strings.Join(outLines, "\n")
 		}
 
+		// Append \n to headings only after the LAST segment of that heading level.
+		// Check if the next segment is NOT the same heading level (or doesn't exist).
+		// This ensures multi-segment headings (e.g., "# **Bold** Normal") stay as one paragraph.
+		if seg.heading > 0 && !strings.HasSuffix(insertText, "\n") {
+			isLastHeadingSegment := i == len(segments)-1 || segments[i+1].heading != seg.heading
+			// Don't add \n if this is the very last segment of the document
+			if isLastHeadingSegment && i < len(segments)-1 {
+				insertText += "\n"
+			}
+		}
+
 		// Insert the text
 		requests = append(requests, &docs.Request{
 			InsertText: &docs.InsertTextRequest{
@@ -1067,24 +1168,7 @@ func convertMarkdownToRequests(segments []markdownSegment, startIndex int64) []*
 		// Use rune count, not byte length! Multi-byte UTF-8 characters need proper counting
 		endIndex = currentIndex + int64(utf8.RuneCountInString(insertText))
 
-		// Apply heading style
-		if seg.heading > 0 {
-			headingStyle := fmt.Sprintf("HEADING_%d", seg.heading)
-			requests = append(requests, &docs.Request{
-				UpdateParagraphStyle: &docs.UpdateParagraphStyleRequest{
-					Range: &docs.Range{
-						StartIndex: currentIndex,
-						EndIndex:   endIndex,
-					},
-					ParagraphStyle: &docs.ParagraphStyle{
-						NamedStyleType: headingStyle,
-					},
-					Fields: "namedStyleType",
-				},
-			})
-		}
-
-		// Apply text formatting - ALWAYS apply to ensure formatting is explicitly reset
+		// Prepare text style request - ALWAYS apply to ensure formatting is explicitly reset
 		// This prevents bold/italic/underline from "sticking" to subsequent text
 		textStyle := &docs.TextStyle{
 			Bold:      seg.bold,
@@ -1104,7 +1188,7 @@ func convertMarkdownToRequests(segments []markdownSegment, startIndex int64) []*
 			fields = append(fields, "link")
 		}
 
-		requests = append(requests, &docs.Request{
+		textStyleRequest := &docs.Request{
 			UpdateTextStyle: &docs.UpdateTextStyleRequest{
 				Range: &docs.Range{
 					StartIndex: currentIndex,
@@ -1113,7 +1197,42 @@ func convertMarkdownToRequests(segments []markdownSegment, startIndex int64) []*
 				TextStyle: textStyle,
 				Fields:    strings.Join(fields, ","),
 			},
-		})
+		}
+
+		// For headings: defer text style requests until after UpdateParagraphStyle
+		// to prevent the paragraph style from wiping out text formatting
+		if inHeading {
+			headingTextStyleRequests = append(headingTextStyleRequests, textStyleRequest)
+		} else {
+			// For normal text: apply text style immediately
+			requests = append(requests, textStyleRequest)
+		}
+
+		// Apply heading style — only at the last segment of a heading.
+		// We apply UpdateParagraphStyle first, then all the deferred UpdateTextStyle
+		// requests, so that text formatting overrides the paragraph style defaults.
+		if seg.heading > 0 {
+			isLastHeadingSegment := i == len(segments)-1 || segments[i+1].heading != seg.heading
+			if isLastHeadingSegment {
+				headingStyle := fmt.Sprintf("HEADING_%d", seg.heading)
+				requests = append(requests, &docs.Request{
+					UpdateParagraphStyle: &docs.UpdateParagraphStyleRequest{
+						Range: &docs.Range{
+							StartIndex: currentIndex,
+							EndIndex:   endIndex,
+						},
+						ParagraphStyle: &docs.ParagraphStyle{
+							NamedStyleType: headingStyle,
+						},
+						Fields: "namedStyleType",
+					},
+				})
+				// Now apply all deferred text styles for this heading
+				requests = append(requests, headingTextStyleRequests...)
+				inHeading = false
+				headingTextStyleRequests = nil
+			}
+		}
 
 		currentIndex = endIndex
 
@@ -1187,12 +1306,15 @@ func toolWriteText(params, _ json.RawMessage) (any, error) {
 
 	// Determine insertion index
 	insertIndex := p.InsertIndex
+	isAppendingToNonEmptyDoc := false
 	if p.AppendToEnd {
 		// Find the end of the document (before the final newline)
 		if doc.Body == nil || doc.Body.Content == nil || len(doc.Body.Content) == 0 {
 			return nil, fmt.Errorf("document body is empty or invalid")
 		}
 		insertIndex = doc.Body.Content[len(doc.Body.Content)-1].EndIndex - 1
+		// Check if document has existing content (insertIndex > 1 means non-empty)
+		isAppendingToNonEmptyDoc = insertIndex > 1
 	} else if insertIndex < 1 {
 		return nil, fmt.Errorf("insert_index must be >= 1 (got %d); set append_to_end=true to append", insertIndex)
 	}
@@ -1200,8 +1322,13 @@ func toolWriteText(params, _ json.RawMessage) (any, error) {
 	var requests []*docs.Request
 
 	if p.IsMarkdown {
+		// When appending to non-empty document, prepend newline to start new paragraph
+		textToInsert := p.Text
+		if isAppendingToNonEmptyDoc && !strings.HasPrefix(textToInsert, "\n") {
+			textToInsert = "\n" + textToInsert
+		}
 		// Parse markdown and convert to requests
-		segments := parseMarkdown(p.Text)
+		segments := parseMarkdown(textToInsert)
 		requests = convertMarkdownToRequests(segments, insertIndex)
 	} else {
 		// Plain text insertion
@@ -1270,18 +1397,27 @@ func toolWriteMarkdown(params, _ json.RawMessage) (any, error) {
 
 	// Determine insertion index
 	insertIndex := p.InsertIndex
+	isAppendingToNonEmptyDoc := false
 	if p.AppendToEnd {
 		// Find the end of the document (before the final newline)
 		if doc.Body == nil || doc.Body.Content == nil || len(doc.Body.Content) == 0 {
 			return nil, fmt.Errorf("document body is empty or invalid")
 		}
 		insertIndex = doc.Body.Content[len(doc.Body.Content)-1].EndIndex - 1
+		// Check if document has existing content (insertIndex > 1 means non-empty)
+		isAppendingToNonEmptyDoc = insertIndex > 1
 	} else if insertIndex < 1 {
 		return nil, fmt.Errorf("insert_index must be >= 1 (got %d); set append_to_end=true to append", insertIndex)
 	}
 
+	// When appending to non-empty document, prepend newline to start new paragraph
+	markdownToInsert := p.Markdown
+	if isAppendingToNonEmptyDoc && !strings.HasPrefix(markdownToInsert, "\n") {
+		markdownToInsert = "\n" + markdownToInsert
+	}
+
 	// Parse markdown and convert to requests
-	segments := parseMarkdown(p.Markdown)
+	segments := parseMarkdown(markdownToInsert)
 	requests := convertMarkdownToRequests(segments, insertIndex)
 
 	// Execute the batch update
