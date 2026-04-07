@@ -368,12 +368,17 @@ def testing_farm_get_ssh(params):
         raise Exception("No artifacts URL found — request may still be queued")
 
     state = body.get("state", "")
-    if state not in ("running", "complete"):
-        return {
-            "error": f"Request is in state '{state}' — SSH info is only available for running or complete reservations",
-            "state": state,
-            "request_id": request_id,
-        }
+    ret = {
+        "error": "",
+        "state": state,
+        "request_id": request_id,
+    }
+    if state == "complete":
+        ret["error"] = "Reservation is complete — the host has been returned to the infrastructure"
+        return ret
+    elif state != "running":
+        ret["error"] = f"Request is in state '{state}' — SSH info is only available for running reservations"
+        return ret
 
     envs = body.get("environments_requested", [])
     env0 = envs[0] if envs else {}

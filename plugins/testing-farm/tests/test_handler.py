@@ -606,6 +606,15 @@ class TestGetSsh:
             assert "error" in result
             assert result["state"] == "queued"
 
+    def test_complete(self):
+        req = {**SAMPLE_REQUEST, "state": "complete"}
+        req["run"] = {"artifacts": "https://artifacts.example.com/req-1"}
+        with _mock_cache_get(None), _mock_http(200, req):
+            result = handler.testing_farm_get_ssh({"request_id": "req-1"})
+            assert "error" in result
+            assert result["state"] == "complete"
+            assert "returned" in result["error"]
+
     def test_no_artifacts_url(self):
         req = {**SAMPLE_REQUEST, "run": {}}
         with _mock_cache_get(None), _mock_http(200, req):
