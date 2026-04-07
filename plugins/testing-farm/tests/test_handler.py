@@ -42,7 +42,6 @@ SAMPLE_REQUEST = {
     "result": {"overall": "passed"},
     "created": "2025-01-15T10:00:00Z",
     "updated": "2025-01-15T10:30:00Z",
-    "artifacts_url": "https://artifacts.example.com/req-abc-123",
     "test": {"fmf": {"url": "https://example.com/tests", "ref": "main", "name": "/plan/test1"}},
     "environments_requested": [
         {
@@ -50,7 +49,7 @@ SAMPLE_REQUEST = {
             "arch": "x86_64",
         }
     ],
-    "run": {"log": "https://example.com/log", "stages": []},
+    "run": {"log": "https://example.com/log", "stages": [], "artifacts": "https://artifacts.example.com/req-abc-123"},
 }
 
 RESERVE_REQUEST = {
@@ -575,14 +574,15 @@ class TestGetSsh:
             assert result == cached
 
     def test_not_running(self):
-        req = {**SAMPLE_REQUEST, "state": "queued", "artifacts_url": "https://artifacts.example.com/req-1"}
+        req = {**SAMPLE_REQUEST, "state": "queued"}
+        req["run"] = {"artifacts": "https://artifacts.example.com/req-1"}
         with _mock_cache_get(None), _mock_http(200, req):
             result = handler.testing_farm_get_ssh({"request_id": "req-1"})
             assert "error" in result
             assert result["state"] == "queued"
 
     def test_no_artifacts_url(self):
-        req = {**SAMPLE_REQUEST, "artifacts_url": ""}
+        req = {**SAMPLE_REQUEST, "run": {}}
         with _mock_cache_get(None), _mock_http(200, req):
             try:
                 handler.testing_farm_get_ssh({"request_id": "req-1"})

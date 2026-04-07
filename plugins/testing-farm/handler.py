@@ -253,8 +253,8 @@ def testing_farm_get_request(params):
     envs = body.get("environments_requested", [])
     env0 = envs[0] if envs else {}
 
-    artifacts_url = body.get("artifacts_url", "")
     run = body.get("run", {}) or {}
+    artifacts_url = run.get("artifacts", "")
 
     result = {
         "id": body.get("id", ""),
@@ -362,7 +362,8 @@ def testing_farm_get_ssh(params):
     if status != 200:
         raise Exception(f"API error (HTTP {status}): {body}")
 
-    artifacts_url = body.get("artifacts_url", "")
+    run = body.get("run", {}) or {}
+    artifacts_url = run.get("artifacts", "")
     if not artifacts_url:
         raise Exception("No artifacts URL found — request may still be queued")
 
@@ -579,8 +580,8 @@ def testing_farm_get_logs(params):
     if status != 200:
         raise Exception(f"API error (HTTP {status}): {body}")
 
-    artifacts_url = body.get("artifacts_url", "")
     run = body.get("run", {}) or {}
+    artifacts_url = run.get("artifacts", "")
 
     result = {
         "request_id": request_id,
