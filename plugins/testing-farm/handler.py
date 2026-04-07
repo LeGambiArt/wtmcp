@@ -410,7 +410,10 @@ def testing_farm_get_ssh(params):
 
 
 def _parse_ssh_from_results_xml(xml_text, artifacts_url):
-    """Parse results.xml to find the IP address from console logs."""
+    """
+    Parse results.xml to find workdir and extract IP from guests.yaml.
+    Fall back to console logs.
+    """
     try:
         root = ET.fromstring(xml_text)
     except ET.ParseError:
@@ -433,8 +436,21 @@ def _parse_ssh_from_results_xml(xml_text, artifacts_url):
                 return _fetch_and_parse_console_log(href)
         return None
 
-    # List workdir to find console-*.log files.
     dir_url = workdir_href if workdir_href.startswith("http") else f"{artifacts_url}/{workdir_href}"
+
+    # Try guests.yaml first
+    guests_url = f"{dir_url.rstrip('/')}/testing-farm/reserve/provision/guests.yaml"
+    gstatus, gbody, _ = http("GET", "/", url=guests_url)
+    if gstatus == 200:
+        guests_text = (
+            gbody if isinstance(gbody, str) else gbody.decode("utf-8") if isinstance(gbody, bytes) else str(gbody)
+        )
+        # Find primary-address: <ip>
+        match = re.search(r"primary-address:\s*(\d+\.\d+\.\d+\.\d+)", guests_text)
+        if match:
+            return match.group(1)
+
+    # List workdir to find console-*.log files.
     dstatus, dbody, _ = http("GET", "/", url=dir_url)
     if dstatus != 200:
         return None

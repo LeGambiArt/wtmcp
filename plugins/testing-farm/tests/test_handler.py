@@ -255,6 +255,31 @@ class TestExtractResult:
         assert handler._extract_result({}) == "unknown"
 
 
+# --- _parse_ssh_from_results_xml ---
+
+
+class TestParseSshFromResultsXml:
+    def test_from_guests_yaml(self):
+        xml = '<testsuite><logs><log href="work-dir/" name="workdir"/></logs></testsuite>'
+        yaml_content = """default-0:
+            -OPTIONLESS-FIELDS:
+              - primary_address
+              - topology_address
+              - facts
+            primary-address: 10.31.8.213
+            topology-address: 10.31.8.213
+        """
+
+        def mock_http(method, path, url=None, **kwargs):
+            if url and url.endswith("guests.yaml"):
+                return 200, yaml_content, {}
+            return 404, "", {}
+
+        with patch.object(handler, "http", side_effect=mock_http):
+            ip = handler._parse_ssh_from_results_xml(xml, "https://artifacts")
+            assert ip == "10.31.8.213"
+
+
 # --- _extract_ip_from_console ---
 
 
