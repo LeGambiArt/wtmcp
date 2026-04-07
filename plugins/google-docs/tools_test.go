@@ -145,6 +145,163 @@ func TestParseMarkdownLists(t *testing.T) {
 	})
 }
 
+func TestParseStrikethrough(t *testing.T) {
+	t.Run("basic strikethrough", func(t *testing.T) {
+		segments := parseSimpleFormatting("~~strikethrough~~")
+		var strikethroughText string
+		foundStrikethrough := false
+		for _, seg := range segments {
+			if seg.strikethrough {
+				foundStrikethrough = true
+				strikethroughText += seg.text
+			}
+		}
+		if !foundStrikethrough || strikethroughText != "strikethrough" {
+			t.Errorf("got %+v, want strikethrough segments concatenating to 'strikethrough'", segments)
+		}
+	})
+
+	t.Run("strikethrough with bold", func(t *testing.T) {
+		segments := parseSimpleFormatting("**~~bold and strikethrough~~**")
+		var boldStrikeText string
+		foundBoldStrikethrough := false
+		for _, seg := range segments {
+			if seg.bold && seg.strikethrough {
+				foundBoldStrikethrough = true
+				boldStrikeText += seg.text
+			}
+		}
+		if !foundBoldStrikethrough || boldStrikeText != "bold and strikethrough" {
+			t.Errorf("got bold+strikethrough text %q, want 'bold and strikethrough'", boldStrikeText)
+		}
+	})
+
+	t.Run("strikethrough in heading", func(t *testing.T) {
+		segments := parseMarkdown("## ~~Deprecated~~ Feature")
+		var strikethroughText string
+		foundStrikethrough := false
+		for _, seg := range segments {
+			if seg.heading == 2 && seg.strikethrough {
+				foundStrikethrough = true
+				strikethroughText += seg.text
+			}
+		}
+		if !foundStrikethrough || strikethroughText != "Deprecated" {
+			t.Errorf("strikethrough in heading not found correctly in %+v", segments)
+		}
+	})
+
+	t.Run("unclosed strikethrough", func(t *testing.T) {
+		segments := parseSimpleFormatting("~~unclosed")
+		merged := mergeSegments(segments)
+		if len(merged) != 1 || merged[0].text != "~~unclosed" {
+			t.Errorf("got %+v, want literal '~~unclosed'", merged)
+		}
+	})
+
+	t.Run("mixed formatting", func(t *testing.T) {
+		markdown := "Normal **bold** ~~strike~~ _italic_ text"
+		segments := parseMarkdown(markdown)
+
+		var boldText, strikeText, italicText string
+		foundBold := false
+		foundStrike := false
+		foundItalic := false
+
+		for _, seg := range segments {
+			if seg.bold {
+				foundBold = true
+				boldText += seg.text
+			}
+			if seg.strikethrough {
+				foundStrike = true
+				strikeText += seg.text
+			}
+			if seg.italic {
+				foundItalic = true
+				italicText += seg.text
+			}
+		}
+
+		if !foundBold || boldText != "bold" {
+			t.Errorf("bold text = %q, want 'bold'", boldText)
+		}
+		if !foundStrike || strikeText != "strike" {
+			t.Errorf("strike text = %q, want 'strike'", strikeText)
+		}
+		if !foundItalic || italicText != "italic" {
+			t.Errorf("italic text = %q, want 'italic'", italicText)
+		}
+	})
+
+	t.Run("nested strikethrough and italic", func(t *testing.T) {
+		segments := parseSimpleFormatting("~~*strikethrough italic*~~")
+		var bothText string
+		foundBoth := false
+		for _, seg := range segments {
+			if seg.strikethrough && seg.italic {
+				foundBoth = true
+				bothText += seg.text
+			}
+		}
+		if !foundBoth || bothText != "strikethrough italic" {
+			t.Errorf("got strikethrough+italic text %q, want 'strikethrough italic'", bothText)
+		}
+	})
+}
+
+func TestStrikethroughWithDateChips(t *testing.T) {
+	t.Run("strikethrough @today", func(t *testing.T) {
+		segments := parseSimpleFormatting("~~@today~~")
+		foundStrikethroughDate := false
+		for _, seg := range segments {
+			if seg.isDateField && seg.strikethrough && seg.dateValue == "" {
+				foundStrikethroughDate = true
+			}
+		}
+		if !foundStrikethroughDate {
+			t.Errorf("strikethrough @today not found in %+v", segments)
+		}
+	})
+
+	t.Run("strikethrough date", func(t *testing.T) {
+		segments := parseSimpleFormatting("~~@date(2026-04-07)~~")
+		foundStrikethroughDate := false
+		for _, seg := range segments {
+			if seg.isDateField && seg.strikethrough && seg.dateValue == "2026-04-07" {
+				foundStrikethroughDate = true
+			}
+		}
+		if !foundStrikethroughDate {
+			t.Errorf("strikethrough @date not found in %+v", segments)
+		}
+	})
+}
+
+func TestStrikethroughInRequests(t *testing.T) {
+	t.Run("strikethrough creates correct style request", func(t *testing.T) {
+		segments := parseMarkdown("~~strikethrough text~~")
+		requests := convertMarkdownToRequests(segments, 1)
+
+		foundStrikethroughStyle := false
+		for _, req := range requests {
+			if req.UpdateTextStyle != nil {
+				if req.UpdateTextStyle.TextStyle.Strikethrough {
+					foundStrikethroughStyle = true
+					// Verify fields include "strikethrough"
+					if !strings.Contains(req.UpdateTextStyle.Fields, "strikethrough") {
+						t.Errorf("strikethrough not in fields: %s", req.UpdateTextStyle.Fields)
+					}
+				}
+			}
+		}
+
+		if !foundStrikethroughStyle {
+			t.Errorf("strikethrough style not applied in requests")
+		}
+	})
+}
+
 func TestParseSimpleFormatting(t *testing.T) {
 	t.Run("bold", func(t *testing.T) {
 		segments := parseSimpleFormatting("**bold**")
@@ -626,6 +783,22 @@ func TestMergeSegments(t *testing.T) {
 		merged := mergeSegments(segments)
 		if len(merged) != 3 {
 			t.Errorf("got %d segments, want 3", len(merged))
+		}
+	})
+
+	t.Run("no merge different strikethrough", func(t *testing.T) {
+		segments := []markdownSegment{
+			{text: "plain"},
+			{text: "strike", strikethrough: true},
+			{text: "plain2"},
+		}
+		merged := mergeSegments(segments)
+		if len(merged) != 3 {
+			t.Errorf("got %d segments, want 3", len(merged))
+		}
+		// Verify the strikethrough flag is preserved
+		if !merged[1].strikethrough {
+			t.Errorf("strikethrough flag lost in middle segment")
 		}
 	})
 

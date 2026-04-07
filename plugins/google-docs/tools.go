@@ -561,6 +561,7 @@ type markdownSegment struct {
 	bold              bool
 	italic            bool
 	underline         bool
+	strikethrough     bool
 	linkURL           string
 	heading           int    // 0 for normal, 1-6 for heading levels
 	orderedListItem   bool   // true if this is an ordered list item
@@ -688,6 +689,21 @@ func parseSimpleFormatting(text string) []markdownSegment {
 	pos := 0
 
 	for pos < len(text) {
+		// Check for ~~strikethrough~~ (must come before **bold** check)
+		if strings.HasPrefix(text[pos:], "~~") {
+			endPos := strings.Index(text[pos+2:], "~~")
+			if endPos != -1 {
+				endPos += pos + 2
+				innerSegs := parseSimpleFormatting(text[pos+2 : endPos])
+				for i := range innerSegs {
+					innerSegs[i].strikethrough = true
+				}
+				segments = append(segments, innerSegs...)
+				pos = endPos + 2
+				continue
+			}
+		}
+
 		// Check for **bold**
 		if strings.HasPrefix(text[pos:], "**") {
 			endPos := strings.Index(text[pos+2:], "**")
@@ -834,6 +850,7 @@ func mergeSegments(segments []markdownSegment) []markdownSegment {
 		if curr.bold == prev.bold &&
 			curr.italic == prev.italic &&
 			curr.underline == prev.underline &&
+			curr.strikethrough == prev.strikethrough &&
 			curr.linkURL == prev.linkURL &&
 			curr.heading == prev.heading &&
 			curr.orderedListItem == prev.orderedListItem &&
@@ -991,14 +1008,15 @@ func convertMarkdownToRequests(segments []markdownSegment, startIndex int64) []*
 				},
 			})
 
-			// Apply text formatting (bold, italic, underline) to the date chip
-			if seg.bold || seg.italic || seg.underline {
+			// Apply text formatting (bold, italic, underline, strikethrough) to the date chip
+			if seg.bold || seg.italic || seg.underline || seg.strikethrough {
 				textStyle := &docs.TextStyle{
-					Bold:      seg.bold,
-					Italic:    seg.italic,
-					Underline: seg.underline,
+					Bold:          seg.bold,
+					Italic:        seg.italic,
+					Underline:     seg.underline,
+					Strikethrough: seg.strikethrough,
 				}
-				fields := []string{"bold", "italic", "underline"}
+				fields := []string{"bold", "italic", "underline", "strikethrough"}
 
 				requests = append(requests, &docs.Request{
 					UpdateTextStyle: &docs.UpdateTextStyleRequest{
@@ -1069,14 +1087,15 @@ func convertMarkdownToRequests(segments []markdownSegment, startIndex int64) []*
 				},
 			})
 
-			// Apply text formatting (bold, italic, underline) to the person chip
-			if seg.bold || seg.italic || seg.underline {
+			// Apply text formatting (bold, italic, underline, strikethrough) to the person chip
+			if seg.bold || seg.italic || seg.underline || seg.strikethrough {
 				textStyle := &docs.TextStyle{
-					Bold:      seg.bold,
-					Italic:    seg.italic,
-					Underline: seg.underline,
+					Bold:          seg.bold,
+					Italic:        seg.italic,
+					Underline:     seg.underline,
+					Strikethrough: seg.strikethrough,
 				}
-				fields := []string{"bold", "italic", "underline"}
+				fields := []string{"bold", "italic", "underline", "strikethrough"}
 
 				requests = append(requests, &docs.Request{
 					UpdateTextStyle: &docs.UpdateTextStyleRequest{
@@ -1169,11 +1188,12 @@ func convertMarkdownToRequests(segments []markdownSegment, startIndex int64) []*
 		endIndex = currentIndex + int64(utf8.RuneCountInString(insertText))
 
 		// Prepare text style request - ALWAYS apply to ensure formatting is explicitly reset
-		// This prevents bold/italic/underline from "sticking" to subsequent text
+		// This prevents bold/italic/underline/strikethrough from "sticking" to subsequent text
 		textStyle := &docs.TextStyle{
-			Bold:      seg.bold,
-			Italic:    seg.italic,
-			Underline: seg.underline,
+			Bold:          seg.bold,
+			Italic:        seg.italic,
+			Underline:     seg.underline,
+			Strikethrough: seg.strikethrough,
 		}
 
 		if seg.linkURL != "" {
@@ -1183,7 +1203,7 @@ func convertMarkdownToRequests(segments []markdownSegment, startIndex int64) []*
 		}
 
 		// Always specify all basic formatting fields to ensure proper reset
-		fields := []string{"bold", "italic", "underline"}
+		fields := []string{"bold", "italic", "underline", "strikethrough"}
 		if seg.linkURL != "" {
 			fields = append(fields, "link")
 		}
