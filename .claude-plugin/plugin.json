@@ -1,0 +1,21 @@
+{
+  "name": "wtmcp",
+  "description": "MCP server with plugins for Jira, Confluence, GitLab, Google Calendar, Gmail, Google Drive, Google Docs, Testing Farm, Snyk, and GitHub",
+  "author": {
+    "name": "Sergio Correia",
+    "email": "scorreia@redhat.com"
+  },
+  "repository": "https://github.com/LeGambiArt/wtmcp",
+  "homepage": "https://github.com/LeGambiArt/wtmcp",
+  "license": "GPLv3",
+  "keywords": ["jira", "confluence", "gitlab", "calendar", "gmail", "drive", "google", "atlassian", "github", "snyk", "testing-farm"],
+  "mcpServers": {
+    "wtmcp": {
+      "command": "go",
+      "args": [
+        "run",
+        "github.com/LeGambiArt/wtmcp/cmd/wtmcp@latest"
+      ]
+    }
+  }
+}
