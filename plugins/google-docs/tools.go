@@ -122,17 +122,43 @@ func extractMarkdown(doc *docs.Document) string {
 		return ""
 	}
 
-	for _, elem := range doc.Body.Content {
-		extractElementMarkdown(&md, elem)
+	// Detect code annotations before processing
+	annotations := detectCode(doc)
+
+	for i, elem := range doc.Body.Content {
+		extractElementMarkdown(&md, elem, annotations, i)
 	}
 
 	return md.String()
 }
 
 // extractElementMarkdown recursively converts document elements to Markdown.
-func extractElementMarkdown(sb *strings.Builder, elem *docs.StructuralElement) {
+func extractElementMarkdown(sb *strings.Builder, elem *docs.StructuralElement, annotations *CodeAnnotations, paraIndex int) {
 	if elem.Paragraph != nil {
 		para := elem.Paragraph
+
+		// Check if this is a code block
+		if annotations.CodeBlocks[paraIndex] {
+			// Extract plain text from code block (strip all formatting)
+			var codeText strings.Builder
+			for _, pe := range para.Elements {
+				if pe.TextRun != nil {
+					codeText.WriteString(pe.TextRun.Content)
+				}
+			}
+
+			text := codeText.String()
+			if text != "" {
+				sb.WriteString("```\n")
+				sb.WriteString(text)
+				// Ensure code block ends with newline before closing fence
+				if !strings.HasSuffix(text, "\n") {
+					sb.WriteString("\n")
+				}
+				sb.WriteString("```\n\n")
+			}
+			return
+		}
 
 		// Determine if this is a heading
 		var prefix, suffix string
@@ -159,21 +185,44 @@ func extractElementMarkdown(sb *strings.Builder, elem *docs.StructuralElement) {
 
 		// Extract text with formatting
 		var paraText strings.Builder
-		for _, pe := range para.Elements {
+		for runIndex, pe := range para.Elements {
 			if pe.TextRun != nil {
 				text := pe.TextRun.Content
 				style := pe.TextRun.TextStyle
 
-				// Apply text formatting
+				// Check if this run is inline code
+				isInline := annotations.InlineCode[makeInlineCodeKey(paraIndex, runIndex)]
+				if isInline {
+					// Inline code: wrap in single backticks
+					text = "`" + strings.TrimSpace(text) + "`"
+				}
 				if style != nil {
-					if style.Bold {
-						text = "**" + strings.TrimSpace(text) + "**"
-					}
-					if style.Italic {
-						text = "*" + strings.TrimSpace(text) + "*"
-					}
-					if style.Underline {
-						text = "__" + strings.TrimSpace(text) + "__"
+					// Apply formatting (works for both inline code and regular text)
+					if !isInline {
+						// Only trim for non-inline-code (inline code already trimmed above)
+						if style.Bold {
+							text = "**" + strings.TrimSpace(text) + "**"
+						}
+						if style.Italic {
+							text = "*" + strings.TrimSpace(text) + "*"
+						}
+						if style.Underline {
+							text = "__" + strings.TrimSpace(text) + "__"
+						}
+					} else {
+						// For inline code, apply formatting INSIDE the backticks
+						// Strip backticks, apply formatting, re-wrap
+						inner := text[1 : len(text)-1] // remove surrounding backticks
+						if style.Bold {
+							inner = "**" + inner + "**"
+						}
+						if style.Italic {
+							inner = "*" + inner + "*"
+						}
+						if style.Underline && (style.Link == nil || style.Link.Url == "") {
+							inner = "__" + inner + "__"
+						}
+						text = "`" + inner + "`"
 					}
 					if style.Link != nil && style.Link.Url != "" {
 						text = "[" + strings.TrimSpace(text) + "](" + style.Link.Url + ")"
@@ -572,6 +621,121 @@ type markdownSegment struct {
 	dateValue         string // specific date in YYYY-MM-DD format, empty means @today
 	isPersonField     bool   // true if this should be a person field (@(name or email))
 	personIdentifier  string // name or email for person field
+	isInlineCode      bool   // true if text should be wrapped in single backticks
+	isCodeBlock       bool   // true if text is part of a code block (triple backticks)
+	codeLanguage      string // language identifier for code block (e.g., ```language syntax)
+}
+
+// CodeAnnotations holds code detection results for a document.
+type CodeAnnotations struct {
+	// Maps "paragraphIndex:textRunIndex" to inline code status
+	InlineCode map[string]bool
+
+	// Maps paragraph index to code block status
+	CodeBlocks map[int]bool
+
+	// Maps paragraph index to language hint (future use)
+	Languages map[int]string
+}
+
+// makeInlineCodeKey creates a composite key for inline code annotation.
+func makeInlineCodeKey(paraIndex, runIndex int) string {
+	return fmt.Sprintf("%d:%d", paraIndex, runIndex)
+}
+
+// monospaceFontSet contains lowercase monospace font names for efficient lookup.
+var monospaceFontSet = func() map[string]bool {
+	fonts := []string{"courier new", "courier", "consolas", "monaco", "menlo",
+		"source code pro", "sf mono", "inconsolata", "roboto mono"}
+	m := make(map[string]bool, len(fonts))
+	for _, f := range fonts {
+		m[f] = true
+	}
+	return m
+}()
+
+// isMonospaceFont checks if the given font family is a monospace font.
+// Comparison is case-insensitive.
+func isMonospaceFont(fontFamily string) bool {
+	if fontFamily == "" {
+		return false
+	}
+	return monospaceFontSet[strings.ToLower(fontFamily)]
+}
+
+// detectCode analyzes a Google Docs document and identifies code blocks and
+// inline code based on monospace font usage.
+//
+// A paragraph where ALL text runs use monospace fonts is marked as a code block.
+// A paragraph where SOME text runs use monospace fonts has those runs marked as
+// inline code. Headings (HEADING_1..6, TITLE, SUBTITLE) are skipped even if
+// they use monospace fonts, because heading formatting takes precedence.
+func detectCode(doc *docs.Document) *CodeAnnotations {
+	annotations := &CodeAnnotations{
+		InlineCode: make(map[string]bool),
+		CodeBlocks: make(map[int]bool),
+		Languages:  make(map[int]string),
+	}
+
+	if doc.Body == nil || doc.Body.Content == nil {
+		return annotations
+	}
+
+	for i, elem := range doc.Body.Content {
+		if elem.Paragraph == nil {
+			continue
+		}
+		para := elem.Paragraph
+
+		// Skip headings: heading formatting takes precedence over code detection.
+		if para.ParagraphStyle != nil {
+			switch para.ParagraphStyle.NamedStyleType {
+			case "HEADING_1", "HEADING_2", "HEADING_3",
+				"HEADING_4", "HEADING_5", "HEADING_6",
+				"TITLE", "SUBTITLE":
+				continue
+			}
+		}
+
+		// Count monospace vs total text runs.
+		totalRuns := 0
+		monoRuns := 0
+		monoIndices := []int{}
+
+		for j, pe := range para.Elements {
+			if pe.TextRun == nil {
+				continue
+			}
+			// Skip runs that are only whitespace (e.g., trailing newlines).
+			content := strings.TrimSpace(pe.TextRun.Content)
+			if content == "" {
+				continue
+			}
+			totalRuns++
+			if pe.TextRun.TextStyle != nil &&
+				pe.TextRun.TextStyle.WeightedFontFamily != nil &&
+				isMonospaceFont(pe.TextRun.TextStyle.WeightedFontFamily.FontFamily) {
+				monoRuns++
+				monoIndices = append(monoIndices, j)
+			}
+		}
+
+		if totalRuns == 0 {
+			continue
+		}
+
+		if monoRuns == totalRuns {
+			// All text runs are monospace: mark as code block.
+			annotations.CodeBlocks[i] = true
+		} else if monoRuns > 0 {
+			// Some text runs are monospace: mark specific runs as inline code.
+			for _, j := range monoIndices {
+				annotations.InlineCode[makeInlineCodeKey(i, j)] = true
+			}
+		}
+	}
+
+	return annotations
 }
 
 // indentDepth converts a leading whitespace string to a nesting depth.
@@ -606,8 +770,47 @@ func parseMarkdown(markdown string) []markdownSegment {
 	lastWasHeading := false
 	nextHeadingLineID := 1
 
+	// Code block state tracking
+	inCodeBlock := false
+	var codeBlockLines []string
+	var codeLanguage string
+
 	for _, line := range lines {
 		trimmedLine := strings.TrimSpace(line)
+
+		// Check for code fence boundaries (``` with optional language)
+		if strings.HasPrefix(trimmedLine, "```") {
+			if !inCodeBlock {
+				// Opening fence: start accumulating code block lines
+				inCodeBlock = true
+				codeBlockLines = nil
+				codeLanguage = strings.TrimSpace(trimmedLine[3:])
+				if strings.ContainsAny(codeLanguage, " \t") {
+					codeLanguage = strings.Fields(codeLanguage)[0]
+				}
+				lastWasHeading = false
+				continue
+			}
+			// Closing fence: emit accumulated code block as a segment
+			inCodeBlock = false
+			if len(codeBlockLines) > 0 {
+				codeText := strings.Join(codeBlockLines, "\n") + "\n"
+				segments = append(segments, markdownSegment{
+					text:         codeText,
+					isCodeBlock:  true,
+					codeLanguage: codeLanguage,
+				})
+			}
+			codeBlockLines = nil
+			codeLanguage = ""
+			continue
+		}
+
+		// If inside a code block, accumulate lines verbatim
+		if inCodeBlock {
+			codeBlockLines = append(codeBlockLines, line)
+			continue
+		}
 
 		if trimmedLine == "" {
 			if lastWasHeading {
@@ -685,6 +888,16 @@ func parseMarkdown(markdown string) []markdownSegment {
 		segments = append(segments, parseSimpleFormatting(line+"\n")...)
 	}
 
+	// Handle unclosed code fence: emit accumulated content as code block
+	if inCodeBlock && len(codeBlockLines) > 0 {
+		codeText := strings.Join(codeBlockLines, "\n") + "\n"
+		segments = append(segments, markdownSegment{
+			text:         codeText,
+			isCodeBlock:  true,
+			codeLanguage: codeLanguage,
+		})
+	}
+
 	return segments
 }
 
@@ -704,6 +917,24 @@ func parseSimpleFormattingWithDepth(text string, depth int) []markdownSegment {
 	pos := 0
 
 	for pos < len(text) {
+		// Check for `inline code` (single backtick, not triple)
+		if text[pos] == '`' && !strings.HasPrefix(text[pos:], "```") {
+			endPos := strings.Index(text[pos+1:], "`")
+			if endPos != -1 {
+				endPos += pos + 1
+				// Parse formatting INSIDE backticks
+				codeText := text[pos+1 : endPos]
+				innerSegs := parseSimpleFormattingWithDepth(codeText, depth+1)
+				// Mark ALL inner segments as inline code
+				for i := range innerSegs {
+					innerSegs[i].isInlineCode = true
+				}
+				segments = append(segments, innerSegs...)
+				pos = endPos + 1
+				continue
+			}
+		}
+
 		// Check for ~~strikethrough~~
 		if strings.HasPrefix(text[pos:], "~~") {
 			endPos := strings.Index(text[pos+2:], "~~")
@@ -895,7 +1126,10 @@ func mergeSegments(segments []markdownSegment) []markdownSegment {
 			curr.unorderedListItem == prev.unorderedListItem &&
 			curr.listDepth == prev.listDepth &&
 			!curr.isDateField && !prev.isDateField &&
-			!curr.isPersonField && !prev.isPersonField {
+			!curr.isPersonField && !prev.isPersonField &&
+			curr.isInlineCode == prev.isInlineCode &&
+			curr.isCodeBlock == prev.isCodeBlock &&
+			curr.codeLanguage == prev.codeLanguage {
 			// Merge by concatenating text
 			prev.text += curr.text
 		} else {
@@ -943,6 +1177,71 @@ func convertMarkdownToRequests(segments []markdownSegment, startIndex int64) []*
 
 	for i, seg := range segments {
 		if seg.text == "" && !seg.isDateField && !seg.isPersonField {
+			continue
+		}
+
+		// Handle code blocks (triple backticks) - insert text then apply Courier New font
+		if seg.isCodeBlock {
+			// Close any open list before code block
+			if currentListStart >= 0 {
+				listRanges = append(listRanges, listRange{
+					startIndex: currentListStart,
+					endIndex:   currentIndex,
+					isOrdered:  currentListIsOrdered,
+				})
+				currentListStart = -1
+			}
+
+			insertText := seg.text
+			// Append \n if this is not the last segment and text doesn't already end with \n
+			if i < len(segments)-1 && !strings.HasSuffix(insertText, "\n") {
+				insertText += "\n"
+			}
+
+			requests = append(requests, &docs.Request{
+				InsertText: &docs.InsertTextRequest{
+					Text:     insertText,
+					Location: &docs.Location{Index: currentIndex},
+				},
+			})
+
+			endIndex := currentIndex + int64(utf8.RuneCountInString(insertText))
+
+			// Apply Courier New font and clear formatting flags
+			requests = append(requests, &docs.Request{
+				UpdateTextStyle: &docs.UpdateTextStyleRequest{
+					Range: &docs.Range{
+						StartIndex: currentIndex,
+						EndIndex:   endIndex,
+					},
+					TextStyle: &docs.TextStyle{
+						WeightedFontFamily: &docs.WeightedFontFamily{
+							FontFamily: "Courier New",
+						},
+						Bold:          false,
+						Italic:        false,
+						Underline:     false,
+						Strikethrough: false,
+					},
+					Fields: "weightedFontFamily,bold,italic,underline,strikethrough",
+				},
+			})
+
+			// Set paragraph style to NORMAL_TEXT
+			requests = append(requests, &docs.Request{
+				UpdateParagraphStyle: &docs.UpdateParagraphStyleRequest{
+					ParagraphStyle: &docs.ParagraphStyle{
+						NamedStyleType: "NORMAL_TEXT",
+					},
+					Range: &docs.Range{
+						StartIndex: currentIndex,
+						EndIndex:   endIndex,
+					},
+					Fields: "namedStyleType",
+				},
+			})
+
+			currentIndex = endIndex
 			continue
 		}
 
@@ -1233,23 +1532,49 @@ func convertMarkdownToRequests(segments []markdownSegment, startIndex int64) []*
 
 		// Prepare text style request - ALWAYS apply to ensure formatting is explicitly reset
 		// This prevents bold/italic/underline/strikethrough from "sticking" to subsequent text
-		textStyle := &docs.TextStyle{
-			Bold:          seg.bold,
-			Italic:        seg.italic,
-			Underline:     seg.underline,
-			Strikethrough: seg.strikethrough,
-		}
+		var textStyle *docs.TextStyle
+		var fields []string
 
-		if seg.linkURL != "" {
-			textStyle.Link = &docs.Link{
-				Url: seg.linkURL,
+		if seg.isInlineCode {
+			// Inline code: apply Courier New font, preserve bold/italic/underline
+			textStyle = &docs.TextStyle{
+				WeightedFontFamily: &docs.WeightedFontFamily{
+					FontFamily: "Courier New",
+				},
+				Bold:          seg.bold,
+				Italic:        seg.italic,
+				Underline:     seg.underline,
+				Strikethrough: seg.strikethrough,
 			}
-		}
+			fields = []string{"weightedFontFamily", "bold", "italic", "underline", "strikethrough"}
+			if seg.linkURL != "" {
+				textStyle.Link = &docs.Link{
+					Url: seg.linkURL,
+				}
+				fields = append(fields, "link")
+			}
+		} else {
+			textStyle = &docs.TextStyle{
+				Bold:          seg.bold,
+				Italic:        seg.italic,
+				Underline:     seg.underline,
+				Strikethrough: seg.strikethrough,
+			}
 
-		// Always specify all basic formatting fields to ensure proper reset
-		fields := []string{"bold", "italic", "underline", "strikethrough"}
-		if seg.linkURL != "" {
-			fields = append(fields, "link")
+			if seg.linkURL != "" {
+				textStyle.Link = &docs.Link{
+					Url: seg.linkURL,
+				}
+			}
+
+			// Always specify all basic formatting fields to ensure proper reset.
+			// Include weightedFontFamily so that any previously applied
+			// monospace font (e.g. from an adjacent inline-code segment) is
+			// cleared and the document default font is restored.
+			fields = []string{"weightedFontFamily", "bold", "italic", "underline", "strikethrough"}
+			if seg.linkURL != "" {
+				fields = append(fields, "link")
+			}
 		}
 
 		textStyleRequest := &docs.Request{
