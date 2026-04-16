@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"google.golang.org/api/docs/v1"
 )
 
 func TestExtractDocumentID(t *testing.T) {
@@ -1639,4 +1641,1931 @@ func TestSaveDocumentFile(t *testing.T) {
 			t.Errorf("permissions = %o, want 0600", perm)
 		}
 	})
+}
+
+func TestCodeAnnotations(t *testing.T) {
+	annotations := &CodeAnnotations{
+		InlineCode: make(map[string]bool),
+		CodeBlocks: make(map[int]bool),
+		Languages:  make(map[int]string),
+	}
+
+	// Test inline code key
+	key := makeInlineCodeKey(0, 1)
+	annotations.InlineCode[key] = true
+
+	if !annotations.InlineCode["0:1"] {
+		t.Errorf("Expected inline code at 0:1")
+	}
+
+	// Test code block
+	annotations.CodeBlocks[2] = true
+	if !annotations.CodeBlocks[2] {
+		t.Errorf("Expected code block at paragraph 2")
+	}
+}
+
+func TestIsMonospaceFont(t *testing.T) {
+	tests := []struct {
+		font     string
+		expected bool
+	}{
+		{"Courier New", true},
+		{"Courier", true},
+		{"Consolas", true},
+		{"Monaco", true},
+		{"Menlo", true},
+		{"Source Code Pro", true},
+		{"SF Mono", true},
+		{"Inconsolata", true},
+		{"Roboto Mono", true},
+		{"courier new", true}, // case insensitive
+		{"CONSOLAS", true},    // case insensitive
+		{"Arial", false},
+		{"Times New Roman", false},
+		{"Helvetica", false},
+		{"", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.font, func(t *testing.T) {
+			result := isMonospaceFont(tt.font)
+			if result != tt.expected {
+				t.Errorf("isMonospaceFont(%q) = %v, want %v", tt.font, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestCodeSegmentMerging(t *testing.T) {
+	t.Run("inline code segments do not merge with plain", func(t *testing.T) {
+		segments := []markdownSegment{
+			{text: "plain "},
+			{text: "code", isInlineCode: true},
+			{text: " plain"},
+		}
+		merged := mergeSegments(segments)
+		if len(merged) != 3 {
+			t.Errorf("expected 3 segments, got %d", len(merged))
+		}
+	})
+
+	t.Run("same inline code segments merge", func(t *testing.T) {
+		segments := []markdownSegment{
+			{text: "co", isInlineCode: true},
+			{text: "de", isInlineCode: true},
+		}
+		merged := mergeSegments(segments)
+		if len(merged) != 1 {
+			t.Errorf("expected 1 merged segment, got %d", len(merged))
+		}
+		if merged[0].text != "code" {
+			t.Errorf("expected merged text %q, got %q", "code", merged[0].text)
+		}
+	})
+
+	t.Run("code block segments do not merge with inline code", func(t *testing.T) {
+		segments := []markdownSegment{
+			{text: "inline", isInlineCode: true},
+			{text: "block", isCodeBlock: true},
+		}
+		merged := mergeSegments(segments)
+		if len(merged) != 2 {
+			t.Errorf("expected 2 segments, got %d", len(merged))
+		}
+	})
+
+	t.Run("different code languages do not merge", func(t *testing.T) {
+		segments := []markdownSegment{
+			{text: "go code", isCodeBlock: true, codeLanguage: "go"},
+			{text: "py code", isCodeBlock: true, codeLanguage: "python"},
+		}
+		merged := mergeSegments(segments)
+		if len(merged) != 2 {
+			t.Errorf("expected 2 segments, got %d", len(merged))
+		}
+	})
+}
+
+func TestDetectCode(t *testing.T) {
+	t.Run("all-monospace paragraph detected as code block", func(t *testing.T) {
+		doc := &docs.Document{
+			Body: &docs.Body{
+				Content: []*docs.StructuralElement{
+					{
+						Paragraph: &docs.Paragraph{
+							ParagraphStyle: &docs.ParagraphStyle{
+								NamedStyleType: "NORMAL_TEXT",
+							},
+							Elements: []*docs.ParagraphElement{
+								{
+									TextRun: &docs.TextRun{
+										Content: "fmt.Println(\"hello\")",
+										TextStyle: &docs.TextStyle{
+											WeightedFontFamily: &docs.WeightedFontFamily{
+												FontFamily: "Courier New",
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		annotations := detectCode(doc)
+
+		if !annotations.CodeBlocks[0] {
+			t.Errorf("expected paragraph 0 to be detected as code block")
+		}
+		if len(annotations.InlineCode) != 0 {
+			t.Errorf("expected no inline code, got %d entries", len(annotations.InlineCode))
+		}
+	})
+
+	t.Run("mixed monospace paragraph detected as inline code", func(t *testing.T) {
+		doc := &docs.Document{
+			Body: &docs.Body{
+				Content: []*docs.StructuralElement{
+					{
+						Paragraph: &docs.Paragraph{
+							ParagraphStyle: &docs.ParagraphStyle{
+								NamedStyleType: "NORMAL_TEXT",
+							},
+							Elements: []*docs.ParagraphElement{
+								{
+									TextRun: &docs.TextRun{
+										Content: "Use the ",
+										TextStyle: &docs.TextStyle{
+											WeightedFontFamily: &docs.WeightedFontFamily{
+												FontFamily: "Arial",
+											},
+										},
+									},
+								},
+								{
+									TextRun: &docs.TextRun{
+										Content: "fmt.Println",
+										TextStyle: &docs.TextStyle{
+											WeightedFontFamily: &docs.WeightedFontFamily{
+												FontFamily: "Courier New",
+											},
+										},
+									},
+								},
+								{
+									TextRun: &docs.TextRun{
+										Content: " function.",
+										TextStyle: &docs.TextStyle{
+											WeightedFontFamily: &docs.WeightedFontFamily{
+												FontFamily: "Arial",
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		annotations := detectCode(doc)
+
+		if annotations.CodeBlocks[0] {
+			t.Errorf("expected paragraph 0 NOT to be a code block")
+		}
+		expectedKey := makeInlineCodeKey(0, 1)
+		if !annotations.InlineCode[expectedKey] {
+			t.Errorf("expected inline code at key %q", expectedKey)
+		}
+		if len(annotations.InlineCode) != 1 {
+			t.Errorf("expected exactly 1 inline code entry, got %d", len(annotations.InlineCode))
+		}
+	})
+
+	t.Run("heading with monospace font is not detected as code", func(t *testing.T) {
+		doc := &docs.Document{
+			Body: &docs.Body{
+				Content: []*docs.StructuralElement{
+					{
+						Paragraph: &docs.Paragraph{
+							ParagraphStyle: &docs.ParagraphStyle{
+								NamedStyleType: "HEADING_1",
+							},
+							Elements: []*docs.ParagraphElement{
+								{
+									TextRun: &docs.TextRun{
+										Content: "Code Examples",
+										TextStyle: &docs.TextStyle{
+											WeightedFontFamily: &docs.WeightedFontFamily{
+												FontFamily: "Courier New",
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		annotations := detectCode(doc)
+
+		if annotations.CodeBlocks[0] {
+			t.Errorf("heading should NOT be detected as code block")
+		}
+		if len(annotations.InlineCode) != 0 {
+			t.Errorf("heading should NOT have inline code, got %d entries", len(annotations.InlineCode))
+		}
+	})
+
+	t.Run("TITLE with monospace font is not detected as code", func(t *testing.T) {
+		doc := &docs.Document{
+			Body: &docs.Body{
+				Content: []*docs.StructuralElement{
+					{
+						Paragraph: &docs.Paragraph{
+							ParagraphStyle: &docs.ParagraphStyle{
+								NamedStyleType: "TITLE",
+							},
+							Elements: []*docs.ParagraphElement{
+								{
+									TextRun: &docs.TextRun{
+										Content: "My Document Title",
+										TextStyle: &docs.TextStyle{
+											WeightedFontFamily: &docs.WeightedFontFamily{
+												FontFamily: "Consolas",
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		annotations := detectCode(doc)
+
+		if annotations.CodeBlocks[0] {
+			t.Errorf("TITLE should NOT be detected as code block")
+		}
+		if len(annotations.InlineCode) != 0 {
+			t.Errorf("TITLE should NOT have inline code, got %d entries", len(annotations.InlineCode))
+		}
+	})
+
+	t.Run("SUBTITLE with monospace font is not detected as code", func(t *testing.T) {
+		doc := &docs.Document{
+			Body: &docs.Body{
+				Content: []*docs.StructuralElement{
+					{
+						Paragraph: &docs.Paragraph{
+							ParagraphStyle: &docs.ParagraphStyle{
+								NamedStyleType: "SUBTITLE",
+							},
+							Elements: []*docs.ParagraphElement{
+								{
+									TextRun: &docs.TextRun{
+										Content: "A subtitle",
+										TextStyle: &docs.TextStyle{
+											WeightedFontFamily: &docs.WeightedFontFamily{
+												FontFamily: "Monaco",
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		annotations := detectCode(doc)
+
+		if annotations.CodeBlocks[0] {
+			t.Errorf("SUBTITLE should NOT be detected as code block")
+		}
+		if len(annotations.InlineCode) != 0 {
+			t.Errorf("SUBTITLE should NOT have inline code, got %d entries", len(annotations.InlineCode))
+		}
+	})
+
+	t.Run("nil body returns empty annotations", func(t *testing.T) {
+		doc := &docs.Document{}
+
+		annotations := detectCode(doc)
+
+		if len(annotations.CodeBlocks) != 0 {
+			t.Errorf("expected no code blocks, got %d", len(annotations.CodeBlocks))
+		}
+		if len(annotations.InlineCode) != 0 {
+			t.Errorf("expected no inline code, got %d", len(annotations.InlineCode))
+		}
+	})
+
+	t.Run("paragraph with no text runs is skipped", func(t *testing.T) {
+		doc := &docs.Document{
+			Body: &docs.Body{
+				Content: []*docs.StructuralElement{
+					{
+						Paragraph: &docs.Paragraph{
+							ParagraphStyle: &docs.ParagraphStyle{
+								NamedStyleType: "NORMAL_TEXT",
+							},
+							Elements: []*docs.ParagraphElement{
+								{
+									TextRun: &docs.TextRun{
+										Content:   "\n",
+										TextStyle: &docs.TextStyle{},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		annotations := detectCode(doc)
+
+		if len(annotations.CodeBlocks) != 0 {
+			t.Errorf("expected no code blocks for whitespace-only paragraph")
+		}
+	})
+
+	t.Run("multiple paragraphs with mixed code types", func(t *testing.T) {
+		doc := &docs.Document{
+			Body: &docs.Body{
+				Content: []*docs.StructuralElement{
+					// Paragraph 0: normal text
+					{
+						Paragraph: &docs.Paragraph{
+							ParagraphStyle: &docs.ParagraphStyle{
+								NamedStyleType: "NORMAL_TEXT",
+							},
+							Elements: []*docs.ParagraphElement{
+								{
+									TextRun: &docs.TextRun{
+										Content: "Some normal text.",
+										TextStyle: &docs.TextStyle{
+											WeightedFontFamily: &docs.WeightedFontFamily{
+												FontFamily: "Arial",
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+					// Paragraph 1: code block (all monospace)
+					{
+						Paragraph: &docs.Paragraph{
+							ParagraphStyle: &docs.ParagraphStyle{
+								NamedStyleType: "NORMAL_TEXT",
+							},
+							Elements: []*docs.ParagraphElement{
+								{
+									TextRun: &docs.TextRun{
+										Content: "x := 42",
+										TextStyle: &docs.TextStyle{
+											WeightedFontFamily: &docs.WeightedFontFamily{
+												FontFamily: "Courier New",
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+					// Paragraph 2: inline code (mixed)
+					{
+						Paragraph: &docs.Paragraph{
+							ParagraphStyle: &docs.ParagraphStyle{
+								NamedStyleType: "NORMAL_TEXT",
+							},
+							Elements: []*docs.ParagraphElement{
+								{
+									TextRun: &docs.TextRun{
+										Content: "Call ",
+										TextStyle: &docs.TextStyle{
+											WeightedFontFamily: &docs.WeightedFontFamily{
+												FontFamily: "Arial",
+											},
+										},
+									},
+								},
+								{
+									TextRun: &docs.TextRun{
+										Content: "foo()",
+										TextStyle: &docs.TextStyle{
+											WeightedFontFamily: &docs.WeightedFontFamily{
+												FontFamily: "Roboto Mono",
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		annotations := detectCode(doc)
+
+		// Paragraph 0: not code
+		if annotations.CodeBlocks[0] {
+			t.Errorf("paragraph 0 should NOT be a code block")
+		}
+		// Paragraph 1: code block
+		if !annotations.CodeBlocks[1] {
+			t.Errorf("paragraph 1 should be a code block")
+		}
+		// Paragraph 2: inline code at run 1
+		if annotations.CodeBlocks[2] {
+			t.Errorf("paragraph 2 should NOT be a code block")
+		}
+		inlineKey := makeInlineCodeKey(2, 1)
+		if !annotations.InlineCode[inlineKey] {
+			t.Errorf("expected inline code at key %q", inlineKey)
+		}
+		// Run 0 of paragraph 2 should NOT be inline code
+		nonCodeKey := makeInlineCodeKey(2, 0)
+		if annotations.InlineCode[nonCodeKey] {
+			t.Errorf("run 0 of paragraph 2 should NOT be inline code")
+		}
+	})
+}
+
+func TestExtractMarkdown_CodeBlock(t *testing.T) {
+	t.Run("multi-line code block", func(t *testing.T) {
+		doc := &docs.Document{
+			Body: &docs.Body{
+				Content: []*docs.StructuralElement{
+					{
+						Paragraph: &docs.Paragraph{
+							Elements: []*docs.ParagraphElement{
+								{
+									TextRun: &docs.TextRun{
+										Content: "function hello() {\n",
+										TextStyle: &docs.TextStyle{
+											WeightedFontFamily: &docs.WeightedFontFamily{
+												FontFamily: "Courier New",
+											},
+										},
+									},
+								},
+								{
+									TextRun: &docs.TextRun{
+										Content: "    return \"world\";\n",
+										TextStyle: &docs.TextStyle{
+											WeightedFontFamily: &docs.WeightedFontFamily{
+												FontFamily: "Courier New",
+											},
+										},
+									},
+								},
+								{
+									TextRun: &docs.TextRun{
+										Content: "}\n",
+										TextStyle: &docs.TextStyle{
+											WeightedFontFamily: &docs.WeightedFontFamily{
+												FontFamily: "Courier New",
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		markdown := extractMarkdown(doc)
+		expected := "```\nfunction hello() {\n    return \"world\";\n}\n```\n\n"
+
+		if markdown != expected {
+			t.Errorf("Expected:\n%q\nGot:\n%q", expected, markdown)
+		}
+	})
+
+	t.Run("code block strips bold formatting", func(t *testing.T) {
+		// Code blocks should extract plain text, ignoring bold/italic styling.
+		doc := &docs.Document{
+			Body: &docs.Body{
+				Content: []*docs.StructuralElement{
+					{
+						Paragraph: &docs.Paragraph{
+							Elements: []*docs.ParagraphElement{
+								{
+									TextRun: &docs.TextRun{
+										Content: "bold code\n",
+										TextStyle: &docs.TextStyle{
+											Bold: true,
+											WeightedFontFamily: &docs.WeightedFontFamily{
+												FontFamily: "Courier New",
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		markdown := extractMarkdown(doc)
+		expected := "```\nbold code\n```\n\n"
+
+		if markdown != expected {
+			t.Errorf("Expected:\n%q\nGot:\n%q", expected, markdown)
+		}
+	})
+
+	t.Run("code block alongside normal paragraph", func(t *testing.T) {
+		doc := &docs.Document{
+			Body: &docs.Body{
+				Content: []*docs.StructuralElement{
+					{
+						Paragraph: &docs.Paragraph{
+							ParagraphStyle: &docs.ParagraphStyle{
+								NamedStyleType: "NORMAL_TEXT",
+							},
+							Elements: []*docs.ParagraphElement{
+								{
+									TextRun: &docs.TextRun{
+										Content: "Here is some code:\n",
+										TextStyle: &docs.TextStyle{
+											WeightedFontFamily: &docs.WeightedFontFamily{
+												FontFamily: "Arial",
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+					{
+						Paragraph: &docs.Paragraph{
+							Elements: []*docs.ParagraphElement{
+								{
+									TextRun: &docs.TextRun{
+										Content: "x = 42\n",
+										TextStyle: &docs.TextStyle{
+											WeightedFontFamily: &docs.WeightedFontFamily{
+												FontFamily: "Courier New",
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		markdown := extractMarkdown(doc)
+		expected := "Here is some code:\n```\nx = 42\n```\n\n"
+
+		if markdown != expected {
+			t.Errorf("Expected:\n%q\nGot:\n%q", expected, markdown)
+		}
+	})
+
+	t.Run("single line code block without trailing newline", func(t *testing.T) {
+		doc := &docs.Document{
+			Body: &docs.Body{
+				Content: []*docs.StructuralElement{
+					{
+						Paragraph: &docs.Paragraph{
+							Elements: []*docs.ParagraphElement{
+								{
+									TextRun: &docs.TextRun{
+										Content: "echo hello",
+										TextStyle: &docs.TextStyle{
+											WeightedFontFamily: &docs.WeightedFontFamily{
+												FontFamily: "Consolas",
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		markdown := extractMarkdown(doc)
+		// Should add a trailing newline before the closing fence
+		expected := "```\necho hello\n```\n\n"
+
+		if markdown != expected {
+			t.Errorf("Expected:\n%q\nGot:\n%q", expected, markdown)
+		}
+	})
+
+	t.Run("code block after heading", func(t *testing.T) {
+		doc := &docs.Document{
+			Body: &docs.Body{
+				Content: []*docs.StructuralElement{
+					{
+						Paragraph: &docs.Paragraph{
+							ParagraphStyle: &docs.ParagraphStyle{
+								NamedStyleType: "HEADING_2",
+							},
+							Elements: []*docs.ParagraphElement{
+								{
+									TextRun: &docs.TextRun{
+										Content: "Example\n",
+										TextStyle: &docs.TextStyle{
+											WeightedFontFamily: &docs.WeightedFontFamily{
+												FontFamily: "Courier New",
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+					{
+						Paragraph: &docs.Paragraph{
+							Elements: []*docs.ParagraphElement{
+								{
+									TextRun: &docs.TextRun{
+										Content: "print(1)\n",
+										TextStyle: &docs.TextStyle{
+											WeightedFontFamily: &docs.WeightedFontFamily{
+												FontFamily: "Courier New",
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		markdown := extractMarkdown(doc)
+		// Heading should render as heading (not code), code block follows
+		expected := "## Example\n\n```\nprint(1)\n```\n\n"
+
+		if markdown != expected {
+			t.Errorf("Expected:\n%q\nGot:\n%q", expected, markdown)
+		}
+	})
+
+	t.Run("non-monospace paragraph is not a code block", func(t *testing.T) {
+		doc := &docs.Document{
+			Body: &docs.Body{
+				Content: []*docs.StructuralElement{
+					{
+						Paragraph: &docs.Paragraph{
+							Elements: []*docs.ParagraphElement{
+								{
+									TextRun: &docs.TextRun{
+										Content: "This is normal text.\n",
+										TextStyle: &docs.TextStyle{
+											WeightedFontFamily: &docs.WeightedFontFamily{
+												FontFamily: "Arial",
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		markdown := extractMarkdown(doc)
+
+		if strings.Contains(markdown, "```") {
+			t.Errorf("Normal text should not be wrapped in code fences, got:\n%q", markdown)
+		}
+		if !strings.Contains(markdown, "This is normal text.") {
+			t.Errorf("Expected normal text in output, got:\n%q", markdown)
+		}
+	})
+}
+
+func TestExtractMarkdown_InlineCode(t *testing.T) {
+	t.Run("single inline code segment", func(t *testing.T) {
+		// Paragraph: "Use the " (Arial) + "fmt.Println" (Courier New) + " function.\n" (Arial)
+		doc := &docs.Document{
+			Body: &docs.Body{
+				Content: []*docs.StructuralElement{
+					{
+						Paragraph: &docs.Paragraph{
+							ParagraphStyle: &docs.ParagraphStyle{
+								NamedStyleType: "NORMAL_TEXT",
+							},
+							Elements: []*docs.ParagraphElement{
+								{
+									TextRun: &docs.TextRun{
+										Content: "Use the ",
+										TextStyle: &docs.TextStyle{
+											WeightedFontFamily: &docs.WeightedFontFamily{
+												FontFamily: "Arial",
+											},
+										},
+									},
+								},
+								{
+									TextRun: &docs.TextRun{
+										Content: "fmt.Println",
+										TextStyle: &docs.TextStyle{
+											WeightedFontFamily: &docs.WeightedFontFamily{
+												FontFamily: "Courier New",
+											},
+										},
+									},
+								},
+								{
+									TextRun: &docs.TextRun{
+										Content: " function.\n",
+										TextStyle: &docs.TextStyle{
+											WeightedFontFamily: &docs.WeightedFontFamily{
+												FontFamily: "Arial",
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		markdown := extractMarkdown(doc)
+		expected := "Use the `fmt.Println` function.\n"
+
+		if markdown != expected {
+			t.Errorf("Expected:\n%q\nGot:\n%q", expected, markdown)
+		}
+	})
+
+	t.Run("inline code preserves bold and italic formatting", func(t *testing.T) {
+		// Inline code with bold+italic should be wrapped in backticks WITH formatting markers
+		doc := &docs.Document{
+			Body: &docs.Body{
+				Content: []*docs.StructuralElement{
+					{
+						Paragraph: &docs.Paragraph{
+							ParagraphStyle: &docs.ParagraphStyle{
+								NamedStyleType: "NORMAL_TEXT",
+							},
+							Elements: []*docs.ParagraphElement{
+								{
+									TextRun: &docs.TextRun{
+										Content: "Run ",
+										TextStyle: &docs.TextStyle{
+											WeightedFontFamily: &docs.WeightedFontFamily{
+												FontFamily: "Arial",
+											},
+										},
+									},
+								},
+								{
+									TextRun: &docs.TextRun{
+										Content: "go test",
+										TextStyle: &docs.TextStyle{
+											Bold:   true,
+											Italic: true,
+											WeightedFontFamily: &docs.WeightedFontFamily{
+												FontFamily: "Courier New",
+											},
+										},
+									},
+								},
+								{
+									TextRun: &docs.TextRun{
+										Content: " now.\n",
+										TextStyle: &docs.TextStyle{
+											WeightedFontFamily: &docs.WeightedFontFamily{
+												FontFamily: "Arial",
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		markdown := extractMarkdown(doc)
+		expected := "Run `***go test***` now.\n"
+
+		if markdown != expected {
+			t.Errorf("Expected:\n%q\nGot:\n%q", expected, markdown)
+		}
+	})
+
+	t.Run("inline code preserves link formatting", func(t *testing.T) {
+		// Inline code with underline and link should preserve the link
+		doc := &docs.Document{
+			Body: &docs.Body{
+				Content: []*docs.StructuralElement{
+					{
+						Paragraph: &docs.Paragraph{
+							ParagraphStyle: &docs.ParagraphStyle{
+								NamedStyleType: "NORMAL_TEXT",
+							},
+							Elements: []*docs.ParagraphElement{
+								{
+									TextRun: &docs.TextRun{
+										Content: "See ",
+										TextStyle: &docs.TextStyle{
+											WeightedFontFamily: &docs.WeightedFontFamily{
+												FontFamily: "Arial",
+											},
+										},
+									},
+								},
+								{
+									TextRun: &docs.TextRun{
+										Content: "http.Get",
+										TextStyle: &docs.TextStyle{
+											Underline: true,
+											Link: &docs.Link{
+												Url: "https://pkg.go.dev/net/http#Get",
+											},
+											WeightedFontFamily: &docs.WeightedFontFamily{
+												FontFamily: "Courier New",
+											},
+										},
+									},
+								},
+								{
+									TextRun: &docs.TextRun{
+										Content: " docs.\n",
+										TextStyle: &docs.TextStyle{
+											WeightedFontFamily: &docs.WeightedFontFamily{
+												FontFamily: "Arial",
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		markdown := extractMarkdown(doc)
+		expected := "See [`http.Get`](https://pkg.go.dev/net/http#Get) docs.\n"
+
+		if markdown != expected {
+			t.Errorf("Expected:\n%q\nGot:\n%q", expected, markdown)
+		}
+	})
+
+	t.Run("multiple inline code segments in same paragraph", func(t *testing.T) {
+		// "Call " (Arial) + "foo()" (Courier) + " and " (Arial) + "bar()" (Courier) + " functions.\n" (Arial)
+		doc := &docs.Document{
+			Body: &docs.Body{
+				Content: []*docs.StructuralElement{
+					{
+						Paragraph: &docs.Paragraph{
+							ParagraphStyle: &docs.ParagraphStyle{
+								NamedStyleType: "NORMAL_TEXT",
+							},
+							Elements: []*docs.ParagraphElement{
+								{
+									TextRun: &docs.TextRun{
+										Content: "Call ",
+										TextStyle: &docs.TextStyle{
+											WeightedFontFamily: &docs.WeightedFontFamily{
+												FontFamily: "Arial",
+											},
+										},
+									},
+								},
+								{
+									TextRun: &docs.TextRun{
+										Content: "foo()",
+										TextStyle: &docs.TextStyle{
+											WeightedFontFamily: &docs.WeightedFontFamily{
+												FontFamily: "Courier New",
+											},
+										},
+									},
+								},
+								{
+									TextRun: &docs.TextRun{
+										Content: " and ",
+										TextStyle: &docs.TextStyle{
+											WeightedFontFamily: &docs.WeightedFontFamily{
+												FontFamily: "Arial",
+											},
+										},
+									},
+								},
+								{
+									TextRun: &docs.TextRun{
+										Content: "bar()",
+										TextStyle: &docs.TextStyle{
+											WeightedFontFamily: &docs.WeightedFontFamily{
+												FontFamily: "Courier New",
+											},
+										},
+									},
+								},
+								{
+									TextRun: &docs.TextRun{
+										Content: " functions.\n",
+										TextStyle: &docs.TextStyle{
+											WeightedFontFamily: &docs.WeightedFontFamily{
+												FontFamily: "Arial",
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		markdown := extractMarkdown(doc)
+		expected := "Call `foo()` and `bar()` functions.\n"
+
+		if markdown != expected {
+			t.Errorf("Expected:\n%q\nGot:\n%q", expected, markdown)
+		}
+	})
+
+	t.Run("inline code alongside bold text", func(t *testing.T) {
+		// "Use " (Arial) + "config" (Courier New) + " for " (Arial) + "important" (Arial, bold) + " settings.\n" (Arial)
+		doc := &docs.Document{
+			Body: &docs.Body{
+				Content: []*docs.StructuralElement{
+					{
+						Paragraph: &docs.Paragraph{
+							ParagraphStyle: &docs.ParagraphStyle{
+								NamedStyleType: "NORMAL_TEXT",
+							},
+							Elements: []*docs.ParagraphElement{
+								{
+									TextRun: &docs.TextRun{
+										Content: "Use ",
+										TextStyle: &docs.TextStyle{
+											WeightedFontFamily: &docs.WeightedFontFamily{
+												FontFamily: "Arial",
+											},
+										},
+									},
+								},
+								{
+									TextRun: &docs.TextRun{
+										Content: "config",
+										TextStyle: &docs.TextStyle{
+											WeightedFontFamily: &docs.WeightedFontFamily{
+												FontFamily: "Courier New",
+											},
+										},
+									},
+								},
+								{
+									TextRun: &docs.TextRun{
+										Content: " for ",
+										TextStyle: &docs.TextStyle{
+											WeightedFontFamily: &docs.WeightedFontFamily{
+												FontFamily: "Arial",
+											},
+										},
+									},
+								},
+								{
+									TextRun: &docs.TextRun{
+										Content: "important",
+										TextStyle: &docs.TextStyle{
+											Bold: true,
+											WeightedFontFamily: &docs.WeightedFontFamily{
+												FontFamily: "Arial",
+											},
+										},
+									},
+								},
+								{
+									TextRun: &docs.TextRun{
+										Content: " settings.\n",
+										TextStyle: &docs.TextStyle{
+											WeightedFontFamily: &docs.WeightedFontFamily{
+												FontFamily: "Arial",
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		markdown := extractMarkdown(doc)
+		expected := "Use `config` for **important** settings.\n"
+
+		if markdown != expected {
+			t.Errorf("Expected:\n%q\nGot:\n%q", expected, markdown)
+		}
+	})
+}
+
+func TestParseMarkdown_CodeBlock(t *testing.T) {
+	t.Run("simple code block", func(t *testing.T) {
+		input := "```\nfmt.Println(\"hello\")\n```"
+		segments := parseMarkdown(input)
+
+		foundCodeBlock := false
+		var codeText string
+		for _, seg := range segments {
+			if seg.isCodeBlock {
+				foundCodeBlock = true
+				codeText += seg.text
+			}
+		}
+		if !foundCodeBlock {
+			t.Errorf("expected code block segment, got segments: %+v", segments)
+		}
+		expectedText := "fmt.Println(\"hello\")\n"
+		if codeText != expectedText {
+			t.Errorf("code block text = %q, want %q", codeText, expectedText)
+		}
+	})
+
+	t.Run("multi-line code block", func(t *testing.T) {
+		input := "```\nline1\nline2\nline3\n```"
+		segments := parseMarkdown(input)
+
+		foundCodeBlock := false
+		var codeText string
+		for _, seg := range segments {
+			if seg.isCodeBlock {
+				foundCodeBlock = true
+				codeText += seg.text
+			}
+		}
+		if !foundCodeBlock {
+			t.Errorf("expected code block segment, got segments: %+v", segments)
+		}
+		expectedText := "line1\nline2\nline3\n"
+		if codeText != expectedText {
+			t.Errorf("code block text = %q, want %q", codeText, expectedText)
+		}
+	})
+
+	t.Run("code block preserves no inline formatting", func(t *testing.T) {
+		input := "```\n**not bold** _not italic_\n```"
+		segments := parseMarkdown(input)
+
+		for _, seg := range segments {
+			if seg.isCodeBlock {
+				if seg.bold {
+					t.Error("code block content should not be bold")
+				}
+				if seg.italic {
+					t.Error("code block content should not be italic")
+				}
+			}
+		}
+	})
+
+	t.Run("text before and after code block", func(t *testing.T) {
+		input := "before\n```\ncode\n```\nafter"
+		segments := parseMarkdown(input)
+
+		var beforeText, codeText, afterText string
+		for _, seg := range segments {
+			switch {
+			case seg.isCodeBlock:
+				codeText += seg.text
+			case codeText == "":
+				beforeText += seg.text
+			default:
+				afterText += seg.text
+			}
+		}
+		if beforeText != "before\n" {
+			t.Errorf("before text = %q, want %q", beforeText, "before\n")
+		}
+		if codeText != "code\n" {
+			t.Errorf("code text = %q, want %q", codeText, "code\n")
+		}
+		if afterText != "after\n" {
+			t.Errorf("after text = %q, want %q", afterText, "after\n")
+		}
+	})
+
+	t.Run("empty code block", func(t *testing.T) {
+		input := "```\n```"
+		segments := parseMarkdown(input)
+
+		for _, seg := range segments {
+			if seg.isCodeBlock {
+				t.Errorf("empty code block should not produce code block segment, got: %+v", seg)
+			}
+		}
+	})
+}
+
+func TestParseMarkdown_CodeBlockWithLanguage(t *testing.T) {
+	t.Run("code block with go language", func(t *testing.T) {
+		input := "```go\nfmt.Println(\"hello\")\n```"
+		segments := parseMarkdown(input)
+
+		foundCodeBlock := false
+		var codeText string
+		var lang string
+		for _, seg := range segments {
+			if seg.isCodeBlock {
+				foundCodeBlock = true
+				codeText += seg.text
+				lang = seg.codeLanguage
+			}
+		}
+		if !foundCodeBlock {
+			t.Errorf("expected code block segment, got segments: %+v", segments)
+		}
+		expectedText := "fmt.Println(\"hello\")\n"
+		if codeText != expectedText {
+			t.Errorf("code block text = %q, want %q", codeText, expectedText)
+		}
+		if lang != "go" {
+			t.Errorf("code language = %q, want %q", lang, "go")
+		}
+	})
+
+	t.Run("code block with python language", func(t *testing.T) {
+		input := "```python\nprint('hello')\ndef foo():\n    return 42\n```"
+		segments := parseMarkdown(input)
+
+		foundCodeBlock := false
+		var codeText string
+		var lang string
+		for _, seg := range segments {
+			if seg.isCodeBlock {
+				foundCodeBlock = true
+				codeText += seg.text
+				lang = seg.codeLanguage
+			}
+		}
+		if !foundCodeBlock {
+			t.Errorf("expected code block segment, got segments: %+v", segments)
+		}
+		expectedText := "print('hello')\ndef foo():\n    return 42\n"
+		if codeText != expectedText {
+			t.Errorf("code block text = %q, want %q", codeText, expectedText)
+		}
+		if lang != "python" {
+			t.Errorf("code language = %q, want %q", lang, "python")
+		}
+	})
+
+	t.Run("code block without language has empty language", func(t *testing.T) {
+		input := "```\nsome code\n```"
+		segments := parseMarkdown(input)
+
+		for _, seg := range segments {
+			if seg.isCodeBlock && seg.codeLanguage != "" {
+				t.Errorf("expected empty codeLanguage for plain code fence, got %q", seg.codeLanguage)
+			}
+		}
+	})
+
+	t.Run("multiple code blocks with different languages", func(t *testing.T) {
+		input := "```go\ngo code\n```\n```python\npy code\n```"
+		segments := parseMarkdown(input)
+
+		var codeBlocks []markdownSegment
+		for _, seg := range segments {
+			if seg.isCodeBlock {
+				codeBlocks = append(codeBlocks, seg)
+			}
+		}
+		if len(codeBlocks) != 2 {
+			t.Fatalf("expected 2 code block segments, got %d", len(codeBlocks))
+		}
+		if codeBlocks[0].codeLanguage != "go" {
+			t.Errorf("first code block language = %q, want %q", codeBlocks[0].codeLanguage, "go")
+		}
+		if codeBlocks[0].text != "go code\n" {
+			t.Errorf("first code block text = %q, want %q", codeBlocks[0].text, "go code\n")
+		}
+		if codeBlocks[1].codeLanguage != "python" {
+			t.Errorf("second code block language = %q, want %q", codeBlocks[1].codeLanguage, "python")
+		}
+		if codeBlocks[1].text != "py code\n" {
+			t.Errorf("second code block text = %q, want %q", codeBlocks[1].text, "py code\n")
+		}
+	})
+}
+
+func TestParseMarkdown_UnclosedCodeBlock(t *testing.T) {
+	t.Run("unclosed code block emits content", func(t *testing.T) {
+		input := "```\nline1\nline2"
+		segments := parseMarkdown(input)
+
+		foundCodeBlock := false
+		var codeText string
+		for _, seg := range segments {
+			if seg.isCodeBlock {
+				foundCodeBlock = true
+				codeText += seg.text
+			}
+		}
+		if !foundCodeBlock {
+			t.Errorf("expected unclosed code block to emit a segment, got segments: %+v", segments)
+		}
+		expectedText := "line1\nline2\n"
+		if codeText != expectedText {
+			t.Errorf("code block text = %q, want %q", codeText, expectedText)
+		}
+	})
+
+	t.Run("unclosed code block with language", func(t *testing.T) {
+		input := "```python\ndef foo():\n    pass"
+		segments := parseMarkdown(input)
+
+		foundCodeBlock := false
+		var codeText string
+		var lang string
+		for _, seg := range segments {
+			if seg.isCodeBlock {
+				foundCodeBlock = true
+				codeText += seg.text
+				lang = seg.codeLanguage
+			}
+		}
+		if !foundCodeBlock {
+			t.Errorf("expected unclosed code block to emit a segment, got segments: %+v", segments)
+		}
+		expectedText := "def foo():\n    pass\n"
+		if codeText != expectedText {
+			t.Errorf("code block text = %q, want %q", codeText, expectedText)
+		}
+		if lang != "python" {
+			t.Errorf("code language = %q, want %q", lang, "python")
+		}
+	})
+
+	t.Run("unclosed empty code block produces no segment", func(t *testing.T) {
+		input := "```"
+		segments := parseMarkdown(input)
+
+		for _, seg := range segments {
+			if seg.isCodeBlock {
+				t.Errorf("empty unclosed code block should not produce segment, got: %+v", seg)
+			}
+		}
+	})
+}
+
+func TestParseMarkdown_LanguageIdentifierValidation(t *testing.T) {
+	t.Run("language with extra content extracts only first word", func(t *testing.T) {
+		input := "```python some extra stuff\ncode here\n```"
+		segments := parseMarkdown(input)
+
+		foundCodeBlock := false
+		var lang string
+		for _, seg := range segments {
+			if seg.isCodeBlock {
+				foundCodeBlock = true
+				lang = seg.codeLanguage
+			}
+		}
+		if !foundCodeBlock {
+			t.Errorf("expected code block segment, got segments: %+v", segments)
+		}
+		if lang != "python" {
+			t.Errorf("code language = %q, want %q", lang, "python")
+		}
+	})
+
+	t.Run("language with tab-separated content extracts only first word", func(t *testing.T) {
+		input := "```go\tsome metadata\ncode here\n```"
+		segments := parseMarkdown(input)
+
+		foundCodeBlock := false
+		var lang string
+		for _, seg := range segments {
+			if seg.isCodeBlock {
+				foundCodeBlock = true
+				lang = seg.codeLanguage
+			}
+		}
+		if !foundCodeBlock {
+			t.Errorf("expected code block segment, got segments: %+v", segments)
+		}
+		if lang != "go" {
+			t.Errorf("code language = %q, want %q", lang, "go")
+		}
+	})
+}
+
+func TestParseSimpleFormatting_InlineCode(t *testing.T) {
+	segments := mergeSegments(parseSimpleFormatting("Use the `getFoo()` method here.\n"))
+
+	if len(segments) != 3 {
+		t.Fatalf("expected 3 segments, got %d: %+v", len(segments), segments)
+	}
+
+	// First segment: plain text "Use the "
+	if segments[0].text != "Use the " {
+		t.Errorf("segment[0].text = %q, want %q", segments[0].text, "Use the ")
+	}
+	if segments[0].isInlineCode {
+		t.Errorf("segment[0] should not be inline code")
+	}
+
+	// Second segment: inline code "getFoo()"
+	if segments[1].text != "getFoo()" {
+		t.Errorf("segment[1].text = %q, want %q", segments[1].text, "getFoo()")
+	}
+	if !segments[1].isInlineCode {
+		t.Errorf("segment[1] should be inline code")
+	}
+
+	// Third segment: plain text " method here.\n"
+	if segments[2].text != " method here.\n" {
+		t.Errorf("segment[2].text = %q, want %q", segments[2].text, " method here.\n")
+	}
+	if segments[2].isInlineCode {
+		t.Errorf("segment[2] should not be inline code")
+	}
+}
+
+func TestParseSimpleFormatting_MultipleInlineCode(t *testing.T) {
+	segments := mergeSegments(parseSimpleFormatting("Call `init()` then `run()` to start.\n"))
+
+	// After merging, we expect segments: "Call ", "init()" (code), " then ", "run()" (code), " to start.\n"
+	if len(segments) != 5 {
+		t.Fatalf("expected 5 segments, got %d: %+v", len(segments), segments)
+	}
+
+	// Check the two inline code segments
+	if segments[1].text != "init()" || !segments[1].isInlineCode {
+		t.Errorf("segment[1] = {text:%q, isInlineCode:%v}, want {text:\"init()\", isInlineCode:true}",
+			segments[1].text, segments[1].isInlineCode)
+	}
+	if segments[3].text != "run()" || !segments[3].isInlineCode {
+		t.Errorf("segment[3] = {text:%q, isInlineCode:%v}, want {text:\"run()\", isInlineCode:true}",
+			segments[3].text, segments[3].isInlineCode)
+	}
+}
+
+func TestParseSimpleFormatting_InlineCodeWithFormatting(t *testing.T) {
+	segments := mergeSegments(parseSimpleFormatting("`some **bold** text`"))
+
+	// Filter to only inline code segments
+	codeSegments := []markdownSegment{}
+	for _, seg := range segments {
+		if seg.isInlineCode {
+			codeSegments = append(codeSegments, seg)
+		}
+	}
+
+	if len(codeSegments) != 3 {
+		t.Fatalf("Expected 3 inline code segments, got %d: %+v", len(codeSegments), codeSegments)
+	}
+
+	// First: "some "
+	if codeSegments[0].text != "some " {
+		t.Errorf("codeSegments[0].text = %q, want %q", codeSegments[0].text, "some ")
+	}
+	if codeSegments[0].bold {
+		t.Errorf("codeSegments[0] should not be bold")
+	}
+
+	// Second: "bold" (bold)
+	if codeSegments[1].text != "bold" {
+		t.Errorf("codeSegments[1].text = %q, want %q", codeSegments[1].text, "bold")
+	}
+	if !codeSegments[1].bold {
+		t.Errorf("codeSegments[1] should be bold")
+	}
+
+	// Third: " text"
+	if codeSegments[2].text != " text" {
+		t.Errorf("codeSegments[2].text = %q, want %q", codeSegments[2].text, " text")
+	}
+	if codeSegments[2].bold {
+		t.Errorf("codeSegments[2] should not be bold")
+	}
+}
+
+func TestParseSimpleFormatting_InlineCodeBoundary(t *testing.T) {
+	text := "`code **bold**`. Normal text\n"
+	segments := mergeSegments(parseSimpleFormatting(text))
+
+	// Find segments containing "Normal text" and verify they are NOT inline code
+	foundNormal := false
+	for _, seg := range segments {
+		if strings.Contains(seg.text, "Normal") {
+			if seg.isInlineCode {
+				t.Errorf("Text after closing backtick should NOT be inline code: %q", seg.text)
+			}
+			foundNormal = true
+		}
+	}
+
+	if !foundNormal {
+		t.Errorf("Did not find 'Normal text' segment")
+	}
+
+	// Also check that ". " before "Normal text" is not inline code
+	for _, seg := range segments {
+		if strings.Contains(seg.text, ". ") && seg.isInlineCode {
+			t.Errorf("Period and space after closing backtick should NOT be inline code: %q", seg.text)
+		}
+	}
+
+	// Test with the exact text from the bug report
+	text2 := "`code that is rendered **pre-formatted**`. This\n"
+	segments2 := mergeSegments(parseSimpleFormatting(text2))
+
+	// ". This" should NOT be inline code
+	for _, seg := range segments2 {
+		if strings.Contains(seg.text, "This") {
+			if seg.isInlineCode {
+				t.Errorf("Text '. This' after closing backtick should NOT be inline code: %q", seg.text)
+			}
+		}
+	}
+}
+
+func TestParseSimpleFormatting_InlineCodeBoundaryFullPipeline(t *testing.T) {
+	// Test the full pipeline: parseMarkdown -> convertMarkdownToRequests
+	// This tests the actual code path that produces Google Docs API requests
+	markdown := "`code that is rendered **pre-formatted**`. This\n"
+	segments := parseMarkdown(markdown)
+
+	// Check that ". This" is NOT inline code at the segment level
+	for _, seg := range segments {
+		if strings.Contains(seg.text, "This") {
+			if seg.isInlineCode {
+				t.Errorf("parseMarkdown: text after closing backtick should NOT be inline code: %q", seg.text)
+			}
+		}
+	}
+
+	// Now test convertMarkdownToRequests - check that the UpdateTextStyle for
+	// text after the closing backtick includes weightedFontFamily in its fields
+	// so that the font is explicitly reset to the document default (not Courier New).
+	requests := convertMarkdownToRequests(segments, 1)
+
+	// Find the InsertText for ". This" and its corresponding UpdateTextStyle
+	for i, req := range requests {
+		if req.InsertText != nil && strings.Contains(req.InsertText.Text, "This") {
+			// The next request should be the UpdateTextStyle for this text
+			if i+1 < len(requests) && requests[i+1].UpdateTextStyle != nil {
+				style := requests[i+1].UpdateTextStyle
+				if !strings.Contains(style.Fields, "weightedFontFamily") {
+					t.Errorf("UpdateTextStyle for text after inline code should include weightedFontFamily in Fields to reset font, got: %q", style.Fields)
+				}
+				// Should NOT have Courier New font
+				if style.TextStyle.WeightedFontFamily != nil && style.TextStyle.WeightedFontFamily.FontFamily == "Courier New" {
+					t.Errorf("Text after inline code should NOT have Courier New font")
+				}
+			}
+		}
+	}
+}
+
+func TestConvertMarkdownToRequests_CodeBlock(t *testing.T) {
+	t.Run("code block applies Courier New font", func(t *testing.T) {
+		markdown := "```\nfmt.Println(\"hello\")\n```"
+		segments := parseMarkdown(markdown)
+		requests := convertMarkdownToRequests(segments, 1)
+
+		// Should have at least one InsertText with the code content
+		foundInsert := false
+		for _, req := range requests {
+			if req.InsertText != nil && strings.Contains(req.InsertText.Text, "fmt.Println") {
+				foundInsert = true
+			}
+		}
+		if !foundInsert {
+			t.Errorf("expected InsertText with code content")
+		}
+
+		// Should have UpdateTextStyle with Courier New font
+		foundCourierNew := false
+		for _, req := range requests {
+			if req.UpdateTextStyle != nil &&
+				req.UpdateTextStyle.TextStyle.WeightedFontFamily != nil &&
+				req.UpdateTextStyle.TextStyle.WeightedFontFamily.FontFamily == "Courier New" {
+				foundCourierNew = true
+				// Verify Fields includes "weightedFontFamily"
+				if !strings.Contains(req.UpdateTextStyle.Fields, "weightedFontFamily") {
+					t.Errorf("Fields should include weightedFontFamily, got: %s", req.UpdateTextStyle.Fields)
+				}
+			}
+		}
+		if !foundCourierNew {
+			t.Errorf("expected UpdateTextStyle with Courier New font for code block")
+		}
+	})
+
+	t.Run("code block does not apply bold/italic/underline", func(t *testing.T) {
+		markdown := "```\ncode\n```"
+		segments := parseMarkdown(markdown)
+		requests := convertMarkdownToRequests(segments, 1)
+
+		for _, req := range requests {
+			if req.UpdateTextStyle != nil &&
+				req.UpdateTextStyle.TextStyle.WeightedFontFamily != nil &&
+				req.UpdateTextStyle.TextStyle.WeightedFontFamily.FontFamily == "Courier New" {
+				// Verify bold, italic, underline, strikethrough are NOT set
+				if req.UpdateTextStyle.TextStyle.Bold {
+					t.Errorf("code block should not have Bold set")
+				}
+				if req.UpdateTextStyle.TextStyle.Italic {
+					t.Errorf("code block should not have Italic set")
+				}
+				if req.UpdateTextStyle.TextStyle.Underline {
+					t.Errorf("code block should not have Underline set")
+				}
+				if req.UpdateTextStyle.TextStyle.Strikethrough {
+					t.Errorf("code block should not have Strikethrough set")
+				}
+			}
+		}
+	})
+
+	t.Run("code block followed by normal text", func(t *testing.T) {
+		markdown := "```\ncode\n```\nNormal text"
+		segments := parseMarkdown(markdown)
+		requests := convertMarkdownToRequests(segments, 1)
+
+		// Verify both code and normal text are inserted
+		var insertTexts []string
+		for _, req := range requests {
+			if req.InsertText != nil {
+				insertTexts = append(insertTexts, req.InsertText.Text)
+			}
+		}
+
+		foundCode := false
+		foundNormal := false
+		for _, text := range insertTexts {
+			if strings.Contains(text, "code") {
+				foundCode = true
+			}
+			if strings.Contains(text, "Normal text") {
+				foundNormal = true
+			}
+		}
+
+		if !foundCode {
+			t.Errorf("expected code text in InsertText requests")
+		}
+		if !foundNormal {
+			t.Errorf("expected normal text in InsertText requests")
+		}
+
+		// Verify Courier New is only applied to the code block range, not to normal text
+		for _, req := range requests {
+			if req.UpdateTextStyle != nil &&
+				req.UpdateTextStyle.TextStyle.WeightedFontFamily != nil &&
+				req.UpdateTextStyle.TextStyle.WeightedFontFamily.FontFamily == "Courier New" {
+				// The code block range should not overlap with normal text range
+				// Normal text starts after code block
+				break
+			}
+		}
+	})
+}
+
+func TestConvertMarkdownToRequests_InlineCode(t *testing.T) {
+	t.Run("inline code applies Courier New font", func(t *testing.T) {
+		markdown := "Use `fmt.Println` to print"
+		segments := parseMarkdown(markdown)
+		requests := convertMarkdownToRequests(segments, 1)
+
+		// Should have UpdateTextStyle with Courier New for the inline code segment
+		foundCourierNew := false
+		for _, req := range requests {
+			if req.UpdateTextStyle != nil &&
+				req.UpdateTextStyle.TextStyle.WeightedFontFamily != nil &&
+				req.UpdateTextStyle.TextStyle.WeightedFontFamily.FontFamily == "Courier New" {
+				foundCourierNew = true
+				// Verify Fields includes "weightedFontFamily"
+				if !strings.Contains(req.UpdateTextStyle.Fields, "weightedFontFamily") {
+					t.Errorf("Fields should include weightedFontFamily, got: %s", req.UpdateTextStyle.Fields)
+				}
+			}
+		}
+		if !foundCourierNew {
+			t.Errorf("expected UpdateTextStyle with Courier New font for inline code")
+		}
+	})
+
+	t.Run("inline code preserves formatting fields", func(t *testing.T) {
+		markdown := "Use `code` here"
+		segments := parseMarkdown(markdown)
+		requests := convertMarkdownToRequests(segments, 1)
+
+		for _, req := range requests {
+			if req.UpdateTextStyle != nil &&
+				req.UpdateTextStyle.TextStyle.WeightedFontFamily != nil &&
+				req.UpdateTextStyle.TextStyle.WeightedFontFamily.FontFamily == "Courier New" {
+				// Inline code should include formatting fields so they can be set when present
+				if !strings.Contains(req.UpdateTextStyle.Fields, "bold") {
+					t.Errorf("inline code Fields should include bold, got: %s", req.UpdateTextStyle.Fields)
+				}
+				if !strings.Contains(req.UpdateTextStyle.Fields, "italic") {
+					t.Errorf("inline code Fields should include italic, got: %s", req.UpdateTextStyle.Fields)
+				}
+				if !strings.Contains(req.UpdateTextStyle.Fields, "underline") {
+					t.Errorf("inline code Fields should include underline, got: %s", req.UpdateTextStyle.Fields)
+				}
+				if !strings.Contains(req.UpdateTextStyle.Fields, "strikethrough") {
+					t.Errorf("inline code Fields should include strikethrough, got: %s", req.UpdateTextStyle.Fields)
+				}
+				// Plain inline code (no extra formatting) should have false for all
+				if req.UpdateTextStyle.TextStyle.Bold {
+					t.Errorf("plain inline code Bold should be false")
+				}
+				if req.UpdateTextStyle.TextStyle.Italic {
+					t.Errorf("plain inline code Italic should be false")
+				}
+				if req.UpdateTextStyle.TextStyle.Underline {
+					t.Errorf("plain inline code Underline should be false")
+				}
+			}
+		}
+	})
+
+	t.Run("bold inline code preserves bold formatting", func(t *testing.T) {
+		markdown := "Use **`code`** here"
+		segments := parseMarkdown(markdown)
+		requests := convertMarkdownToRequests(segments, 1)
+
+		foundBoldCode := false
+		for _, req := range requests {
+			if req.UpdateTextStyle != nil &&
+				req.UpdateTextStyle.TextStyle.WeightedFontFamily != nil &&
+				req.UpdateTextStyle.TextStyle.WeightedFontFamily.FontFamily == "Courier New" {
+				foundBoldCode = true
+				if !req.UpdateTextStyle.TextStyle.Bold {
+					t.Errorf("bold inline code should have Bold=true")
+				}
+				if !strings.Contains(req.UpdateTextStyle.Fields, "weightedFontFamily") {
+					t.Errorf("bold inline code Fields should include weightedFontFamily, got: %s", req.UpdateTextStyle.Fields)
+				}
+				if !strings.Contains(req.UpdateTextStyle.Fields, "bold") {
+					t.Errorf("bold inline code Fields should include bold, got: %s", req.UpdateTextStyle.Fields)
+				}
+			}
+		}
+		if !foundBoldCode {
+			t.Errorf("expected UpdateTextStyle with Courier New font for bold inline code")
+		}
+	})
+
+	t.Run("italic inline code preserves italic formatting", func(t *testing.T) {
+		markdown := "Use *`code`* here"
+		segments := parseMarkdown(markdown)
+		requests := convertMarkdownToRequests(segments, 1)
+
+		foundItalicCode := false
+		for _, req := range requests {
+			if req.UpdateTextStyle != nil &&
+				req.UpdateTextStyle.TextStyle.WeightedFontFamily != nil &&
+				req.UpdateTextStyle.TextStyle.WeightedFontFamily.FontFamily == "Courier New" {
+				foundItalicCode = true
+				if !req.UpdateTextStyle.TextStyle.Italic {
+					t.Errorf("italic inline code should have Italic=true")
+				}
+			}
+		}
+		if !foundItalicCode {
+			t.Errorf("expected UpdateTextStyle with Courier New font for italic inline code")
+		}
+	})
+
+	t.Run("non-code text does not get Courier New", func(t *testing.T) {
+		markdown := "Use `code` here"
+		segments := parseMarkdown(markdown)
+		requests := convertMarkdownToRequests(segments, 1)
+
+		// Count how many UpdateTextStyle requests have Courier New
+		courierCount := 0
+		totalStyleCount := 0
+		for _, req := range requests {
+			if req.UpdateTextStyle != nil {
+				totalStyleCount++
+				if req.UpdateTextStyle.TextStyle.WeightedFontFamily != nil &&
+					req.UpdateTextStyle.TextStyle.WeightedFontFamily.FontFamily == "Courier New" {
+					courierCount++
+				}
+			}
+		}
+
+		// Only the inline code segment should have Courier New
+		if courierCount != 1 {
+			t.Errorf("expected exactly 1 Courier New style request, got %d (out of %d total)", courierCount, totalStyleCount)
+		}
+	})
+
+	t.Run("inline code in heading applies Courier New", func(t *testing.T) {
+		markdown := "# The `main` function"
+		segments := parseMarkdown(markdown)
+		requests := convertMarkdownToRequests(segments, 1)
+
+		foundCourierNew := false
+		for _, req := range requests {
+			if req.UpdateTextStyle != nil &&
+				req.UpdateTextStyle.TextStyle.WeightedFontFamily != nil &&
+				req.UpdateTextStyle.TextStyle.WeightedFontFamily.FontFamily == "Courier New" {
+				foundCourierNew = true
+			}
+		}
+		if !foundCourierNew {
+			t.Errorf("expected Courier New font for inline code in heading")
+		}
+	})
+}
+
+func TestRoundTrip_CodeBlock(t *testing.T) {
+	// Start with markdown
+	originalMarkdown := "Some intro text.\n\n```python\ndef hello():\n    return \"world\"\n```\n\nSome closing text.\n"
+
+	// Parse markdown to segments
+	segments := parseMarkdown(originalMarkdown)
+
+	// Convert segments to requests (simulating write to Google Docs)
+	_ = convertMarkdownToRequests(segments, 1)
+
+	// Create a mock Google Docs document with the expected structure
+	doc := &docs.Document{
+		Body: &docs.Body{
+			Content: []*docs.StructuralElement{
+				{
+					Paragraph: &docs.Paragraph{
+						Elements: []*docs.ParagraphElement{
+							{
+								TextRun: &docs.TextRun{
+									Content: "Some intro text.\n",
+									TextStyle: &docs.TextStyle{
+										WeightedFontFamily: &docs.WeightedFontFamily{
+											FontFamily: "Arial",
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+				{
+					Paragraph: &docs.Paragraph{
+						Elements: []*docs.ParagraphElement{
+							{
+								TextRun: &docs.TextRun{
+									Content: "def hello():\n    return \"world\"\n",
+									TextStyle: &docs.TextStyle{
+										WeightedFontFamily: &docs.WeightedFontFamily{
+											FontFamily: "Courier New",
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+				{
+					Paragraph: &docs.Paragraph{
+						Elements: []*docs.ParagraphElement{
+							{
+								TextRun: &docs.TextRun{
+									Content: "Some closing text.\n",
+									TextStyle: &docs.TextStyle{
+										WeightedFontFamily: &docs.WeightedFontFamily{
+											FontFamily: "Arial",
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	// Extract markdown from the mock document
+	resultMarkdown := extractMarkdown(doc)
+
+	// Verify code block is preserved
+	// Note: extractMarkdown outputs a single \n after regular paragraphs (no blank line),
+	// and the code block itself adds \n\n after the closing fence.
+	// The last paragraph gets a single trailing \n (no extra blank line at EOF).
+	expectedMarkdown := "Some intro text.\n```\ndef hello():\n    return \"world\"\n```\n\nSome closing text.\n"
+
+	if resultMarkdown != expectedMarkdown {
+		t.Errorf("Round-trip failed.\nExpected:\n%q\nGot:\n%q", expectedMarkdown, resultMarkdown)
+	}
+}
+
+func TestRoundTrip_InlineCode(t *testing.T) {
+	// Start with markdown
+	originalMarkdown := "Use `getFoo()` and `setBar()` methods.\n"
+
+	// Create a mock Google Docs document with inline code
+	doc := &docs.Document{
+		Body: &docs.Body{
+			Content: []*docs.StructuralElement{
+				{
+					Paragraph: &docs.Paragraph{
+						Elements: []*docs.ParagraphElement{
+							{
+								TextRun: &docs.TextRun{
+									Content: "Use ",
+									TextStyle: &docs.TextStyle{
+										WeightedFontFamily: &docs.WeightedFontFamily{
+											FontFamily: "Arial",
+										},
+									},
+								},
+							},
+							{
+								TextRun: &docs.TextRun{
+									Content: "getFoo()",
+									TextStyle: &docs.TextStyle{
+										WeightedFontFamily: &docs.WeightedFontFamily{
+											FontFamily: "Courier New",
+										},
+									},
+								},
+							},
+							{
+								TextRun: &docs.TextRun{
+									Content: " and ",
+									TextStyle: &docs.TextStyle{
+										WeightedFontFamily: &docs.WeightedFontFamily{
+											FontFamily: "Arial",
+										},
+									},
+								},
+							},
+							{
+								TextRun: &docs.TextRun{
+									Content: "setBar()",
+									TextStyle: &docs.TextStyle{
+										WeightedFontFamily: &docs.WeightedFontFamily{
+											FontFamily: "Courier New",
+										},
+									},
+								},
+							},
+							{
+								TextRun: &docs.TextRun{
+									Content: " methods.\n",
+									TextStyle: &docs.TextStyle{
+										WeightedFontFamily: &docs.WeightedFontFamily{
+											FontFamily: "Arial",
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	// Extract markdown
+	resultMarkdown := extractMarkdown(doc)
+
+	// Note: extractMarkdown outputs a single \n after regular paragraphs,
+	// not a double newline at EOF.
+	expectedMarkdown := "Use `getFoo()` and `setBar()` methods.\n"
+
+	if resultMarkdown != expectedMarkdown {
+		t.Errorf("Round-trip failed.\nExpected:\n%q\nGot:\n%q", expectedMarkdown, resultMarkdown)
+	}
+
+	// Also verify original markdown parses correctly
+	_ = parseMarkdown(originalMarkdown)
 }
