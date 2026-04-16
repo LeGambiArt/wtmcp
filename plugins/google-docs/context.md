@@ -245,6 +245,30 @@ Attendees: @(Alice Smith), @(bob@company.com)
 - Team lead: @(dana@company.com)
 ```
 
+### Code Formatting
+
+**Inline Code:**
+```markdown
+Use the `functionName()` method to process data.
+```
+
+Renders with Courier New font in Google Docs.
+
+**Code Blocks:**
+````markdown
+```python
+def example():
+    return "hello"
+```
+````
+
+Creates separate paragraph with Courier New font. Language identifiers (e.g., ` ```python `) are parsed and stored for future syntax highlighting support.
+
+**Detection (Reading from Google Docs):**
+- Text formatted with monospace fonts (Courier New, Courier, Consolas, Monaco, Menlo, Source Code Pro, SF Mono, Inconsolata, Roboto Mono) is detected as code
+- Entire paragraphs with monospace font become code blocks (` ``` `)
+- Partial monospace text runs within paragraphs become inline code (`` ` ``)
+
 ### Feature Support Matrix
 
 | Feature | Supported | Notes |
@@ -261,8 +285,8 @@ Attendees: @(Alice Smith), @(bob@company.com)
 | Date chips (`@date(YYYY-MM-DD)`) | ✅ Yes | Specific date |
 | Person chips (`@(email)`) | ✅ Yes | |
 | Tables | ❌ No | Not yet supported |
-| Code blocks | ❌ No | Not yet supported |
-| Inline code | ❌ No | Not yet supported |
+| Code blocks (` ``` `) | ✅ Yes | Converted to/from monospace font (Courier New) |
+| Inline code (`` ` ``) | ✅ Yes | Converted to/from monospace font (Courier New) |
 | Blockquotes | ❌ No | Not yet supported |
 | Strikethrough (`~~text~~`) | ✅ Yes | Standard markdown strikethrough |
 | Images | ❌ No | Not yet supported |
@@ -359,7 +383,6 @@ Files are saved with permissions `0600` (owner read/write only).
 This is an **initial implementation** of document creation and modification support. The markdown-to-Google Docs formatting conversion has the following limitations:
 
 - **Tables**: Markdown tables are not converted to Google Docs table structures
-- **Code blocks**: Code blocks and inline code formatting are not yet supported
 - **Blockquotes**: Blockquotes are not converted to Google Docs quote styling
 - **Images**: Inline images cannot be inserted via markdown
 
