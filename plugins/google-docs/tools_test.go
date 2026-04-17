@@ -4330,3 +4330,123 @@ func TestRoundTrip_InlineCode(t *testing.T) {
 	// Also verify original markdown parses correctly
 	_ = parseMarkdown(originalMarkdown)
 }
+
+func TestWriteMarkdownWithHighlightedPython(t *testing.T) {
+	markdown := `# Python Example
+
+Here is some Python code:
+
+` + "```python" + `
+def greet(name):
+    """Say hello."""
+    return f"Hello, {name}!"
+
+result = greet("World")
+print(result)
+` + "```" + `
+
+End of example.
+`
+
+	segments := parseMarkdown(markdown)
+
+	// Verify we have a code block
+	hasCodeBlock := false
+	var codeBlockSeg *markdownSegment
+	for i := range segments {
+		if segments[i].isCodeBlock && segments[i].codeLanguage == "python" {
+			hasCodeBlock = true
+			codeBlockSeg = &segments[i]
+			break
+		}
+	}
+
+	if !hasCodeBlock {
+		t.Fatalf("Expected Python code block in segments")
+	}
+
+	// Verify code block has language set
+	if codeBlockSeg.codeLanguage != "python" {
+		t.Errorf("Expected language 'python', got %q", codeBlockSeg.codeLanguage)
+	}
+
+	// Verify code block contains expected code
+	if !strings.Contains(codeBlockSeg.text, "def greet") {
+		t.Errorf("Code block missing expected content")
+	}
+}
+
+func TestWriteMarkdownWithHighlightedGo(t *testing.T) {
+	markdown := `# Go Example
+
+` + "```go" + `
+package main
+
+import "fmt"
+
+func main() {
+    fmt.Println("Hello, World!")
+}
+` + "```" + `
+`
+
+	segments := parseMarkdown(markdown)
+
+	// Verify we have a code block with Go language
+	hasGoBlock := false
+	for i := range segments {
+		if segments[i].isCodeBlock && segments[i].codeLanguage == "go" {
+			hasGoBlock = true
+			break
+		}
+	}
+
+	if !hasGoBlock {
+		t.Fatalf("Expected Go code block in segments")
+	}
+}
+
+func TestWriteMarkdownCodeBlockNoLanguage(t *testing.T) {
+	markdown := "```\nplain code block\n```"
+
+	segments := parseMarkdown(markdown)
+
+	// Verify code block exists without language
+	hasCodeBlock := false
+	for i := range segments {
+		if segments[i].isCodeBlock {
+			hasCodeBlock = true
+			if segments[i].codeLanguage != "" {
+				t.Errorf("Expected empty language, got %q", segments[i].codeLanguage)
+			}
+			break
+		}
+	}
+
+	if !hasCodeBlock {
+		t.Fatalf("Expected code block in segments")
+	}
+}
+
+func TestAllSupportedLanguages(t *testing.T) {
+	languages := []string{"python", "typescript", "go", "rust", "bash", "c", "cpp", "yaml", "toml", "json"}
+
+	for _, lang := range languages {
+		t.Run(lang, func(t *testing.T) {
+			markdown := "```" + lang + "\ntest code\n```"
+			segments := parseMarkdown(markdown)
+
+			found := false
+			for i := range segments {
+				if segments[i].isCodeBlock && segments[i].codeLanguage == lang {
+					found = true
+					break
+				}
+			}
+
+			if !found {
+				t.Errorf("Failed to parse %s code block", lang)
+			}
+		})
+	}
+}
