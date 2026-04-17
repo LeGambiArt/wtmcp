@@ -1,5 +1,5 @@
 name: google-docs
-version: "0.2.0"
+version: "0.3.0"
 description: "Google Docs — retrieve, summarize, and write to documents"
 
 execution: persistent
