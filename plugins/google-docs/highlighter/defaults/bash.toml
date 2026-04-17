@@ -1,0 +1,52 @@
+language = "bash"
+description = "Bash/Shell syntax highlighting with GitHub color scheme"
+
+[styles.keyword]
+color = "#D73A49"
+bold = true
+italic = false
+
+[styles.string]
+color = "#032F62"
+bold = false
+italic = false
+
+[styles.comment]
+color = "#6A737D"
+bold = false
+italic = true
+
+[styles.number]
+color = "#005CC5"
+bold = false
+italic = false
+
+[styles.operator]
+color = "#D73A49"
+bold = true
+italic = false
+
+[styles.function]
+color = "#6F42C1"
+bold = true
+italic = false
+
+[styles.type]
+color = "#005CC5"
+bold = false
+italic = false
+
+[styles.variable]
+color = "#24292E"
+bold = false
+italic = false
+
+[styles.constant]
+color = "#005CC5"
+bold = false
+italic = false
+
+[styles.default]
+color = "#24292E"
+bold = false
+italic = false
