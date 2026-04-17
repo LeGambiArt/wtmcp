@@ -335,6 +335,83 @@ Creates separate paragraph with Courier New font. Language identifiers (e.g., ` 
 - Entire paragraphs with monospace font become code blocks (` ``` `)
 - Partial monospace text runs within paragraphs become inline code (`` ` ``)
 
+### Syntax Highlighting
+
+Code blocks with language identifiers support syntax highlighting with colors and formatting.
+
+**Supported Languages:**
+- Python, TypeScript, Go, Rust, Bash
+- C, C++, YAML, TOML, JSON
+
+**Example:**
+````markdown
+```python
+def hello(name):
+    """Greet someone."""
+    print(f"Hello, {name}!")
+    return True
+```
+````
+
+**Result:** Code rendered with:
+- Keywords (def, return) in purple-red + bold
+- Strings in dark blue
+- Comments in gray + italic
+- Functions in purple + bold
+- Default GitHub color scheme
+
+**Customizing Colors:**
+
+Create config files in `~/.config/wtmcp/assets/google-docs/highlights/`:
+
+```bash
+mkdir -p ~/.config/wtmcp/assets/google-docs/highlights/
+```
+
+Example `python.toml`:
+```toml
+language = "python"
+
+[styles.keyword]
+color = "#FF0000"  # Red keywords
+bold = true
+
+[styles.string]
+color = "#00FF00"  # Green strings
+bold = false
+
+[styles.comment]
+color = "#808080"  # Gray comments
+italic = true
+```
+
+**Available Style Types:**
+- `keyword` - Language keywords (def, class, if, return, etc.)
+- `string` - String literals
+- `comment` - Comments
+- `number` - Numeric literals
+- `operator` - Operators (+, -, *, /, ==, etc.)
+- `function` - Function names
+- `type` - Type names and built-in types
+- `variable` - Variable names
+- `constant` - Constants
+- `default` - Fallback for unrecognized tokens
+
+**Color Format:** Hex RGB (e.g., `"#D73A49"`)
+
+**Troubleshooting:**
+
+- **Code block not highlighted:** Check language identifier is spelled correctly
+- **Colors not applying:** Verify TOML syntax is valid
+- **Language not supported:** Check if chroma library supports the language
+- **Fallback to monospace:** Invalid config falls back gracefully, check logs
+
+**Notes:**
+- Code blocks without language identifiers use basic monospace formatting
+- Highlighting is applied when writing to Google Docs
+- User configs override embedded defaults
+- Invalid user configs automatically fall back to defaults
+
 ### Feature Support Matrix
 
 | Feature | Supported | Notes |
@@ -351,7 +428,7 @@ Creates separate paragraph with Courier New font. Language identifiers (e.g., ` 
 | Date chips (`@date(YYYY-MM-DD)`) | ✅ Yes | Specific date |
 | Person chips (`@(email)`) | ✅ Yes | |
 | Tables | ✅ Yes | Standard markdown syntax with optional headers (headerless extension), rich text in cells, headers auto-bolded |
-| Code blocks (` ``` `) | ✅ Yes | Converted to/from monospace font (Courier New) |
+| Code blocks (` ``` `) | ✅ Yes | Converted to/from monospace font with syntax highlighting (10 languages supported) |
 | Inline code (`` ` ``) | ✅ Yes | Converted to/from monospace font (Courier New) |
 | Blockquotes | ❌ No | Not yet supported |
 | Strikethrough (`~~text~~`) | ✅ Yes | Standard markdown strikethrough |
