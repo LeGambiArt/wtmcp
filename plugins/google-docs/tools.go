@@ -3,14 +3,17 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
+	"github.com/LeGambiArt/wtmcp/plugins/google-docs/highlighter"
 	"google.golang.org/api/docs/v1"
 )
 
@@ -30,6 +33,35 @@ var (
 	reTableRow       = regexp.MustCompile(`^\s*\|(.+\|)+\s*$`)
 	reTableSeparator = regexp.MustCompile(`^\s*\|[\s\-:]*\-[\s\-:]*(\|[\s\-:]*\-[\s\-:]*)*\|\s*$`)
 )
+
+// Config cache for syntax highlighting
+var (
+	highlightConfigCache = make(map[string]*highlighter.Config)
+	highlightConfigMutex sync.RWMutex
+)
+
+// getHighlightConfig retrieves or loads a highlighting config for a language.
+func getHighlightConfig(language string) (*highlighter.Config, error) {
+	highlightConfigMutex.RLock()
+	if cfg, ok := highlightConfigCache[language]; ok {
+		highlightConfigMutex.RUnlock()
+		return cfg, nil
+	}
+	highlightConfigMutex.RUnlock()
+
+	// Load config
+	cfg, err := highlighter.LoadConfig(language)
+	if err != nil {
+		return nil, err
+	}
+
+	// Cache it
+	highlightConfigMutex.Lock()
+	highlightConfigCache[language] = cfg
+	highlightConfigMutex.Unlock()
+
+	return cfg, nil
+}
 
 // extractDocumentID extracts a Google Docs document ID from a URL.
 func extractDocumentID(input string) string {
@@ -1769,7 +1801,7 @@ func convertMarkdownToRequests(segments []markdownSegment, startIndex int64) []*
 			continue
 		}
 
-		// Handle code blocks (triple backticks) - insert text then apply Courier New font
+		// Handle code blocks (triple backticks) - insert text then apply syntax highlighting
 		if seg.isCodeBlock {
 			// Close any open list before code block
 			if currentListStart >= 0 {
@@ -1796,27 +1828,7 @@ func convertMarkdownToRequests(segments []markdownSegment, startIndex int64) []*
 
 			endIndex := currentIndex + int64(utf8.RuneCountInString(insertText))
 
-			// Apply Courier New font and clear formatting flags
-			requests = append(requests, &docs.Request{
-				UpdateTextStyle: &docs.UpdateTextStyleRequest{
-					Range: &docs.Range{
-						StartIndex: currentIndex,
-						EndIndex:   endIndex,
-					},
-					TextStyle: &docs.TextStyle{
-						WeightedFontFamily: &docs.WeightedFontFamily{
-							FontFamily: "Courier New",
-						},
-						Bold:          false,
-						Italic:        false,
-						Underline:     false,
-						Strikethrough: false,
-					},
-					Fields: "weightedFontFamily,bold,italic,underline,strikethrough",
-				},
-			})
-
-			// Set paragraph style to NORMAL_TEXT
+			// Set paragraph style to NORMAL_TEXT FIRST to prevent it from wiping out text formatting
 			requests = append(requests, &docs.Request{
 				UpdateParagraphStyle: &docs.UpdateParagraphStyleRequest{
 					ParagraphStyle: &docs.ParagraphStyle{
@@ -1829,6 +1841,106 @@ func convertMarkdownToRequests(segments []markdownSegment, startIndex int64) []*
 					Fields: "namedStyleType",
 				},
 			})
+
+			// Apply syntax highlighting if language specified
+			if seg.codeLanguage != "" {
+				cfg, err := getHighlightConfig(seg.codeLanguage)
+				if err == nil {
+					// Apply highlighting
+					highlighted, err := highlighter.HighlightCode(insertText, seg.codeLanguage, cfg)
+					if err == nil {
+						// Apply highlighting segment by segment
+						segIndex := currentIndex
+						for _, hseg := range highlighted {
+							segLen := int64(utf8.RuneCountInString(hseg.Text))
+
+							requests = append(requests, &docs.Request{
+								UpdateTextStyle: &docs.UpdateTextStyleRequest{
+									Range: &docs.Range{
+										StartIndex: segIndex,
+										EndIndex:   segIndex + segLen,
+									},
+									TextStyle: &docs.TextStyle{
+										WeightedFontFamily: &docs.WeightedFontFamily{
+											FontFamily: "Courier New",
+										},
+										ForegroundColor: &docs.OptionalColor{
+											Color: &docs.Color{
+												RgbColor: hseg.Color,
+											},
+										},
+										Bold:      hseg.Bold,
+										Italic:    hseg.Italic,
+										Underline: false,
+									},
+									Fields: "weightedFontFamily,foregroundColor,bold,italic,underline",
+								},
+							})
+
+							segIndex += segLen
+						}
+					} else {
+						// Highlighting failed, fall back to basic Courier New
+						log.Printf("INFO: Highlighting failed for %s: %v, using basic monospace", seg.codeLanguage, err)
+						requests = append(requests, &docs.Request{
+							UpdateTextStyle: &docs.UpdateTextStyleRequest{
+								Range: &docs.Range{
+									StartIndex: currentIndex,
+									EndIndex:   endIndex,
+								},
+								TextStyle: &docs.TextStyle{
+									WeightedFontFamily: &docs.WeightedFontFamily{
+										FontFamily: "Courier New",
+									},
+									Bold:      false,
+									Italic:    false,
+									Underline: false,
+								},
+								Fields: "weightedFontFamily,bold,italic,underline",
+							},
+						})
+					}
+				} else {
+					// No config available, fall back to basic Courier New
+					log.Printf("INFO: No highlighting config for %s: %v, using basic monospace", seg.codeLanguage, err)
+					requests = append(requests, &docs.Request{
+						UpdateTextStyle: &docs.UpdateTextStyleRequest{
+							Range: &docs.Range{
+								StartIndex: currentIndex,
+								EndIndex:   endIndex,
+							},
+							TextStyle: &docs.TextStyle{
+								WeightedFontFamily: &docs.WeightedFontFamily{
+									FontFamily: "Courier New",
+								},
+								Bold:      false,
+								Italic:    false,
+								Underline: false,
+							},
+							Fields: "weightedFontFamily,bold,italic,underline",
+						},
+					})
+				}
+			} else {
+				// No language specified, use basic Courier New
+				requests = append(requests, &docs.Request{
+					UpdateTextStyle: &docs.UpdateTextStyleRequest{
+						Range: &docs.Range{
+							StartIndex: currentIndex,
+							EndIndex:   endIndex,
+						},
+						TextStyle: &docs.TextStyle{
+							WeightedFontFamily: &docs.WeightedFontFamily{
+								FontFamily: "Courier New",
+							},
+							Bold:      false,
+							Italic:    false,
+							Underline: false,
+						},
+						Fields: "weightedFontFamily,bold,italic,underline",
+					},
+				})
+			}
 
 			currentIndex = endIndex
 			continue
