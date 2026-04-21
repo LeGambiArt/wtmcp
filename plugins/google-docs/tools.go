@@ -26,6 +26,9 @@ var (
 	reDateChip      = regexp.MustCompile(`@date\((\d{4}-\d{2}-\d{2})\)`)
 	rePersonChip    = regexp.MustCompile(`@\(([^)]+)\)`)
 	reLinkInline    = regexp.MustCompile(`\[([^\]]+)\]\(([^\)]+)\)`)
+	// Table detection patterns
+	reTableRow       = regexp.MustCompile(`^\s*\|(.+\|)+\s*$`)
+	reTableSeparator = regexp.MustCompile(`^\s*\|[\s\-:]*\-[\s\-:]*(\|[\s\-:]*\-[\s\-:]*)*\|\s*$`)
 )
 
 // extractDocumentID extracts a Google Docs document ID from a URL.
@@ -624,6 +627,26 @@ type markdownSegment struct {
 	isInlineCode      bool   // true if text should be wrapped in single backticks
 	isCodeBlock       bool   // true if text is part of a code block (triple backticks)
 	codeLanguage      string // language identifier for code block (e.g., ```language syntax)
+	// Table support
+	isTable bool
+	table   *tableSegment // Non-nil when isTable=true
+}
+
+// tableCell represents a single cell in a markdown table.
+type tableCell struct {
+	segments []markdownSegment // Cell content as formatted segments
+}
+
+// tableRow represents a single row in a markdown table.
+type tableRow struct {
+	cells []tableCell
+}
+
+// tableSegment represents a parsed markdown table.
+type tableSegment struct {
+	rows       []tableRow
+	numColumns int
+	isTable    bool // Always true, used for type discrimination
 }
 
 // CodeAnnotations holds code detection results for a document.
@@ -775,11 +798,31 @@ func parseMarkdown(markdown string) []markdownSegment {
 	var codeBlockLines []string
 	var codeLanguage string
 
+	// Table buffering state
+	var tableBuffer []string
+	inTable := false
+
 	for _, line := range lines {
 		trimmedLine := strings.TrimSpace(line)
 
 		// Check for code fence boundaries (``` with optional language)
 		if strings.HasPrefix(trimmedLine, "```") {
+			// Close any open table before code block
+			if inTable {
+				inTable = false
+				if table := parseMarkdownTable(tableBuffer); table != nil {
+					segments = append(segments, markdownSegment{
+						isTable: true,
+						table:   table,
+					})
+				} else {
+					for _, bufferedLine := range tableBuffer {
+						segments = append(segments, parseSimpleFormatting(bufferedLine+"\n")...)
+					}
+				}
+				tableBuffer = nil
+			}
+
 			if !inCodeBlock {
 				// Opening fence: start accumulating code block lines
 				inCodeBlock = true
@@ -812,10 +855,42 @@ func parseMarkdown(markdown string) []markdownSegment {
 			continue
 		}
 
+		// Check if this line looks like a table row
+		isTableRow := reTableRow.MatchString(line)
+
+		if isTableRow {
+			// Start or continue buffering table lines
+			if !inTable {
+				inTable = true
+				tableBuffer = []string{}
+			}
+			tableBuffer = append(tableBuffer, line)
+			continue
+		}
+
+		// Not a table row - process any buffered table
+		if inTable {
+			inTable = false
+			// Try to parse buffered lines as a table
+			if table := parseMarkdownTable(tableBuffer); table != nil {
+				// Valid table
+				segments = append(segments, markdownSegment{
+					isTable: true,
+					table:   table,
+				})
+			} else {
+				// Invalid table - treat as plain text paragraphs
+				for _, bufferedLine := range tableBuffer {
+					segments = append(segments, parseSimpleFormatting(bufferedLine+"\n")...)
+				}
+			}
+			tableBuffer = nil
+		}
+
+		// Process non-table line normally
 		if trimmedLine == "" {
 			if lastWasHeading {
-				// Skip blank lines immediately after headings —
-				// headings create their own paragraph break via \n
+				// Skip blank lines immediately after headings
 				continue
 			}
 			// Preserve blank lines between normal text as empty paragraphs
@@ -827,12 +902,12 @@ func parseMarkdown(markdown string) []markdownSegment {
 		headingLevel := 0
 		if strings.HasPrefix(trimmedLine, "#") {
 		loop:
-			for i, ch := range trimmedLine {
+			for j, ch := range trimmedLine {
 				switch ch {
 				case '#':
 					headingLevel++
 				case ' ':
-					trimmedLine = trimmedLine[i+1:]
+					trimmedLine = trimmedLine[j+1:]
 					break loop
 				default:
 					headingLevel = 0
@@ -843,14 +918,12 @@ func parseMarkdown(markdown string) []markdownSegment {
 
 		if headingLevel > 0 && headingLevel <= 6 {
 			lastWasHeading = true
-			// Heading line - parse inline formatting within heading text
-			// Note: Headings don't include trailing newline - they're standalone paragraphs
 			inlineSegs := parseSimpleFormatting(trimmedLine)
 			lineID := nextHeadingLineID
 			nextHeadingLineID++
-			for i := range inlineSegs {
-				inlineSegs[i].heading = headingLevel
-				inlineSegs[i].headingLineID = lineID
+			for j := range inlineSegs {
+				inlineSegs[j].heading = headingLevel
+				inlineSegs[j].headingLineID = lineID
 			}
 			segments = append(segments, inlineSegs...)
 			continue
@@ -858,27 +931,27 @@ func parseMarkdown(markdown string) []markdownSegment {
 
 		lastWasHeading = false
 
-		// Check for ordered list (e.g., "1. Item", "2. Item") with optional leading indent
+		// Check for ordered list
 		if orderedListMatch := reOrderedList.FindStringSubmatch(line); orderedListMatch != nil {
 			depth := indentDepth(orderedListMatch[1])
 			listItemText := orderedListMatch[2]
 			inlineSegs := parseSimpleFormatting(listItemText + "\n")
-			for i := range inlineSegs {
-				inlineSegs[i].orderedListItem = true
-				inlineSegs[i].listDepth = depth
+			for j := range inlineSegs {
+				inlineSegs[j].orderedListItem = true
+				inlineSegs[j].listDepth = depth
 			}
 			segments = append(segments, inlineSegs...)
 			continue
 		}
 
-		// Check for unordered list (e.g., "- Item", "* Item", "+ Item") with optional leading indent
+		// Check for unordered list
 		if unorderedListMatch := reUnorderedList.FindStringSubmatch(line); unorderedListMatch != nil {
 			depth := indentDepth(unorderedListMatch[1])
 			listItemText := unorderedListMatch[3]
 			inlineSegs := parseSimpleFormatting(listItemText + "\n")
-			for i := range inlineSegs {
-				inlineSegs[i].unorderedListItem = true
-				inlineSegs[i].listDepth = depth
+			for j := range inlineSegs {
+				inlineSegs[j].unorderedListItem = true
+				inlineSegs[j].listDepth = depth
 			}
 			segments = append(segments, inlineSegs...)
 			continue
@@ -898,7 +971,116 @@ func parseMarkdown(markdown string) []markdownSegment {
 		})
 	}
 
+	// Process any remaining buffered table at end of document
+	if inTable {
+		if table := parseMarkdownTable(tableBuffer); table != nil {
+			segments = append(segments, markdownSegment{
+				isTable: true,
+				table:   table,
+			})
+		} else {
+			for _, bufferedLine := range tableBuffer {
+				segments = append(segments, parseSimpleFormatting(bufferedLine+"\n")...)
+			}
+		}
+	}
+
 	return segments
+}
+
+// parseMarkdownTable parses a markdown table from buffered lines.
+// Returns nil if the lines don't form a valid table.
+func parseMarkdownTable(lines []string) *tableSegment {
+	// Minimum: separator + at least one data row
+	if len(lines) < 2 {
+		return nil
+	}
+
+	var rows []tableRow
+	var numColumns int
+	var dataStartIdx int
+
+	// Check if first line is a separator (table without header)
+	if reTableSeparator.MatchString(lines[0]) {
+		// Table without header - get column count from separator
+		separatorCells := splitTableRow(lines[0])
+		numColumns = len(separatorCells)
+		dataStartIdx = 1
+	} else {
+		// Table with header - second line should be separator
+		if len(lines) < 3 {
+			return nil
+		}
+		if !reTableSeparator.MatchString(lines[1]) {
+			return nil
+		}
+
+		// Parse header row
+		headerCells := splitTableRow(lines[0])
+		if len(headerCells) == 0 {
+			return nil
+		}
+		numColumns = len(headerCells)
+
+		// Add header row with bold formatting
+		headerRow := tableRow{cells: make([]tableCell, 0, numColumns)}
+		for _, cellText := range headerCells {
+			segments := parseSimpleFormatting(strings.TrimSpace(cellText))
+			// Make all header segments bold
+			for i := range segments {
+				segments[i].bold = true
+			}
+			segments = mergeSegments(segments)
+			headerRow.cells = append(headerRow.cells, tableCell{segments: segments})
+		}
+		rows = append(rows, headerRow)
+		dataStartIdx = 2
+	}
+
+	// Parse data rows
+	for i := dataStartIdx; i < len(lines); i++ {
+		cells := splitTableRow(lines[i])
+		if len(cells) != numColumns {
+			// Inconsistent column count
+			return nil
+		}
+
+		dataRow := tableRow{cells: make([]tableCell, 0, numColumns)}
+		for _, cellText := range cells {
+			segments := parseSimpleFormatting(strings.TrimSpace(cellText))
+			segments = mergeSegments(segments)
+			dataRow.cells = append(dataRow.cells, tableCell{segments: segments})
+		}
+		rows = append(rows, dataRow)
+	}
+
+	return &tableSegment{
+		rows:       rows,
+		numColumns: numColumns,
+		isTable:    true,
+	}
+}
+
+// splitTableRow splits a table row by pipe delimiters.
+// Returns cell contents without the leading/trailing pipes.
+func splitTableRow(line string) []string {
+	// Remove leading/trailing whitespace
+	line = strings.TrimSpace(line)
+
+	// Remove leading and trailing pipes
+	line = strings.TrimPrefix(line, "|")
+	line = strings.TrimSuffix(line, "|")
+
+	// Split by pipe
+	parts := strings.Split(line, "|")
+
+	// Trim whitespace from each part
+	cells := make([]string, 0, len(parts))
+	for _, part := range parts {
+		cells = append(cells, strings.TrimSpace(part))
+	}
+
+	return cells
 }
 
 // parseSimpleFormatting parses bold, italic, underline, and strikethrough formatting.
@@ -1129,7 +1311,8 @@ func mergeSegments(segments []markdownSegment) []markdownSegment {
 			!curr.isPersonField && !prev.isPersonField &&
 			curr.isInlineCode == prev.isInlineCode &&
 			curr.isCodeBlock == prev.isCodeBlock &&
-			curr.codeLanguage == prev.codeLanguage {
+			curr.codeLanguage == prev.codeLanguage &&
+			!curr.isTable && !prev.isTable {
 			// Merge by concatenating text
 			prev.text += curr.text
 		} else {
@@ -1139,6 +1322,404 @@ func mergeSegments(segments []markdownSegment) []markdownSegment {
 	}
 
 	return merged
+}
+
+// convertTableToRequests converts a table segment to Google Docs API requests.
+// convertTableToRequests creates just the empty table structure.
+// Cell content must be populated in a separate batch after querying the document.
+func convertTableToRequests(table *tableSegment, startIndex int64) []*docs.Request {
+	return []*docs.Request{
+		{
+			InsertTable: &docs.InsertTableRequest{
+				Rows:     int64(len(table.rows)),
+				Columns:  int64(table.numColumns),
+				Location: &docs.Location{Index: startIndex},
+			},
+		},
+	}
+}
+
+// insertMarkdownWithTables handles insertion of markdown segments that may contain tables.
+// It properly creates and populates tables using the multi-phase approach:
+// 1. Create empty table structure
+// 2. Query document to get cell indices
+// 3. Populate all cells in a single batch
+// Returns a result map with document info and status.
+func insertMarkdownWithTables(docID string, segments []markdownSegment, insertIndex int64) (map[string]any, error) {
+	// Get the document to retrieve title
+	doc, err := docsSvc.Documents.Get(docID).Do()
+	if err != nil {
+		return nil, fmt.Errorf("get document: %w", err)
+	}
+
+	// Check if there are any table segments
+	hasTable := false
+	var tableSegments []*tableSegment
+	for _, seg := range segments {
+		if seg.isTable && seg.table != nil {
+			hasTable = true
+			tableSegments = append(tableSegments, seg.table)
+		}
+	}
+
+	if hasTable {
+		// Process each table completely (create + populate) before moving to next table
+		// This avoids index confusion when multiple tables are present
+		currentIndex := insertIndex
+		tableIdx := 0
+
+		for _, seg := range segments {
+			if seg.isTable && seg.table != nil {
+				// Create this table structure
+				tableRequests := convertTableToRequests(seg.table, currentIndex)
+				batchUpdateReq := &docs.BatchUpdateDocumentRequest{Requests: tableRequests}
+				_, err := docsSvc.Documents.BatchUpdate(docID, batchUpdateReq).Do()
+				if err != nil {
+					return nil, fmt.Errorf("create table %d: %w", tableIdx, err)
+				}
+
+				// Query document to get the table we just created
+				doc, err = docsSvc.Documents.Get(docID).Do()
+				if err != nil {
+					return nil, fmt.Errorf("get document after creating table %d: %w", tableIdx, err)
+				}
+				if doc.Body == nil {
+					return nil, fmt.Errorf("document body is nil after creating table %d", tableIdx)
+				}
+
+				// Find the table we just created (it's the last table at or after currentIndex)
+				var elem *docs.StructuralElement
+				for _, e := range doc.Body.Content {
+					if e.Table != nil && e.StartIndex >= currentIndex {
+						elem = e
+						break
+					}
+				}
+
+				if elem == nil || elem.Table == nil {
+					return nil, fmt.Errorf("table %d not found after creation", tableIdx)
+				}
+
+				// Validate table dimensions match what was requested
+				expectedRows := len(seg.table.rows)
+				actualRows := len(elem.Table.TableRows)
+				if actualRows < expectedRows {
+					return nil, fmt.Errorf("table %d dimension mismatch: requested %d rows, API returned %d", tableIdx, expectedRows, actualRows)
+				}
+
+				// Populate cells one-by-one with a re-query after each cell.
+				// In a freshly created empty table, even cells within the same row have
+				// overlapping Content[0].StartIndex values. We must process cells sequentially,
+				// re-querying after each to get updated indices for the next cell.
+				for rowIdx, row := range seg.table.rows {
+					for colIdx, cell := range row.cells {
+						// Re-validate table structure on each iteration
+						if rowIdx >= len(elem.Table.TableRows) {
+							return nil, fmt.Errorf("table %d row %d: index out of bounds (table has %d rows)", tableIdx, rowIdx, len(elem.Table.TableRows))
+						}
+						tableRow := elem.Table.TableRows[rowIdx]
+
+						if colIdx >= len(tableRow.TableCells) {
+							return nil, fmt.Errorf("table %d cell[%d,%d]: index out of bounds (row has %d columns)", tableIdx, rowIdx, colIdx, len(tableRow.TableCells))
+						}
+						tableCell := tableRow.TableCells[colIdx]
+
+						if len(tableCell.Content) == 0 {
+							continue
+						}
+
+						cellStartIndex := tableCell.Content[0].StartIndex
+						cellReqs := populateTableCell(&cell, cellStartIndex)
+
+						// Execute this cell's requests
+						if len(cellReqs) > 0 {
+							batchUpdateReq := &docs.BatchUpdateDocumentRequest{Requests: cellReqs}
+							_, err = docsSvc.Documents.BatchUpdate(docID, batchUpdateReq).Do()
+							if err != nil {
+								return nil, fmt.Errorf("populate table %d cell[%d,%d]: %w", tableIdx, rowIdx, colIdx, err)
+							}
+
+							// Re-query to get updated table structure for next cell.
+							// Skip if this is the last cell to save one API call.
+							isLastCell := (rowIdx == len(seg.table.rows)-1) && (colIdx == len(row.cells)-1)
+							if !isLastCell {
+								doc, err = docsSvc.Documents.Get(docID).Do()
+								if err != nil {
+									return nil, fmt.Errorf("get document after table %d cell[%d,%d]: %w", tableIdx, rowIdx, colIdx, err)
+								}
+								if doc.Body == nil {
+									return nil, fmt.Errorf("document body is nil after table %d cell[%d,%d]", tableIdx, rowIdx, colIdx)
+								}
+
+								// Re-find the table for next iteration
+								elem = nil
+								for _, e := range doc.Body.Content {
+									if e.Table != nil && e.StartIndex >= currentIndex {
+										elem = e
+										break
+									}
+								}
+								if elem == nil || elem.Table == nil {
+									return nil, fmt.Errorf("table %d not found after populating cell[%d,%d]", tableIdx, rowIdx, colIdx)
+								}
+							}
+						}
+					}
+				}
+
+				// Update currentIndex to after this table for next segment
+				// Re-query one more time to get final table structure
+				doc, err = docsSvc.Documents.Get(docID).Do()
+				if err != nil {
+					return nil, fmt.Errorf("get document after completing table %d: %w", tableIdx, err)
+				}
+				if doc.Body == nil {
+					return nil, fmt.Errorf("document body is nil after completing table %d", tableIdx)
+				}
+
+				// Reset elem to nil before searching to avoid retaining stale value
+				elem = nil
+				for _, e := range doc.Body.Content {
+					if e.Table != nil && e.StartIndex >= currentIndex {
+						elem = e
+						currentIndex = e.EndIndex
+						break
+					}
+				}
+
+				// Validate we found the table
+				if elem == nil {
+					return nil, fmt.Errorf("table %d not found after populating cells", tableIdx)
+				}
+
+				tableIdx++
+			} else {
+				// Handle non-table segments
+				segRequests := convertMarkdownToRequests([]markdownSegment{seg}, currentIndex)
+				if len(segRequests) > 0 {
+					batchUpdateReq := &docs.BatchUpdateDocumentRequest{Requests: segRequests}
+					_, err := docsSvc.Documents.BatchUpdate(docID, batchUpdateReq).Do()
+					if err != nil {
+						return nil, fmt.Errorf("insert content: %w", err)
+					}
+
+					// Update currentIndex - track all content insertions
+					for _, req := range segRequests {
+						switch {
+						case req.InsertText != nil:
+							currentIndex += int64(utf8.RuneCountInString(req.InsertText.Text))
+						case req.InsertDate != nil:
+							// Date chips take 1 character in the index
+							currentIndex++
+						case req.InsertPerson != nil:
+							// Person chips take 1 character in the index
+							currentIndex++
+						}
+					}
+				}
+			}
+		}
+
+		return map[string]any{
+			"document_id":  docID,
+			"title":        doc.Title,
+			"status":       "success",
+			"insert_index": insertIndex,
+			"tables":       len(tableSegments),
+		}, nil
+	}
+
+	// No tables - use single-batch insertion via convertMarkdownToRequests
+	requests := convertMarkdownToRequests(segments, insertIndex)
+	batchUpdateReq := &docs.BatchUpdateDocumentRequest{Requests: requests}
+	_, err = docsSvc.Documents.BatchUpdate(docID, batchUpdateReq).Do()
+	if err != nil {
+		return nil, fmt.Errorf("batch update: %w", err)
+	}
+
+	return map[string]any{
+		"document_id":  docID,
+		"title":        doc.Title,
+		"status":       "success",
+		"insert_index": insertIndex,
+	}, nil
+}
+
+// populateTableCell creates requests to populate a single table cell with content.
+func populateTableCell(cell *tableCell, cellStartIndex int64) []*docs.Request {
+	var requests []*docs.Request
+
+	// Skip empty cells - Google Docs already creates cells with an empty paragraph containing \n
+	if len(cell.segments) == 0 || (len(cell.segments) == 1 && cell.segments[0].text == "") {
+		return requests
+	}
+
+	// Table cells are created with an empty paragraph containing just '\n' at cellStartIndex.
+	// Insert content at cellStartIndex, which pushes the newline forward.
+	// This places content inside the cell paragraph before the newline.
+	currentIndex := cellStartIndex
+	for _, seg := range cell.segments {
+		if seg.text == "" && !seg.isDateField && !seg.isPersonField {
+			continue
+		}
+
+		// Handle date chips
+		if seg.isDateField {
+			// Parse the date value and create RFC3339 timestamp
+			var timestamp string
+			if seg.dateValue == "" {
+				// @today - RFC3339 format ending with Z (required by protobuf Timestamp)
+				timestamp = time.Now().UTC().Format(time.RFC3339)
+			} else {
+				// @date(YYYY-MM-DD) - parse and format as RFC3339 with Z suffix
+				dateParts := strings.Split(seg.dateValue, "-")
+				if len(dateParts) == 3 {
+					year, _ := strconv.Atoi(dateParts[0])
+					month, _ := strconv.Atoi(dateParts[1])
+					day, _ := strconv.Atoi(dateParts[2])
+					specificDate := time.Date(year, time.Month(month), day, 0, 0, 0, 0, time.UTC)
+					timestamp = specificDate.UTC().Format(time.RFC3339)
+				} else {
+					// Invalid date format, fall back to current date
+					timestamp = time.Now().UTC().Format(time.RFC3339)
+				}
+			}
+
+			// Insert the date chip
+			requests = append(requests, &docs.Request{
+				InsertDate: &docs.InsertDateRequest{
+					Location: &docs.Location{Index: currentIndex},
+					DateElementProperties: &docs.DateElementProperties{
+						Timestamp:  timestamp,
+						DateFormat: "DATE_FORMAT_MONTH_DAY_YEAR_ABBREVIATED",
+					},
+				},
+			})
+
+			// Date elements take 1 character in the document index
+			currentIndex++
+
+			// Apply text formatting to the date chip if needed
+			if seg.bold || seg.italic || seg.underline || seg.strikethrough {
+				textStyle := &docs.TextStyle{
+					Bold:          seg.bold,
+					Italic:        seg.italic,
+					Underline:     seg.underline,
+					Strikethrough: seg.strikethrough,
+				}
+
+				fields := []string{"bold", "italic", "underline", "strikethrough"}
+
+				requests = append(requests, &docs.Request{
+					UpdateTextStyle: &docs.UpdateTextStyleRequest{
+						Range: &docs.Range{
+							StartIndex: currentIndex - 1,
+							EndIndex:   currentIndex,
+						},
+						TextStyle: textStyle,
+						Fields:    strings.Join(fields, ","),
+					},
+				})
+			}
+
+			continue
+		}
+
+		// Handle person chips
+		if seg.isPersonField {
+			// Check if the identifier is an email (contains @)
+			personProps := &docs.PersonProperties{}
+			if strings.Contains(seg.personIdentifier, "@") {
+				// It's an email address
+				personProps.Email = seg.personIdentifier
+			} else {
+				// It's a name - set both name and use it as email placeholder
+				personProps.Name = seg.personIdentifier
+				personProps.Email = seg.personIdentifier
+			}
+
+			requests = append(requests, &docs.Request{
+				InsertPerson: &docs.InsertPersonRequest{
+					Location:         &docs.Location{Index: currentIndex},
+					PersonProperties: personProps,
+				},
+			})
+
+			// Person elements take 1 character in the index
+			currentIndex++
+
+			// Apply text formatting to the person chip if needed
+			if seg.bold || seg.italic || seg.underline || seg.strikethrough {
+				textStyle := &docs.TextStyle{
+					Bold:          seg.bold,
+					Italic:        seg.italic,
+					Underline:     seg.underline,
+					Strikethrough: seg.strikethrough,
+				}
+
+				fields := []string{"bold", "italic", "underline", "strikethrough"}
+
+				requests = append(requests, &docs.Request{
+					UpdateTextStyle: &docs.UpdateTextStyleRequest{
+						Range: &docs.Range{
+							StartIndex: currentIndex - 1,
+							EndIndex:   currentIndex,
+						},
+						TextStyle: textStyle,
+						Fields:    strings.Join(fields, ","),
+					},
+				})
+			}
+
+			continue
+		}
+
+		// Insert regular text
+		requests = append(requests, &docs.Request{
+			InsertText: &docs.InsertTextRequest{
+				Text:     seg.text,
+				Location: &docs.Location{Index: currentIndex},
+			},
+		})
+
+		segLength := int64(utf8.RuneCountInString(seg.text))
+		segEndIndex := currentIndex + segLength
+
+		// Apply text formatting if needed
+		if seg.bold || seg.italic || seg.underline || seg.strikethrough || seg.linkURL != "" {
+			textStyle := &docs.TextStyle{
+				Bold:          seg.bold,
+				Italic:        seg.italic,
+				Underline:     seg.underline,
+				Strikethrough: seg.strikethrough,
+			}
+
+			if seg.linkURL != "" {
+				textStyle.Link = &docs.Link{Url: seg.linkURL}
+			}
+
+			// Build fields list
+			fields := []string{"bold", "italic", "underline", "strikethrough"}
+			if seg.linkURL != "" {
+				fields = append(fields, "link")
+			}
+
+			requests = append(requests, &docs.Request{
+				UpdateTextStyle: &docs.UpdateTextStyleRequest{
+					Range: &docs.Range{
+						StartIndex: currentIndex,
+						EndIndex:   segEndIndex,
+					},
+					TextStyle: textStyle,
+					Fields:    strings.Join(fields, ","),
+				},
+			})
+		}
+
+		currentIndex = segEndIndex
+	}
+
+	return requests
 }
 
 // convertMarkdownToRequests converts markdown segments to Google Docs API requests.
@@ -1176,6 +1757,14 @@ func convertMarkdownToRequests(segments []markdownSegment, startIndex int64) []*
 	var currentHeadingLineID int
 
 	for i, seg := range segments {
+		// Table segments should never reach this function - they're handled by insertMarkdownWithTables.
+		// If we encounter one, it's a programming error.
+		if seg.isTable && seg.table != nil {
+			// This should never happen - insertMarkdownWithTables handles all table processing.
+			// If we get here, it means the caller didn't properly filter table segments.
+			panic("convertMarkdownToRequests called with table segment - tables must be handled by insertMarkdownWithTables")
+		}
+
 		if seg.text == "" && !seg.isDateField && !seg.isPersonField {
 			continue
 		}
@@ -1708,8 +2297,6 @@ func toolWriteText(params, _ json.RawMessage) (any, error) {
 		return nil, fmt.Errorf("insert_index must be >= 1 (got %d); set append_to_end=true to append", insertIndex)
 	}
 
-	var requests []*docs.Request
-
 	if p.IsMarkdown {
 		// When appending to non-empty document, prepend newline to start new paragraph
 		textToInsert := p.Text
@@ -1718,17 +2305,26 @@ func toolWriteText(params, _ json.RawMessage) (any, error) {
 		}
 		// Parse markdown and convert to requests
 		segments := parseMarkdown(textToInsert)
-		requests = convertMarkdownToRequests(segments, insertIndex)
-	} else {
-		// Plain text insertion
-		requests = []*docs.Request{
-			{
-				InsertText: &docs.InsertTextRequest{
-					Text:     p.Text,
-					Location: &docs.Location{Index: insertIndex},
-				},
-			},
+
+		// Use the shared helper for handling markdown with potential tables
+		result, err := insertMarkdownWithTables(docID, segments, insertIndex)
+		if err != nil {
+			return nil, err
 		}
+
+		// Add character count to result
+		result["characters"] = len(p.Text)
+		return result, nil
+	}
+
+	// Plain text insertion
+	requests := []*docs.Request{
+		{
+			InsertText: &docs.InsertTextRequest{
+				Text:     p.Text,
+				Location: &docs.Location{Index: insertIndex},
+			},
+		},
 	}
 
 	// Execute the batch update
@@ -1805,28 +2401,16 @@ func toolWriteMarkdown(params, _ json.RawMessage) (any, error) {
 		markdownToInsert = "\n" + markdownToInsert
 	}
 
-	// Parse markdown and convert to requests
+	// Parse markdown and use the shared helper for handling tables
 	segments := parseMarkdown(markdownToInsert)
-	requests := convertMarkdownToRequests(segments, insertIndex)
-
-	// Execute the batch update
-	batchUpdateReq := &docs.BatchUpdateDocumentRequest{
-		Requests: requests,
-	}
-
-	resp, err := docsSvc.Documents.BatchUpdate(docID, batchUpdateReq).Do()
+	result, err := insertMarkdownWithTables(docID, segments, insertIndex)
 	if err != nil {
-		return nil, fmt.Errorf("batch update: %w", err)
+		return nil, err
 	}
 
-	return map[string]any{
-		"document_id":  docID,
-		"title":        doc.Title,
-		"status":       "success",
-		"insert_index": insertIndex,
-		"characters":   len(p.Markdown),
-		"replies":      len(resp.Replies),
-	}, nil
+	// Add character count to result
+	result["characters"] = len(p.Markdown)
+	return result, nil
 }
 
 type createDocumentParams struct {
