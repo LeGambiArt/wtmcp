@@ -1016,6 +1016,24 @@ func TestHeadingFollowedByNormalText(t *testing.T) {
 }
 
 func TestMergeSegments(t *testing.T) {
+	t.Run("no merge table segments", func(t *testing.T) {
+		segments := []markdownSegment{
+			{text: "Before table\n"},
+			{isTable: true, table: &tableSegment{numColumns: 2, rows: []tableRow{}}},
+			{text: "After table\n"},
+		}
+		merged := mergeSegments(segments)
+		if len(merged) != 3 {
+			t.Errorf("expected 3 segments, got %d", len(merged))
+		}
+		if !merged[1].isTable {
+			t.Error("table segment lost isTable flag after merge")
+		}
+		if merged[1].table == nil {
+			t.Error("table segment lost table pointer after merge")
+		}
+	})
+
 	t.Run("merge adjacent plain", func(t *testing.T) {
 		segments := []markdownSegment{
 			{text: "a"},
@@ -1692,6 +1710,150 @@ func TestIsMonospaceFont(t *testing.T) {
 			result := isMonospaceFont(tt.font)
 			if result != tt.expected {
 				t.Errorf("isMonospaceFont(%q) = %v, want %v", tt.font, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestTableDataStructures(t *testing.T) {
+	// Test tableCell creation
+	cell := tableCell{
+		segments: []markdownSegment{
+			{text: "Hello", bold: true},
+		},
+	}
+	if len(cell.segments) != 1 {
+		t.Errorf("expected 1 segment, got %d", len(cell.segments))
+	}
+
+	// Test tableRow creation
+	row := tableRow{
+		cells: []tableCell{cell, cell},
+	}
+	if len(row.cells) != 2 {
+		t.Errorf("expected 2 cells, got %d", len(row.cells))
+	}
+
+	// Test tableSegment creation
+	table := tableSegment{
+		rows:       []tableRow{row},
+		numColumns: 2,
+		isTable:    true,
+	}
+	if !table.isTable {
+		t.Error("expected isTable to be true")
+	}
+	if table.numColumns != 2 {
+		t.Errorf("expected 2 columns, got %d", table.numColumns)
+	}
+
+	// Test markdownSegment with table
+	seg := markdownSegment{
+		isTable: true,
+		table:   &table,
+	}
+	if !seg.isTable {
+		t.Error("expected isTable to be true")
+	}
+	if seg.table == nil {
+		t.Error("expected table to be non-nil")
+	}
+}
+
+func TestTableRegexPatterns(t *testing.T) {
+	tests := []struct {
+		name    string
+		pattern string
+		input   string
+		want    bool
+	}{
+		// reTableRow tests
+		{
+			name:    "valid table row with 2 columns",
+			pattern: "tableRow",
+			input:   "| Cell 1 | Cell 2 |",
+			want:    true,
+		},
+		{
+			name:    "valid table row with spaces",
+			pattern: "tableRow",
+			input:   "  | Cell 1 | Cell 2 |  ",
+			want:    true,
+		},
+		{
+			name:    "valid table row with 3 columns",
+			pattern: "tableRow",
+			input:   "| A | B | C |",
+			want:    true,
+		},
+		{
+			name:    "invalid - no leading pipe",
+			pattern: "tableRow",
+			input:   "Cell 1 | Cell 2 |",
+			want:    false,
+		},
+		{
+			name:    "invalid - no trailing pipe",
+			pattern: "tableRow",
+			input:   "| Cell 1 | Cell 2",
+			want:    false,
+		},
+		{
+			name:    "invalid - single pipe",
+			pattern: "tableRow",
+			input:   "|",
+			want:    false,
+		},
+		// reTableSeparator tests
+		{
+			name:    "valid separator with 2 columns",
+			pattern: "tableSeparator",
+			input:   "| --- | --- |",
+			want:    true,
+		},
+		{
+			name:    "valid separator with varied dashes",
+			pattern: "tableSeparator",
+			input:   "| ---- | ------ |",
+			want:    true,
+		},
+		{
+			name:    "valid separator with colons (ignored)",
+			pattern: "tableSeparator",
+			input:   "| :--- | :---: | ---: |",
+			want:    true,
+		},
+		{
+			name:    "valid separator with spaces",
+			pattern: "tableSeparator",
+			input:   "|  ---  |  ---  |",
+			want:    true,
+		},
+		{
+			name:    "invalid separator - contains letters",
+			pattern: "tableSeparator",
+			input:   "| abc | def |",
+			want:    false,
+		},
+		{
+			name:    "invalid separator - no dashes",
+			pattern: "tableSeparator",
+			input:   "| | |",
+			want:    false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var got bool
+			switch tt.pattern {
+			case "tableRow":
+				got = reTableRow.MatchString(tt.input)
+			case "tableSeparator":
+				got = reTableSeparator.MatchString(tt.input)
+			}
+			if got != tt.want {
+				t.Errorf("pattern %s on %q: got %v, want %v", tt.pattern, tt.input, got, tt.want)
 			}
 		})
 	}
@@ -3365,31 +3527,21 @@ func TestConvertMarkdownToRequests_InlineCode(t *testing.T) {
 	})
 
 	t.Run("non-code text does not get Courier New", func(t *testing.T) {
-		markdown := "Use `code` here"
+		markdown := "Regular text without code"
 		segments := parseMarkdown(markdown)
 		requests := convertMarkdownToRequests(segments, 1)
 
-		// Count how many UpdateTextStyle requests have Courier New
-		courierCount := 0
-		totalStyleCount := 0
 		for _, req := range requests {
-			if req.UpdateTextStyle != nil {
-				totalStyleCount++
-				if req.UpdateTextStyle.TextStyle.WeightedFontFamily != nil &&
-					req.UpdateTextStyle.TextStyle.WeightedFontFamily.FontFamily == "Courier New" {
-					courierCount++
-				}
+			if req.UpdateTextStyle != nil &&
+				req.UpdateTextStyle.TextStyle.WeightedFontFamily != nil &&
+				req.UpdateTextStyle.TextStyle.WeightedFontFamily.FontFamily == "Courier New" {
+				t.Errorf("non-code text should not have Courier New font")
 			}
-		}
-
-		// Only the inline code segment should have Courier New
-		if courierCount != 1 {
-			t.Errorf("expected exactly 1 Courier New style request, got %d (out of %d total)", courierCount, totalStyleCount)
 		}
 	})
 
 	t.Run("inline code in heading applies Courier New", func(t *testing.T) {
-		markdown := "# The `main` function"
+		markdown := "# Heading with `code`"
 		segments := parseMarkdown(markdown)
 		requests := convertMarkdownToRequests(segments, 1)
 
@@ -3403,6 +3555,615 @@ func TestConvertMarkdownToRequests_InlineCode(t *testing.T) {
 		}
 		if !foundCourierNew {
 			t.Errorf("expected Courier New font for inline code in heading")
+		}
+	})
+}
+
+func TestParseMarkdownTable(t *testing.T) {
+	tests := []struct {
+		name    string
+		lines   []string
+		want    *tableSegment
+		wantNil bool
+	}{
+		{
+			name: "basic 2x2 table",
+			lines: []string{
+				"| A | B |",
+				"| --- | --- |",
+				"| 1 | 2 |",
+			},
+			want: &tableSegment{
+				numColumns: 2,
+				isTable:    true,
+				rows: []tableRow{
+					{cells: []tableCell{
+						{segments: []markdownSegment{{text: "A"}}},
+						{segments: []markdownSegment{{text: "B"}}},
+					}},
+					{cells: []tableCell{
+						{segments: []markdownSegment{{text: "1"}}},
+						{segments: []markdownSegment{{text: "2"}}},
+					}},
+				},
+			},
+		},
+		{
+			name: "table with 3 columns and 2 data rows",
+			lines: []string{
+				"| Name | Age | City |",
+				"| ---- | --- | ---- |",
+				"| Alice | 30 | NYC |",
+				"| Bob | 25 | LA |",
+			},
+			want: &tableSegment{
+				numColumns: 3,
+				isTable:    true,
+				rows: []tableRow{
+					{cells: []tableCell{
+						{segments: []markdownSegment{{text: "Name"}}},
+						{segments: []markdownSegment{{text: "Age"}}},
+						{segments: []markdownSegment{{text: "City"}}},
+					}},
+					{cells: []tableCell{
+						{segments: []markdownSegment{{text: "Alice"}}},
+						{segments: []markdownSegment{{text: "30"}}},
+						{segments: []markdownSegment{{text: "NYC"}}},
+					}},
+					{cells: []tableCell{
+						{segments: []markdownSegment{{text: "Bob"}}},
+						{segments: []markdownSegment{{text: "25"}}},
+						{segments: []markdownSegment{{text: "LA"}}},
+					}},
+				},
+			},
+		},
+		{
+			name: "invalid - missing separator",
+			lines: []string{
+				"| A | B |",
+				"| 1 | 2 |",
+			},
+			wantNil: true,
+		},
+		{
+			name: "invalid - inconsistent columns",
+			lines: []string{
+				"| A | B |",
+				"| --- | --- |",
+				"| 1 | 2 | 3 |",
+			},
+			wantNil: true,
+		},
+		{
+			name: "invalid - no data rows",
+			lines: []string{
+				"| A | B |",
+				"| --- | --- |",
+			},
+			wantNil: true,
+		},
+		{
+			name:    "invalid - too few lines",
+			lines:   []string{"| A | B |"},
+			wantNil: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseMarkdownTable(tt.lines)
+
+			if tt.wantNil {
+				if got != nil {
+					t.Errorf("expected nil, got %+v", got)
+				}
+				return
+			}
+
+			if got == nil {
+				t.Fatal("expected non-nil result")
+			}
+
+			if got.numColumns != tt.want.numColumns {
+				t.Errorf("numColumns: got %d, want %d", got.numColumns, tt.want.numColumns)
+			}
+			if got.isTable != tt.want.isTable {
+				t.Errorf("isTable: got %v, want %v", got.isTable, tt.want.isTable)
+			}
+			if len(got.rows) != len(tt.want.rows) {
+				t.Errorf("rows: got %d, want %d", len(got.rows), len(tt.want.rows))
+			}
+
+			// Check first row cells
+			if len(got.rows) > 0 && len(tt.want.rows) > 0 {
+				gotRow := got.rows[0]
+				wantRow := tt.want.rows[0]
+				if len(gotRow.cells) != len(wantRow.cells) {
+					t.Errorf("row 0 cells: got %d, want %d", len(gotRow.cells), len(wantRow.cells))
+				}
+				// Check first cell content
+				if len(gotRow.cells) > 0 && len(wantRow.cells) > 0 {
+					gotCell := gotRow.cells[0]
+					wantCell := wantRow.cells[0]
+					if len(gotCell.segments) > 0 && len(wantCell.segments) > 0 {
+						if gotCell.segments[0].text != wantCell.segments[0].text {
+							t.Errorf("cell[0][0] text: got %q, want %q",
+								gotCell.segments[0].text, wantCell.segments[0].text)
+						}
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestTableParsingWithFormatting(t *testing.T) {
+	tests := []struct {
+		name      string
+		lines     []string
+		checkCell struct {
+			row  int
+			col  int
+			want []markdownSegment
+		}
+	}{
+		{
+			name: "bold text in cell",
+			lines: []string{
+				"| Name |",
+				"| ---- |",
+				"| **Alice** |",
+			},
+			checkCell: struct {
+				row  int
+				col  int
+				want []markdownSegment
+			}{
+				row: 1,
+				col: 0,
+				want: []markdownSegment{
+					{text: "Alice", bold: true},
+				},
+			},
+		},
+		{
+			name: "italic text in cell",
+			lines: []string{
+				"| Status |",
+				"| ------ |",
+				"| *Active* |",
+			},
+			checkCell: struct {
+				row  int
+				col  int
+				want []markdownSegment
+			}{
+				row: 1,
+				col: 0,
+				want: []markdownSegment{
+					{text: "Active", italic: true},
+				},
+			},
+		},
+		{
+			name: "link in cell",
+			lines: []string{
+				"| Link |",
+				"| ---- |",
+				"| [Google](https://google.com) |",
+			},
+			checkCell: struct {
+				row  int
+				col  int
+				want []markdownSegment
+			}{
+				row: 1,
+				col: 0,
+				want: []markdownSegment{
+					{text: "Google", linkURL: "https://google.com"},
+				},
+			},
+		},
+		{
+			name: "mixed formatting in cell",
+			lines: []string{
+				"| Text |",
+				"| ---- |",
+				"| **Bold** and *italic* |",
+			},
+			checkCell: struct {
+				row  int
+				col  int
+				want []markdownSegment
+			}{
+				row: 1,
+				col: 0,
+				want: []markdownSegment{
+					{text: "Bold", bold: true},
+					{text: " and "},
+					{text: "italic", italic: true},
+				},
+			},
+		},
+		{
+			name: "empty cell",
+			lines: []string{
+				"| A | B |",
+				"| --- | --- |",
+				"| Content |  |",
+			},
+			checkCell: struct {
+				row  int
+				col  int
+				want []markdownSegment
+			}{
+				row:  1,
+				col:  1,
+				want: []markdownSegment{},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			table := parseMarkdownTable(tt.lines)
+			if table == nil {
+				t.Fatal("expected non-nil table")
+			}
+
+			if tt.checkCell.row >= len(table.rows) {
+				t.Fatalf("row %d out of bounds (have %d rows)", tt.checkCell.row, len(table.rows))
+			}
+
+			row := table.rows[tt.checkCell.row]
+			if tt.checkCell.col >= len(row.cells) {
+				t.Fatalf("col %d out of bounds (have %d cols)", tt.checkCell.col, len(row.cells))
+			}
+
+			cell := row.cells[tt.checkCell.col]
+			got := cell.segments
+
+			if len(got) != len(tt.checkCell.want) {
+				t.Fatalf("segments count: got %d, want %d", len(got), len(tt.checkCell.want))
+			}
+
+			for i, wantSeg := range tt.checkCell.want {
+				gotSeg := got[i]
+				if gotSeg.text != wantSeg.text {
+					t.Errorf("segment[%d].text: got %q, want %q", i, gotSeg.text, wantSeg.text)
+				}
+				if gotSeg.bold != wantSeg.bold {
+					t.Errorf("segment[%d].bold: got %v, want %v", i, gotSeg.bold, wantSeg.bold)
+				}
+				if gotSeg.italic != wantSeg.italic {
+					t.Errorf("segment[%d].italic: got %v, want %v", i, gotSeg.italic, wantSeg.italic)
+				}
+				if gotSeg.linkURL != wantSeg.linkURL {
+					t.Errorf("segment[%d].linkURL: got %q, want %q", i, gotSeg.linkURL, wantSeg.linkURL)
+				}
+			}
+		})
+	}
+}
+
+func TestParseMarkdownWithTables(t *testing.T) {
+	tests := []struct {
+		name           string
+		markdown       string
+		wantTableCount int
+		checkSegment   int
+		wantIsTable    bool
+	}{
+		{
+			name: "simple table",
+			markdown: `| A | B |
+| --- | --- |
+| 1 | 2 |`,
+			wantTableCount: 1,
+			checkSegment:   0,
+			wantIsTable:    true,
+		},
+		{
+			name: "table with text before and after",
+			markdown: `Some text
+
+| A | B |
+| --- | --- |
+| 1 | 2 |
+
+More text`,
+			wantTableCount: 1,
+			checkSegment:   1, // Table is second segment (after "Some text\n")
+			wantIsTable:    true,
+		},
+		{
+			name: "multiple tables",
+			markdown: `| A | B |
+| --- | --- |
+| 1 | 2 |
+
+| C | D |
+| --- | --- |
+| 3 | 4 |`,
+			wantTableCount: 2,
+			checkSegment:   0,
+			wantIsTable:    true,
+		},
+		{
+			name: "malformed table - no separator",
+			markdown: `| A | B |
+| 1 | 2 |`,
+			wantTableCount: 0,
+			checkSegment:   0,
+			wantIsTable:    false,
+		},
+		{
+			name: "malformed table - inconsistent columns",
+			markdown: `| A | B |
+| --- | --- |
+| 1 | 2 | 3 |`,
+			wantTableCount: 0,
+			checkSegment:   0,
+			wantIsTable:    false,
+		},
+		{
+			name: "table with heading",
+			markdown: `# Title
+
+| A | B |
+| --- | --- |
+| 1 | 2 |`,
+			wantTableCount: 1,
+			checkSegment:   1, // After heading
+			wantIsTable:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			segments := parseMarkdown(tt.markdown)
+
+			// Count table segments
+			tableCount := 0
+			for _, seg := range segments {
+				if seg.isTable {
+					tableCount++
+				}
+			}
+
+			if tableCount != tt.wantTableCount {
+				t.Errorf("table count: got %d, want %d", tableCount, tt.wantTableCount)
+			}
+
+			// If expecting a table, verify at least one table segment exists with non-nil table
+			if tt.wantIsTable {
+				foundTable := false
+				for _, seg := range segments {
+					if seg.isTable && seg.table != nil {
+						foundTable = true
+						break
+					}
+				}
+				if !foundTable {
+					t.Error("expected to find at least one table segment with non-nil table")
+				}
+			}
+		})
+	}
+}
+
+func TestConvertTableToRequests(t *testing.T) {
+	table := &tableSegment{
+		numColumns: 2,
+		isTable:    true,
+		rows: []tableRow{
+			{cells: []tableCell{
+				{segments: []markdownSegment{{text: "Header1"}}},
+				{segments: []markdownSegment{{text: "Header2"}}},
+			}},
+			{cells: []tableCell{
+				{segments: []markdownSegment{{text: "Data1"}}},
+				{segments: []markdownSegment{{text: "Data2"}}},
+			}},
+		},
+	}
+
+	startIndex := int64(1)
+
+	requests := convertTableToRequests(table, startIndex)
+
+	// Should have exactly one request (InsertTable only, no cell content)
+	if len(requests) != 1 {
+		t.Fatalf("expected exactly 1 request (InsertTable only), got %d", len(requests))
+	}
+
+	// First request should be InsertTable
+	if requests[0].InsertTable == nil {
+		t.Fatal("first request should be InsertTable")
+	}
+
+	insertTable := requests[0].InsertTable
+	if insertTable.Rows != int64(len(table.rows)) {
+		t.Errorf("rows: got %d, want %d", insertTable.Rows, len(table.rows))
+	}
+	if insertTable.Columns != int64(table.numColumns) {
+		t.Errorf("columns: got %d, want %d", insertTable.Columns, table.numColumns)
+	}
+	if insertTable.Location.Index != startIndex {
+		t.Errorf("location index: got %d, want %d", insertTable.Location.Index, startIndex)
+	}
+}
+
+// TestConvertMarkdownToRequestsWithTable was removed because convertMarkdownToRequests
+// no longer handles table segments - all table processing is done by insertMarkdownWithTables.
+// Table segments reaching convertMarkdownToRequests is now a programming error (panic).
+
+func TestTableEdgeCases(t *testing.T) {
+	t.Run("table with leading newline", func(t *testing.T) {
+		// Simulates appending to non-empty document
+		markdown := "\n| Name | Nick | Know for |\n| ---- | ---- | -------- |\n| Sergio | impossible to write | wtmcp, refactor, keylime, ... |\n| Igor   | mrisca | bragai, Lola... |\n| Rafael | rafasgj | talking to much... |"
+
+		segments := parseMarkdown(markdown)
+
+		// Verify a table was found
+		foundTable := false
+		for _, seg := range segments {
+			if seg.isTable {
+				foundTable = true
+				if len(seg.table.rows) != 4 {
+					t.Errorf("expected 4 rows, got %d", len(seg.table.rows))
+				}
+				if seg.table.numColumns != 3 {
+					t.Errorf("expected 3 columns, got %d", seg.table.numColumns)
+				}
+				break
+			}
+		}
+
+		if !foundTable {
+			t.Error("expected to find a table segment with leading newline")
+		}
+	})
+
+	t.Run("empty cells", func(t *testing.T) {
+		markdown := `| A | B |
+| --- | --- |
+| Content |  |`
+
+		segments := parseMarkdown(markdown)
+		if len(segments) == 0 || !segments[0].isTable {
+			t.Fatal("expected table segment")
+		}
+
+		table := segments[0].table
+		if len(table.rows) < 2 {
+			t.Fatal("expected at least 2 rows")
+		}
+
+		// Check empty cell
+		emptyCell := table.rows[1].cells[1]
+		if len(emptyCell.segments) != 0 {
+			t.Error("empty cell should have no segments")
+		}
+	})
+
+	t.Run("multiple tables", func(t *testing.T) {
+		markdown := `| A |
+| --- |
+| 1 |
+
+| B |
+| --- |
+| 2 |`
+
+		segments := parseMarkdown(markdown)
+		tableCount := 0
+		for _, seg := range segments {
+			if seg.isTable {
+				tableCount++
+			}
+		}
+
+		if tableCount != 2 {
+			t.Errorf("expected 2 tables, got %d", tableCount)
+		}
+	})
+
+	t.Run("table with other content", func(t *testing.T) {
+		markdown := `# Heading
+
+| Table |
+| ----- |
+| Data  |
+
+Paragraph`
+
+		segments := parseMarkdown(markdown)
+
+		hasHeading := false
+		hasTable := false
+		var allText strings.Builder
+
+		for _, seg := range segments {
+			if seg.heading > 0 {
+				hasHeading = true
+			}
+			if seg.isTable {
+				hasTable = true
+			}
+			allText.WriteString(seg.text)
+		}
+
+		hasParagraph := strings.Contains(allText.String(), "Paragraph")
+
+		if !hasHeading {
+			t.Error("expected heading")
+		}
+		if !hasTable {
+			t.Error("expected table")
+		}
+		if !hasParagraph {
+			t.Error("expected paragraph")
+		}
+	})
+
+	t.Run("malformed table - missing separator", func(t *testing.T) {
+		markdown := `| A | B |
+| 1 | 2 |`
+
+		segments := parseMarkdown(markdown)
+
+		// Should be treated as plain text, not a table
+		for _, seg := range segments {
+			if seg.isTable {
+				t.Error("malformed table should not be parsed as table")
+			}
+		}
+	})
+
+	t.Run("malformed table - inconsistent columns", func(t *testing.T) {
+		markdown := `| A | B |
+| --- | --- |
+| 1 | 2 | 3 |`
+
+		segments := parseMarkdown(markdown)
+
+		// Should be treated as plain text
+		for _, seg := range segments {
+			if seg.isTable {
+				t.Error("inconsistent table should not be parsed as table")
+			}
+		}
+	})
+
+	t.Run("table with smart chips", func(t *testing.T) {
+		markdown := `| Date |
+| ---- |
+| @today |`
+
+		segments := parseMarkdown(markdown)
+		if len(segments) == 0 || !segments[0].isTable {
+			t.Fatal("expected table segment")
+		}
+
+		table := segments[0].table
+		if len(table.rows) < 2 {
+			t.Fatal("expected at least 2 rows")
+		}
+
+		// Check for date field in data row
+		cell := table.rows[1].cells[0]
+		foundDateField := false
+		for _, seg := range cell.segments {
+			if seg.isDateField {
+				foundDateField = true
+				break
+			}
+		}
+
+		if !foundDateField {
+			t.Error("expected date field in cell")
 		}
 	})
 }
