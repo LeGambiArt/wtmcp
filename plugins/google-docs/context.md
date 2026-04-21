@@ -203,6 +203,72 @@ Nested items are rendered at the correct indentation level in Google Docs. The o
 
 When using nested lists, the inner list format might not match the expected one due to Google Docs management of inner lists.
 
+### Tables
+
+Standard markdown table syntax with pipe delimiters:
+
+```markdown
+| Header 1 | Header 2 | Header 3 |
+| -------- | -------- | -------- |
+| Cell 1   | Cell 2   | Cell 3   |
+| Cell 4   | Cell 5   | Cell 6   |
+```
+
+**Headerless Tables (Extension):**
+
+As an extension to standard Markdown, tables can be created without a header row by starting with the separator line:
+
+```markdown
+| -------- | -------- | -------- |
+| Cell 1   | Cell 2   | Cell 3   |
+| Cell 4   | Cell 5   | Cell 6   |
+```
+
+This creates a table with only data rows, no header. Useful for simple data displays where column headers aren't needed.
+
+**Table Requirements:**
+- Separator row with hyphens: `| --- | --- |` (required)
+- Header row (optional) - if present, appears before separator and is rendered in **bold**
+- One or more data rows (required)
+- Consistent column count across all rows (required)
+
+**Rich Text in Cells:**
+
+All inline formatting works inside table cells:
+
+```markdown
+| Name | Status | Link |
+| ---- | ------ | ---- |
+| **Bold Name** | *Italic* | [Google](https://google.com) |
+| __Underlined__ | ~~Strike~~ | Regular text |
+```
+
+**Smart Chips in Cells:**
+
+Date and person chips work in table cells:
+
+```markdown
+| Task | Assignee | Due Date |
+| ---- | -------- | -------- |
+| Design | @(alice@company.com) | @date(2026-05-01) |
+| Testing | @(bob@company.com) | @today |
+```
+
+**Empty Cells:**
+
+Empty cells are supported and will render as empty in the table:
+
+```markdown
+| A | B | C |
+| --- | --- | --- |
+| Content |  | More |
+```
+
+**Limitations:**
+- Column alignment syntax (`:---`, `:---:`, `---:`) is ignored
+- Pipe character (`|`) inside cell content is not supported
+- Merged cells and nested tables are not supported
+
 ### Smart Chips
 
 Smart chips are interactive Google Docs elements that provide rich functionality.
@@ -284,7 +350,7 @@ Creates separate paragraph with Courier New font. Language identifiers (e.g., ` 
 | Date chips (`@today`) | ✅ Yes | Current date |
 | Date chips (`@date(YYYY-MM-DD)`) | ✅ Yes | Specific date |
 | Person chips (`@(email)`) | ✅ Yes | |
-| Tables | ❌ No | Not yet supported |
+| Tables | ✅ Yes | Standard markdown syntax with optional headers (headerless extension), rich text in cells, headers auto-bolded |
 | Code blocks (` ``` `) | ✅ Yes | Converted to/from monospace font (Courier New) |
 | Inline code (`` ` ``) | ✅ Yes | Converted to/from monospace font (Courier New) |
 | Blockquotes | ❌ No | Not yet supported |
@@ -326,6 +392,30 @@ Creates separate paragraph with Courier New font. Language identifiers (e.g., ` 
   "append_to_end": true
 }
 ```
+
+### Write table with headers to a document
+```json
+{
+  "document_id_or_url": "https://docs.google.com/document/d/ABC123/edit",
+  "text": "# Project Status\n\n| Task | Owner | Status | Due |\n| ---- | ----- | ------ | --- |\n| Design | **Alice** | ✅ Complete | @date(2026-04-01) |\n| Development | @(bob@company.com) | 🔄 In Progress | @date(2026-05-15) |\n| Testing | **Charlie** | ⏸️ Not Started | @date(2026-06-01) |\n",
+  "is_markdown": true,
+  "append_to_end": true
+}
+```
+
+**Note:** Header row (Task, Owner, Status, Due) is automatically rendered in **bold**.
+
+### Write headerless table to a document
+```json
+{
+  "document_id_or_url": "https://docs.google.com/document/d/ABC123/edit",
+  "text": "# Employee Directory\n\n| ---- | ---- | -------- |\n| John | Manager | New York |\n| Anne | Employee | Los Angeles |\n| Michael | Employee | Chicago |\n",
+  "is_markdown": true,
+  "append_to_end": true
+}
+```
+
+**Note:** Starting with the separator row creates a table without headers.
 
 ### Write plain text to a document
 ```json
@@ -382,7 +472,9 @@ Files are saved with permissions `0600` (owner read/write only).
 
 This is an **initial implementation** of document creation and modification support. The markdown-to-Google Docs formatting conversion has the following limitations:
 
-- **Tables**: Markdown tables are not converted to Google Docs table structures
+- **Table column alignment**: Column alignment syntax (`:---`, `:---:`, `---:`) is ignored
+- **Pipe characters in cells**: Literal pipe character (`|`) in cell content is not supported (would require escaping)
+- **Advanced table features**: Merged cells and nested tables are not supported
 - **Blockquotes**: Blockquotes are not converted to Google Docs quote styling
 - **Images**: Inline images cannot be inserted via markdown
 
