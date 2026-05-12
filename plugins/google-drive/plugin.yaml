@@ -12,7 +12,7 @@ services:
     token_file: token-drive.json
     credentials_file: client-credentials.json
     scopes:
-      - https://www.googleapis.com/auth/drive.readonly
+      - https://www.googleapis.com/auth/drive
   http:
     base_url: https://www.googleapis.com
     allowed_domains:
@@ -163,3 +163,94 @@ tools:
       order_by:
         type: string
         default: "modifiedTime desc"
+
+  - name: drive_create_folder
+    access: write
+    description: "Create a folder in Google Drive. Requires re-authorization if the current token has read-only scope."
+    params:
+      name:
+        type: string
+        required: true
+        description: "Folder name"
+      parent_folder_id:
+        type: string
+        description: "Parent folder ID to create the folder in"
+      dry_run:
+        type: boolean
+        default: true
+        description: "Preview without creating"
+
+  - name: drive_upload_file
+    access: write
+    description: "Upload a local file to Google Drive. Requires re-authorization if the current token has read-only scope."
+    params:
+      file_path:
+        type: string
+        required: true
+        description: "Path to the local file to upload"
+      name:
+        type: string
+        description: "File name in Drive (default: local file basename)"
+      mime_type:
+        type: string
+        description: "MIME type (auto-detected if omitted)"
+      parent_folder_id:
+        type: string
+        description: "Parent folder ID to upload into"
+      dry_run:
+        type: boolean
+        default: true
+        description: "Preview without uploading"
+
+  - name: drive_rename_file
+    access: write
+    description: "Rename or move a file in Google Drive. Requires re-authorization if the current token has read-only scope."
+    params:
+      file_id:
+        type: string
+        required: true
+      name:
+        type: string
+        description: "New file name"
+      add_parents:
+        type: string
+        description: "Comma-separated folder IDs to add as parents"
+      remove_parents:
+        type: string
+        description: "Comma-separated folder IDs to remove as parents"
+      dry_run:
+        type: boolean
+        default: true
+        description: "Preview without applying"
+
+  - name: drive_copy_file
+    access: write
+    description: "Copy a file in Google Drive. Requires re-authorization if the current token has read-only scope."
+    params:
+      file_id:
+        type: string
+        required: true
+        description: "ID of the file to copy"
+      name:
+        type: string
+        description: "Name for the copy (default: 'Copy of <original>')"
+      parent_folder_id:
+        type: string
+        description: "Parent folder ID for the copy"
+      dry_run:
+        type: boolean
+        default: true
+        description: "Preview without copying"
+
+  - name: drive_delete_file
+    access: write
+    description: "Move a file to trash in Google Drive (recoverable). Requires re-authorization if the current token has read-only scope."
+    params:
+      file_id:
+        type: string
+        required: true
+        description: "ID of the file to trash"
+      dry_run:
+        type: boolean
+        default: true
+        description: "Preview without trashing"

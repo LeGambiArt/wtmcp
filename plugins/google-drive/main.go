@@ -42,6 +42,11 @@ func main() {
 	p.Handle("drive_export_google_doc_markdown", toolExportDocMarkdown)
 	p.Handle("drive_search_files", toolSearchFiles)
 	p.Handle("drive_search_text", toolSearchText)
+	p.Handle("drive_create_folder", toolCreateFolder)
+	p.Handle("drive_upload_file", toolUploadFile)
+	p.Handle("drive_rename_file", toolRenameFile)
+	p.Handle("drive_copy_file", toolCopyFile)
+	p.Handle("drive_delete_file", toolDeleteFile)
 
 	if err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "handler: %v\n", err)

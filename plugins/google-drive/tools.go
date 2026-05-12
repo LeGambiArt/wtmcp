@@ -3,12 +3,19 @@ package main
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log"
+	"net/http"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 
 	htmltomarkdown "github.com/JohannesKaufmann/html-to-markdown/v2"
+	"google.golang.org/api/drive/v3"
 	googleapi "google.golang.org/api/googleapi"
 )
 
@@ -504,4 +511,383 @@ func buildSearchQuery(text string, inNameOnly bool, mimeTypes, owners []string, 
 	}
 
 	return strings.Join(clauses, " and ")
+}
+
+func confineToHome(absPath string) error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("determine home directory: %w", err)
+	}
+	if resolved, err := filepath.EvalSymlinks(home); err == nil {
+		home = resolved
+	}
+	// Resolve symlinks on the target path so that ~/link -> /etc/passwd
+	// doesn't bypass the prefix check.
+	resolved := absPath
+	if r, err := filepath.EvalSymlinks(absPath); err == nil {
+		resolved = r
+	}
+	if !strings.HasPrefix(resolved, home+string(os.PathSeparator)) && resolved != home {
+		return fmt.Errorf("file_path must be under the user's home directory")
+	}
+	return nil
+}
+
+var errNoWriteScope = fmt.Errorf("write operations require re-authorization with drive (read-write) scope; " +
+	"current token has drive.readonly — run: wtmcpctl credentials google drive")
+
+var (
+	writeScopeMu     sync.Mutex
+	writeScopeProbed bool
+	hasWriteScope    bool
+)
+
+func requireWriteScope() error {
+	writeScopeMu.Lock()
+	defer writeScopeMu.Unlock()
+
+	if !writeScopeProbed {
+		// Probe write capability: GenerateIds requires drive (not
+		// drive.readonly) scope and creates no state.
+		if driveSvc != nil {
+			if _, err := driveSvc.Files.GenerateIds().Count(1).Do(); err != nil {
+				var ae *googleapi.Error
+				if errors.As(err, &ae) && ae.Code == http.StatusForbidden {
+					hasWriteScope = false
+					writeScopeProbed = true
+					log.Println("write scope not available, write tools will return re-auth guidance")
+				} else {
+					// Transient errors (network, 500) leave
+					// writeScopeProbed false so the next call retries.
+					// Allow the call through — the actual API operation
+					// will surface a meaningful error if needed.
+					log.Printf("warning: write scope probe failed: %v", err)
+					return nil
+				}
+			} else {
+				hasWriteScope = true
+				writeScopeProbed = true
+			}
+		} else {
+			hasWriteScope = true
+			writeScopeProbed = true
+		}
+	}
+
+	if !hasWriteScope {
+		return errNoWriteScope
+	}
+	return nil
+}
+
+// --- Write tool param types ---
+
+type uploadFileParams struct {
+	FilePath       string `json:"file_path"`
+	Name           string `json:"name"`
+	MIMEType       string `json:"mime_type"`
+	ParentFolderID string `json:"parent_folder_id"`
+	DryRun         bool   `json:"dry_run"`
+}
+
+type renameFileParams struct {
+	FileID        string `json:"file_id"`
+	Name          string `json:"name"`
+	AddParents    string `json:"add_parents"`
+	RemoveParents string `json:"remove_parents"`
+	DryRun        bool   `json:"dry_run"`
+}
+
+type copyFileParams struct {
+	FileID         string `json:"file_id"`
+	Name           string `json:"name"`
+	ParentFolderID string `json:"parent_folder_id"`
+	DryRun         bool   `json:"dry_run"`
+}
+
+type deleteFileParams struct {
+	FileID string `json:"file_id"`
+	DryRun bool   `json:"dry_run"`
+}
+
+type createFolderParams struct {
+	Name           string `json:"name"`
+	ParentFolderID string `json:"parent_folder_id"`
+	DryRun         bool   `json:"dry_run"`
+}
+
+// --- Write tool implementations ---
+
+func toolCreateFolder(params, _ json.RawMessage) (any, error) {
+	if err := requireWriteScope(); err != nil {
+		return nil, err
+	}
+
+	p := createFolderParams{DryRun: true}
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("parse params: %w", err)
+	}
+	if p.Name == "" {
+		return nil, fmt.Errorf("name is required")
+	}
+
+	if p.DryRun {
+		result := map[string]any{
+			"dry_run": true,
+			"action":  "drive_create_folder",
+			"name":    p.Name,
+		}
+		if p.ParentFolderID != "" {
+			result["parent_folder_id"] = p.ParentFolderID
+		}
+		return result, nil
+	}
+
+	meta := &drive.File{
+		Name:     p.Name,
+		MimeType: "application/vnd.google-apps.folder",
+	}
+	if p.ParentFolderID != "" {
+		meta.Parents = []string{p.ParentFolderID}
+	}
+
+	res, err := driveSvc.Files.Create(meta).
+		SupportsAllDrives(true).
+		Fields("id,name,webViewLink,mimeType").
+		Do()
+	if err != nil {
+		return nil, fmt.Errorf("create folder: %w", err)
+	}
+	return res, nil
+}
+
+func toolUploadFile(params, _ json.RawMessage) (any, error) {
+	if err := requireWriteScope(); err != nil {
+		return nil, err
+	}
+
+	p := uploadFileParams{DryRun: true}
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("parse params: %w", err)
+	}
+	if p.FilePath == "" {
+		return nil, fmt.Errorf("file_path is required")
+	}
+
+	absPath, err := filepath.Abs(p.FilePath)
+	if err != nil {
+		return nil, fmt.Errorf("resolve path: %w", err)
+	}
+	if err := confineToHome(absPath); err != nil {
+		return nil, err
+	}
+
+	info, err := os.Stat(absPath)
+	if err != nil {
+		return nil, fmt.Errorf("stat file: %w", err)
+	}
+	if info.IsDir() {
+		return nil, fmt.Errorf("file_path is a directory, not a file")
+	}
+
+	name := p.Name
+	if name == "" {
+		name = filepath.Base(absPath)
+	}
+
+	if p.DryRun {
+		result := map[string]any{
+			"dry_run": true,
+			"action":  "drive_upload_file",
+			"name":    name,
+			"size":    info.Size(),
+		}
+		if p.MIMEType != "" {
+			result["mime_type"] = p.MIMEType
+		}
+		if p.ParentFolderID != "" {
+			result["parent_folder_id"] = p.ParentFolderID
+		}
+		return result, nil
+	}
+
+	f, err := os.Open(absPath) //nolint:gosec // path validated above
+	if err != nil {
+		return nil, fmt.Errorf("open file: %w", err)
+	}
+	defer f.Close() //nolint:errcheck,gosec // read-only file
+
+	meta := &drive.File{Name: name}
+	if p.ParentFolderID != "" {
+		meta.Parents = []string{p.ParentFolderID}
+	}
+
+	var call *drive.FilesCreateCall
+	if p.MIMEType != "" {
+		call = driveSvc.Files.Create(meta).Media(f, googleapi.ContentType(p.MIMEType))
+	} else {
+		call = driveSvc.Files.Create(meta).Media(f)
+	}
+	call = call.SupportsAllDrives(true).Fields("id,name,webViewLink,mimeType,size")
+
+	res, err := call.Do()
+	if err != nil {
+		return nil, fmt.Errorf("upload file: %w", err)
+	}
+	return res, nil
+}
+
+func toolRenameFile(params, _ json.RawMessage) (any, error) {
+	if err := requireWriteScope(); err != nil {
+		return nil, err
+	}
+
+	p := renameFileParams{DryRun: true}
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("parse params: %w", err)
+	}
+	if p.FileID == "" {
+		return nil, fmt.Errorf("file_id is required")
+	}
+	if p.Name == "" && p.AddParents == "" && p.RemoveParents == "" {
+		return nil, fmt.Errorf("at least one of name, add_parents, or remove_parents is required")
+	}
+
+	if p.DryRun {
+		// Fetch file metadata for the preview.
+		file, err := driveSvc.Files.Get(p.FileID).
+			SupportsAllDrives(true).
+			Fields("id,name,mimeType").
+			Do()
+		if err != nil {
+			return nil, fmt.Errorf("get file for preview: %w", err)
+		}
+
+		result := map[string]any{
+			"dry_run":   true,
+			"action":    "drive_rename_file",
+			"file_id":   file.Id,
+			"file_name": file.Name,
+			"mime_type": file.MimeType,
+		}
+		if p.Name != "" {
+			result["new_name"] = p.Name
+		}
+		if p.AddParents != "" {
+			result["add_parents"] = p.AddParents
+		}
+		if p.RemoveParents != "" {
+			result["remove_parents"] = p.RemoveParents
+		}
+		return result, nil
+	}
+
+	meta := &drive.File{}
+	if p.Name != "" {
+		meta.Name = p.Name
+	}
+
+	call := driveSvc.Files.Update(p.FileID, meta).SupportsAllDrives(true)
+	if p.AddParents != "" {
+		call = call.AddParents(p.AddParents)
+	}
+	if p.RemoveParents != "" {
+		call = call.RemoveParents(p.RemoveParents)
+	}
+	call = call.Fields("id,name,webViewLink,mimeType,parents")
+
+	res, err := call.Do()
+	if err != nil {
+		return nil, fmt.Errorf("rename file: %w", err)
+	}
+	return res, nil
+}
+
+func toolCopyFile(params, _ json.RawMessage) (any, error) {
+	if err := requireWriteScope(); err != nil {
+		return nil, err
+	}
+
+	p := copyFileParams{DryRun: true}
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("parse params: %w", err)
+	}
+	if p.FileID == "" {
+		return nil, fmt.Errorf("file_id is required")
+	}
+
+	if p.DryRun {
+		result := map[string]any{
+			"dry_run": true,
+			"action":  "drive_copy_file",
+			"file_id": p.FileID,
+		}
+		if p.Name != "" {
+			result["name"] = p.Name
+		}
+		if p.ParentFolderID != "" {
+			result["parent_folder_id"] = p.ParentFolderID
+		}
+		return result, nil
+	}
+
+	meta := &drive.File{}
+	if p.Name != "" {
+		meta.Name = p.Name
+	}
+	if p.ParentFolderID != "" {
+		meta.Parents = []string{p.ParentFolderID}
+	}
+
+	res, err := driveSvc.Files.Copy(p.FileID, meta).
+		SupportsAllDrives(true).
+		Fields("id,name,webViewLink,mimeType,size").
+		Do()
+	if err != nil {
+		return nil, fmt.Errorf("copy file: %w", err)
+	}
+	return res, nil
+}
+
+func toolDeleteFile(params, _ json.RawMessage) (any, error) {
+	if err := requireWriteScope(); err != nil {
+		return nil, err
+	}
+
+	p := deleteFileParams{DryRun: true}
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("parse params: %w", err)
+	}
+	if p.FileID == "" {
+		return nil, fmt.Errorf("file_id is required")
+	}
+
+	if p.DryRun {
+		// Fetch file metadata for the preview.
+		file, err := driveSvc.Files.Get(p.FileID).
+			SupportsAllDrives(true).
+			Fields("id,name,mimeType,size").
+			Do()
+		if err != nil {
+			return nil, fmt.Errorf("get file for preview: %w", err)
+		}
+		return map[string]any{
+			"dry_run":   true,
+			"action":    "drive_delete_file",
+			"file_id":   file.Id,
+			"file_name": file.Name,
+			"mime_type": file.MimeType,
+			"size":      file.Size,
+		}, nil
+	}
+
+	// Soft delete: move to trash (recoverable).
+	res, err := driveSvc.Files.Update(p.FileID, &drive.File{Trashed: true}).
+		SupportsAllDrives(true).
+		Fields("id,name,trashed").
+		Do()
+	if err != nil {
+		return nil, fmt.Errorf("trash file: %w", err)
+	}
+	return res, nil
 }

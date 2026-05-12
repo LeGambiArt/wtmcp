@@ -2,10 +2,16 @@
 
 ## Tool Usage Guidelines
 
-### Read-Only Access
+### Access Levels
 
-This plugin has read-only access to Google Drive. It cannot create,
-modify, or delete files.
+Read tools (`drive_get_*`, `drive_search_*`, `drive_export_*`) are
+always available. Write tools (`drive_upload_file`, `drive_rename_file`,
+`drive_copy_file`, `drive_delete_file`, `drive_create_folder`) require
+a read-write OAuth scope. If the current token is read-only, write
+tools return an error guiding the user to re-authorize.
+
+All write tools default to `dry_run=true`. Set `dry_run=false` to
+execute the operation. Deletions are soft-deletes (moved to trash).
 
 ### Choosing the Right Search Tool
 
@@ -113,3 +119,39 @@ Use these with `drive_search_text(mime_types=[...])`:
 
 File IDs come from search results or URL extraction. Don't
 fabricate IDs — always get them from a previous call or a URL.
+
+### Write Operations
+
+**Upload a local file:**
+```
+drive_upload_file(file_path="/home/user/report.pdf", dry_run=false)
+```
+File paths must be under the user's home directory.
+
+**Create a folder:**
+```
+drive_create_folder(name="Project Files", dry_run=false)
+```
+
+**Rename a file:**
+```
+drive_rename_file(file_id="1abc...", name="new-name.pdf", dry_run=false)
+```
+
+**Copy a file:**
+```
+drive_copy_file(file_id="1abc...", name="backup-copy.pdf", dry_run=false)
+```
+
+**Move a file to trash (recoverable):**
+```
+drive_delete_file(file_id="1abc...", dry_run=false)
+```
+
+**Move a file to another folder:**
+```
+drive_rename_file(file_id="1abc...",
+                  add_parents="folder_id",
+                  remove_parents="old_folder_id",
+                  dry_run=false)
+```
