@@ -1,0 +1,382 @@
+name: jenkins
+version: "0.1.0"
+description: "Jenkins integration for pipeline results, build logs, and test reports"
+
+execution: persistent
+handler: ./handler.py
+credential_group: jenkins
+
+context_files:
+  - context.md
+
+services:
+  auth:
+    select: "${JENKINS_AUTH_TYPE:-auto}"
+    variants:
+      user-token:
+        type: basic
+        username: "${JENKINS_USER}"
+        password: "${JENKINS_TOKEN}"
+      bearer-token:
+        type: bearer
+        token: "${JENKINS_TOKEN}"
+      kerberos:
+        type: kerberos/spnego
+        spnego_proactive: false
+  http:
+    allow_private_ips: true
+    allowed_domains:
+      - "${JENKINS_URL|hostname}"
+  cache:
+    enabled: true
+    namespace: jenkins
+    default_ttl: 300
+
+config:
+  jenkins_url: "${JENKINS_URL}"
+
+env:
+  - JENKINS_USER
+  - JENKINS_TOKEN
+  - JENKINS_AUTH_TYPE
+  - JENKINS_URL
+
+tools:
+  - name: jenkins_list_jobs
+    access: read
+    visibility: primary
+    description: >
+      List Jenkins jobs and pipelines. Returns name, type (freestyle,
+      pipeline, folder, multibranch), last build result, and health
+      score. Use the folder parameter to list jobs inside a folder.
+      Nested folders use slash-separated paths (e.g., "team/project").
+    params:
+      jenkins_url:
+        type: string
+        description: "Jenkins instance URL (e.g., 'https://jenkins.example.com'). Uses JENKINS_URL env var if not specified."
+      folder:
+        type: string
+        description: "Folder path (e.g., 'team/project'). Omit for root."
+      name_filter:
+        type: string
+        description: "Case-insensitive substring filter on job name"
+      max_results:
+        type: integer
+        default: 50
+        description: "Maximum jobs to return"
+
+  - name: jenkins_get_build
+    access: read
+    visibility: primary
+    description: >
+      Get detailed information about a specific build. Returns result
+      (SUCCESS/FAILURE/UNSTABLE/ABORTED/NOT_BUILT), duration, timestamp,
+      trigger cause, SCM changes, build parameters, and artifact names.
+      Use build_number='lastBuild' to get the latest build.
+    params:
+      jenkins_url:
+        type: string
+        description: "Jenkins instance URL (e.g., 'https://jenkins.example.com'). Uses JENKINS_URL env var if not specified."
+      job_name:
+        type: string
+        required: true
+        description: "Full job name including folder path (e.g., 'team/project/my-pipeline')"
+      build_number:
+        type: string
+        required: true
+        description: "Build number, or alias: lastBuild, lastSuccessfulBuild, lastFailedBuild, lastStableBuild"
+
+  - name: jenkins_get_build_log
+    access: read
+    visibility: primary
+    description: >
+      Retrieve console output from a build. Returns the last N lines
+      by default to avoid overwhelming the context. Use tail_lines to
+      control how many lines to return from the end. Use grep to filter
+      lines matching a pattern (case-insensitive). Secrets are automatically
+      redacted with [REDACTED].
+    params:
+      jenkins_url:
+        type: string
+        description: "Jenkins instance URL (e.g., 'https://jenkins.example.com'). Uses JENKINS_URL env var if not specified."
+      job_name:
+        type: string
+        required: true
+        description: "Full job name including folder path"
+      build_number:
+        type: string
+        required: true
+        description: "Build number or alias (lastBuild, etc.)"
+      tail_lines:
+        type: integer
+        default: 200
+        description: "Number of lines from the end (0 = full log, max 5000)"
+      grep:
+        type: string
+        description: "Case-insensitive pattern to filter log lines"
+
+  - name: jenkins_whoami
+    access: read
+    visibility: primary
+    description: >
+      Get the authenticated user's identity and permissions. Useful for
+      validating credentials and debugging access issues.
+    params:
+      jenkins_url:
+        type: string
+        description: "Jenkins instance URL (e.g., 'https://jenkins.example.com'). Uses JENKINS_URL env var if not specified."
+
+  - name: jenkins_get_job
+    access: read
+    visibility: deferred
+    description: >
+      Get detailed job metadata including description, build parameters,
+      health score, and last N build numbers. Use to discover what
+      parameters a job accepts before triggering.
+    params:
+      jenkins_url:
+        type: string
+        description: "Jenkins instance URL (e.g., 'https://jenkins.example.com'). Uses JENKINS_URL env var if not specified."
+      job_name:
+        type: string
+        required: true
+        description: "Full job name including folder path"
+      max_builds:
+        type: integer
+        default: 10
+        description: "Maximum number of recent build numbers to return (1-50)"
+
+  - name: jenkins_list_builds
+    access: read
+    visibility: deferred
+    description: >
+      List build history for a job with pagination and result filtering.
+      Returns build number, result, timestamp, duration. Use offset and
+      max_results for pagination through large build histories.
+    params:
+      jenkins_url:
+        type: string
+        description: "Jenkins instance URL (e.g., 'https://jenkins.example.com'). Uses JENKINS_URL env var if not specified."
+      job_name:
+        type: string
+        required: true
+        description: "Full job name including folder path"
+      result_filter:
+        type: string
+        description: "Filter by result: SUCCESS, FAILURE, UNSTABLE, ABORTED, NOT_BUILT"
+      max_results:
+        type: integer
+        default: 20
+        description: "Maximum builds to return (1-100)"
+      offset:
+        type: integer
+        default: 0
+        description: "Skip first N builds for pagination"
+
+  - name: jenkins_list_views
+    access: read
+    visibility: deferred
+    description: >
+      List all Jenkins views (All, custom views, folders). Use to discover
+      available views before using jenkins_get_view.
+    params:
+      jenkins_url:
+        type: string
+        description: "Jenkins instance URL (e.g., 'https://jenkins.example.com'). Uses JENKINS_URL env var if not specified."
+      name_filter:
+        type: string
+        description: "Case-insensitive substring filter on view name"
+
+  - name: jenkins_get_view
+    access: read
+    visibility: deferred
+    description: >
+      Get jobs in a specific view. Returns job list similar to
+      jenkins_list_jobs but filtered by view membership.
+    params:
+      jenkins_url:
+        type: string
+        description: "Jenkins instance URL (e.g., 'https://jenkins.example.com'). Uses JENKINS_URL env var if not specified."
+      view_name:
+        type: string
+        required: true
+        description: "View name (e.g., 'All', 'Production')"
+      name_filter:
+        type: string
+        description: "Case-insensitive substring filter on job name"
+
+  - name: jenkins_get_queue
+    access: read
+    visibility: deferred
+    description: >
+      Get current build queue status. Returns pending builds waiting for
+      executors. Never cached - always returns current queue state.
+    params:
+      jenkins_url:
+        type: string
+        description: "Jenkins instance URL (e.g., 'https://jenkins.example.com'). Uses JENKINS_URL env var if not specified."
+      stuck_only:
+        type: boolean
+        default: false
+        description: "Show only stuck queue items (waiting too long)"
+
+  - name: jenkins_flush_cache
+    access: write
+    visibility: deferred
+    description: >
+      Clear all Jenkins plugin cache entries. Use for debugging or when
+      Jenkins configuration changes. Requires confirmation parameter.
+    params:
+      confirm:
+        type: boolean
+        default: true
+        description: "Confirmation flag to prevent accidental flush"
+
+  - name: jenkins_get_test_results
+    access: read
+    visibility: deferred
+    description: >
+      Get JUnit test results for a build. Parses test report XML to
+      extract pass/fail/skip counts and failure details with stack traces
+      (truncated to 500 chars). Use after build completes.
+    params:
+      jenkins_url:
+        type: string
+        description: "Jenkins instance URL (e.g., 'https://jenkins.example.com'). Uses JENKINS_URL env var if not specified."
+      job_name:
+        type: string
+        required: true
+        description: "Full job name including folder path"
+      build_number:
+        type: string
+        required: true
+        description: "Build number or alias (lastBuild, lastFailedBuild, etc.)"
+
+  - name: jenkins_get_pipeline_stages
+    access: read
+    visibility: deferred
+    description: >
+      Get pipeline stage breakdown using wfapi. Returns stage name, status,
+      duration, and start time. Requires Pipeline plugin - gracefully
+      degrades with clear error if plugin not installed.
+    params:
+      jenkins_url:
+        type: string
+        description: "Jenkins instance URL (e.g., 'https://jenkins.example.com'). Uses JENKINS_URL env var if not specified."
+      job_name:
+        type: string
+        required: true
+        description: "Full job name including folder path"
+      build_number:
+        type: string
+        required: true
+        description: "Build number or alias"
+
+  - name: jenkins_get_stage_log
+    access: read
+    visibility: deferred
+    description: >
+      Get console log for a specific pipeline stage. Uses same security
+      controls as jenkins_get_build_log (secret scrubbing). Requires
+      stage ID from jenkins_get_pipeline_stages.
+    params:
+      jenkins_url:
+        type: string
+        description: "Jenkins instance URL (e.g., 'https://jenkins.example.com'). Uses JENKINS_URL env var if not specified."
+      job_name:
+        type: string
+        required: true
+        description: "Full job name including folder path"
+      build_number:
+        type: string
+        required: true
+        description: "Build number or alias"
+      stage_id:
+        type: string
+        required: true
+        description: "Stage ID from jenkins_get_pipeline_stages"
+      tail_lines:
+        type: integer
+        default: 200
+        description: "Number of lines from end (0 = full log, max 5000)"
+
+  - name: jenkins_list_artifacts
+    access: read
+    visibility: deferred
+    description: >
+      List artifacts for a build. Returns file names and relative paths.
+      Use jenkins_get_artifact to download a specific file. Artifacts
+      include JUnit XML reports, logs, and other build outputs.
+    params:
+      jenkins_url:
+        type: string
+        description: "Jenkins instance URL (e.g., 'https://jenkins.example.com'). Uses JENKINS_URL env var if not specified."
+      job_name:
+        type: string
+        required: true
+        description: "Full job name including folder path"
+      build_number:
+        type: string
+        required: true
+        description: "Build number or alias (lastBuild, lastFailedBuild, etc.)"
+
+  - name: jenkins_get_artifact
+    access: read
+    visibility: deferred
+    description: >
+      Download a specific artifact file from a build. Use
+      jenkins_list_artifacts to discover available files first.
+      Returns the file content as text. Secrets are scrubbed.
+      Use tail_lines to get only the last N lines of large files.
+    params:
+      jenkins_url:
+        type: string
+        description: "Jenkins instance URL (e.g., 'https://jenkins.example.com'). Uses JENKINS_URL env var if not specified."
+      job_name:
+        type: string
+        required: true
+        description: "Full job name including folder path"
+      build_number:
+        type: string
+        required: true
+        description: "Build number or alias"
+      artifact_path:
+        type: string
+        required: true
+        description: "Relative path from jenkins_list_artifacts (e.g., 'results/junit.xml')"
+      tail_lines:
+        type: integer
+        default: 0
+        description: "Number of lines from end (0 = full file, max 5000)"
+
+setup:
+  credentials:
+    JENKINS_USER:
+      description: "Jenkins username for API token authentication"
+      example: "your-jenkins-username"
+      secret: false
+    JENKINS_TOKEN:
+      description: "Jenkins API token or password"
+      help_url: "https://www.jenkins.io/doc/book/using/remote-access-api/"
+      instructions: |
+        In Jenkins, click your username (top-right) > Configure >
+        API Token > Add new token. Give it a name and click Generate.
+        Copy the token immediately (it cannot be retrieved later).
+      secret: true
+  variants:
+    user-token:
+      label: "Jenkins (username + API token)"
+      description: "Standard Jenkins authentication"
+      required: [JENKINS_USER, JENKINS_TOKEN]
+    bearer-token:
+      label: "Jenkins (bearer token)"
+      description: "For Jenkins behind OAuth2 proxy"
+      required: [JENKINS_TOKEN]
+    kerberos:
+      label: "Jenkins (Kerberos)"
+      description: "For Jenkins with SPNEGO authentication (uses kinit ticket, no credentials needed)"
+  validation_tool: jenkins_whoami
+  post_setup_message: "Restart the MCP server for changes to take effect."
+
+enabled: true
+priority: 50
