@@ -658,6 +658,17 @@ func (m *Manager) preparePlugin(name string) (*Handle, error) {
 			name, pa.TLS.CACert != "", pa.TLS.ClientCert != "", pa.TLS.SkipHostnameVerify)
 	default:
 		pa.Provider = m.resolveAuth(name, manifest)
+		if kp, ok := pa.Provider.(*auth.KerberosProvider); ok {
+			spn := kp.SPN()
+			proactive := manifest.Services.Auth.SPNEGOProactive == nil || *manifest.Services.Auth.SPNEGOProactive
+			client, err := proxy.NewKerberosClient(spn, proactive, pa.AllowPrivateIPs, pa.TLS, m.cfg.HTTP.Timeout)
+			if err != nil {
+				return nil, fmt.Errorf("[%s] create kerberos client: %w", name, err)
+			}
+			pa.Client = client
+			pa.IsKerberos = true
+			log.Printf("[%s] variant resolved to kerberos, using kerberos client (spn=%q, proactive=%v)", name, spn, proactive)
+		}
 	}
 
 	// IMPORTANT: RegisterPlugin is a plain map write — it must be called

@@ -24,9 +24,13 @@ func NewKerberosProvider(spn string) *KerberosProvider {
 // Name returns "kerberos/spnego".
 func (k *KerberosProvider) Name() string { return "kerberos/spnego" }
 
-// Available reports whether GSSAPI is initialized and a valid SPN is configured.
+// SPN returns the configured service principal name.
+func (k *KerberosProvider) SPN() string { return k.spn }
+
+// Available reports whether GSSAPI is initialized. When spn is empty,
+// the SPN is derived dynamically from each request's hostname.
 func (k *KerberosProvider) Available() bool {
-	return k.spn != "" && kerberos.Available()
+	return kerberos.Available()
 }
 
 // Authenticate acquires a SPNEGO token and returns the Negotiate header.

@@ -1436,3 +1436,40 @@ func TestAddAllowedDomainsNewDomain(t *testing.T) {
 		t.Errorf("expected 2 domains, got %d: %v", len(pa.AllowedDomains), pa.AllowedDomains)
 	}
 }
+
+func TestExecuteWithDynamicDomains(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer srv.Close()
+
+	p := newTestProxy(srv.Client())
+	p.RegisterPlugin("test", &PluginAuth{})
+
+	resp := p.Execute(context.Background(), "test", protocol.Message{
+		ID:      "dyn-1",
+		Type:    protocol.TypeHTTPRequest,
+		Method:  "GET",
+		URL:     srv.URL + "/api/test",
+		Domains: []string{mustHostname(srv.URL)},
+	})
+
+	if resp.Status != 200 {
+		t.Errorf("status = %d, want 200 (error = %v)", resp.Status, resp.Error)
+	}
+
+	p.pluginsMu.RLock()
+	pa := p.plugins["test"]
+	domains := pa.AllowedDomains
+	p.pluginsMu.RUnlock()
+
+	if !containsDomain(domains, mustHostname(srv.URL)) {
+		t.Errorf("expected domain %q in AllowedDomains %v", mustHostname(srv.URL), domains)
+	}
+}
+
+func mustHostname(rawURL string) string {
+	u, _ := url.Parse(rawURL)
+	return u.Hostname()
+}

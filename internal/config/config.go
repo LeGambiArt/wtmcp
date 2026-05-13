@@ -5,9 +5,9 @@ package config
 import (
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 
@@ -391,9 +391,6 @@ func containsPath(dirs []string, path string) bool {
 	return false
 }
 
-// envVarPattern matches ${VAR} and ${VAR:-default} syntax.
-var envVarPattern = regexp.MustCompile(`\$\$|\$\{([^}]+)\}`)
-
 // ResolveEnvVars expands environment variable references in a string
 // using the process environment. Use this only for server-level config
 // (credentials_dir, cache.dir) — never for plugin-scoped values.
@@ -428,26 +425,107 @@ func ResolveVarsMap(m map[string]string, vars map[string]string) map[string]stri
 }
 
 func resolveVarsFunc(s string, lookup func(string) (string, bool)) string {
-	return envVarPattern.ReplaceAllStringFunc(s, func(match string) string {
-		if match == "$$" {
-			return "$"
+	var result strings.Builder
+	i := 0
+	for i < len(s) {
+		// Check for $$
+		if i+1 < len(s) && s[i] == '$' && s[i+1] == '$' {
+			result.WriteByte('$')
+			i += 2
+			continue
 		}
 
-		// Strip ${ and }
-		inner := match[2 : len(match)-1]
-
-		// Check for :-default syntax
-		if idx := strings.Index(inner, ":-"); idx >= 0 {
-			varName := inner[:idx]
-			defaultVal := inner[idx+2:]
-			if val, ok := lookup(varName); ok && val != "" {
-				return val
+		// Check for ${
+		if i+1 < len(s) && s[i] == '$' && s[i+1] == '{' {
+			// Find matching }
+			depth := 1
+			j := i + 2
+			for j < len(s) && depth > 0 {
+				switch s[j] {
+				case '{':
+					depth++
+				case '}':
+					depth--
+				}
+				j++
 			}
-			return defaultVal
+
+			if depth == 0 {
+				// Extract inner content
+				inner := s[i+2 : j-1]
+				resolved := resolveVarExpression(inner, lookup)
+				result.WriteString(resolved)
+				i = j
+				continue
+			}
 		}
 
-		// Simple ${VAR}
-		val, _ := lookup(inner)
-		return val
-	})
+		// Regular character
+		result.WriteByte(s[i])
+		i++
+	}
+	return result.String()
+}
+
+// findTopLevelPattern finds the first occurrence of pattern in s that is not inside ${...}
+func findTopLevelPattern(s, pattern string) int {
+	depth := 0
+	for i := 0; i < len(s); i++ {
+		if i+1 < len(s) && s[i] == '$' && s[i+1] == '{' {
+			depth++
+			i++ // skip the {
+			continue
+		}
+		if s[i] == '}' && depth > 0 {
+			depth--
+			continue
+		}
+		if depth == 0 && strings.HasPrefix(s[i:], pattern) {
+			return i
+		}
+	}
+	return -1
+}
+
+func resolveVarExpression(inner string, lookup func(string) (string, bool)) string {
+	// Check for |hostname modifier: ${VAR|hostname}
+	// Only match if not inside nested ${...}
+	if idx := findTopLevelPattern(inner, "|hostname"); idx >= 0 {
+		varName := inner[:idx]
+		if val, ok := lookup(varName); ok && val != "" {
+			if u, err := url.Parse(val); err == nil {
+				return u.Hostname()
+			}
+		}
+		return ""
+	}
+
+	// Check for :+ syntax (use value if variable is set): ${VAR:+value}
+	// Only match if not inside nested ${...}
+	if idx := findTopLevelPattern(inner, ":+"); idx >= 0 {
+		varName := inner[:idx]
+		valueIfSet := inner[idx+2:]
+		if val, ok := lookup(varName); ok && val != "" {
+			// Variable is set, return the provided value (recursively resolved)
+			return resolveVarsFunc(valueIfSet, lookup)
+		}
+		// Variable not set or empty, return empty string
+		return ""
+	}
+
+	// Check for :-default syntax
+	// Only match if not inside nested ${...}
+	if idx := findTopLevelPattern(inner, ":-"); idx >= 0 {
+		varName := inner[:idx]
+		defaultVal := inner[idx+2:]
+		if val, ok := lookup(varName); ok && val != "" {
+			return val
+		}
+		// Recursively resolve the default value to support ${VAR:-${OTHER|hostname}}
+		return resolveVarsFunc(defaultVal, lookup)
+	}
+
+	// Simple ${VAR}
+	val, _ := lookup(inner)
+	return val
 }

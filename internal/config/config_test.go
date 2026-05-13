@@ -124,6 +124,66 @@ func TestResolveVarsMap(t *testing.T) {
 	}
 }
 
+func TestResolveVarsHostnameModifier(t *testing.T) {
+	vars := map[string]string{
+		"JENKINS_URL":   "https://jenkins.example.com",
+		"URL_WITH_PORT": "https://jenkins.example.com:8080",
+		"URL_WITH_PATH": "https://jenkins.example.com/jenkins",
+		"INVALID_URL":   "not-a-url",
+	}
+
+	// Test |hostname modifier with valid URL
+	if got := ResolveVars("${JENKINS_URL|hostname}", vars); got != "jenkins.example.com" {
+		t.Errorf("ResolveVars(${JENKINS_URL|hostname}) = %q, want jenkins.example.com", got)
+	}
+
+	// Test |hostname with port
+	if got := ResolveVars("${URL_WITH_PORT|hostname}", vars); got != "jenkins.example.com" {
+		t.Errorf("ResolveVars(${URL_WITH_PORT|hostname}) = %q, want jenkins.example.com", got)
+	}
+
+	// Test |hostname with path
+	if got := ResolveVars("${URL_WITH_PATH|hostname}", vars); got != "jenkins.example.com" {
+		t.Errorf("ResolveVars(${URL_WITH_PATH|hostname}) = %q, want jenkins.example.com", got)
+	}
+
+	// Test |hostname with invalid URL returns empty
+	if got := ResolveVars("${INVALID_URL|hostname}", vars); got != "" {
+		t.Errorf("ResolveVars(${INVALID_URL|hostname}) = %q, want empty string", got)
+	}
+
+	// Test |hostname with missing variable returns empty
+	if got := ResolveVars("${MISSING|hostname}", vars); got != "" {
+		t.Errorf("ResolveVars(${MISSING|hostname}) = %q, want empty string", got)
+	}
+}
+
+func TestResolveVarsNestedDefaults(t *testing.T) {
+	// Test nested defaults: ${VAR:-${OTHER|hostname}}
+	vars := map[string]string{
+		"JENKINS_URL": "https://jenkins.example.com",
+		"REALM":       "IPA.REDHAT.COM",
+	}
+
+	// HOST not set, should fall back to URL|hostname
+	if got := ResolveVars("${HOST:-${JENKINS_URL|hostname}}", vars); got != "jenkins.example.com" {
+		t.Errorf("ResolveVars with nested default = %q, want jenkins.example.com", got)
+	}
+
+	// HOST is set, should use it
+	vars["HOST"] = "override.example.com"
+	if got := ResolveVars("${HOST:-${JENKINS_URL|hostname}}", vars); got != "override.example.com" {
+		t.Errorf("ResolveVars with HOST set = %q, want override.example.com", got)
+	}
+
+	// Test complex SPN construction
+	delete(vars, "HOST")
+	spn := "HTTP/${HOST:-${JENKINS_URL|hostname}}${REALM:+@}${REALM}"
+	if got := ResolveVars(spn, vars); got != "HTTP/jenkins.example.com@IPA.REDHAT.COM" {
+		t.Errorf("ResolveVars SPN = %q, want HTTP/jenkins.example.com@IPA.REDHAT.COM", got)
+	}
+}
+
 func TestLoadConfigFile(t *testing.T) {
 	dir := t.TempDir()
 	cfgFile := filepath.Join(dir, "config.yaml")

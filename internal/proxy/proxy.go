@@ -217,6 +217,15 @@ func (p *Proxy) Execute(ctx context.Context, pluginName string, req protocol.Mes
 	pa.AllowedDomains = append([]string(nil), ptr.AllowedDomains...)
 	p.pluginsMu.RUnlock()
 
+	if len(req.Domains) > 0 {
+		p.AddAllowedDomains(pluginName, req.Domains)
+		p.pluginsMu.RLock()
+		if ptr, ok := p.plugins[pluginName]; ok {
+			pa.AllowedDomains = append([]string(nil), ptr.AllowedDomains...)
+		}
+		p.pluginsMu.RUnlock()
+	}
+
 	fullURL, err := p.resolveURL(pluginName, pa, req)
 	if err != nil {
 		return errResponse(req.ID, "invalid_url", err.Error())
@@ -312,6 +321,11 @@ func (p *Proxy) Execute(ctx context.Context, pluginName string, req protocol.Mes
 			Error:  &protocol.Error{Code: code, Message: doErr.Error()},
 		}
 	}
+
+	if pa.IsKerberos && pa.Client != nil && !req.NoAuth {
+		resp = p.trySAMLSSO(ctx, pa, resp, pa.Client, fullURL, req)
+	}
+
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
 			log.Printf("proxy: failed to close response body: %v", err)
