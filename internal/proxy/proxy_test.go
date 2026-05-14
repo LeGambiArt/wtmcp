@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -1445,14 +1446,22 @@ func TestExecuteWithDynamicDomains(t *testing.T) {
 	defer srv.Close()
 
 	p := newTestProxy(srv.Client())
-	p.RegisterPlugin("test", &PluginAuth{})
+	// Pre-register test server's domain (which is an IP address) via init-time path
+	// to allow the test to work. Also add example.com as a base domain to allow
+	// testing subdomain validation.
+	srvHostname := mustHostname(srv.URL)
+	p.RegisterPlugin("test", &PluginAuth{
+		BaseURL:        srv.URL,
+		AllowedDomains: []string{srvHostname, "example.com"},
+	})
 
+	// Attempt to add a valid subdomain via per-request path
 	resp := p.Execute(context.Background(), "test", protocol.Message{
 		ID:      "dyn-1",
 		Type:    protocol.TypeHTTPRequest,
 		Method:  "GET",
 		URL:     srv.URL + "/api/test",
-		Domains: []string{mustHostname(srv.URL)},
+		Domains: []string{"api.example.com"},
 	})
 
 	if resp.Status != 200 {
@@ -1464,12 +1473,347 @@ func TestExecuteWithDynamicDomains(t *testing.T) {
 	domains := pa.AllowedDomains
 	p.pluginsMu.RUnlock()
 
-	if !containsDomain(domains, mustHostname(srv.URL)) {
-		t.Errorf("expected domain %q in AllowedDomains %v", mustHostname(srv.URL), domains)
+	// Verify the valid domain was added
+	if !containsDomain(domains, "api.example.com") {
+		t.Errorf("expected domain %q in AllowedDomains %v", "api.example.com", domains)
+	}
+
+	// Now verify that an IP address is rejected via per-request path
+	resp = p.Execute(context.Background(), "test", protocol.Message{
+		ID:      "dyn-2",
+		Type:    protocol.TypeHTTPRequest,
+		Method:  "GET",
+		URL:     srv.URL + "/api/test2",
+		Domains: []string{"192.168.1.1"},
+	})
+
+	// Request should still succeed (using pre-allowed server domain)
+	if resp.Status != 200 {
+		t.Errorf("status = %d, want 200 (error = %v)", resp.Status, resp.Error)
+	}
+
+	p.pluginsMu.RLock()
+	domains = p.plugins["test"].AllowedDomains
+	p.pluginsMu.RUnlock()
+
+	// Verify the IP was rejected and NOT added
+	if containsDomain(domains, "192.168.1.1") {
+		t.Errorf("IP address 192.168.1.1 should have been rejected, but found in AllowedDomains %v", domains)
 	}
 }
 
 func mustHostname(rawURL string) string {
 	u, _ := url.Parse(rawURL)
 	return u.Hostname()
+}
+
+// TestRequestDomainValidation verifies that per-request domains are validated
+// to prevent security vulnerabilities like credential exfiltration to attacker-
+// controlled servers (localhost, IP addresses, wildcards are all rejected).
+func TestRequestDomainValidation(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer srv.Close()
+
+	p := newTestProxy(srv.Client())
+	// Register plugin with test server's domain pre-allowed so requests can succeed
+	// Also set example.com as a base domain to allow testing subdomain validation
+	srvHostname := mustHostname(srv.URL)
+	p.RegisterPlugin("test", &PluginAuth{
+		BaseURL:        srv.URL,
+		AllowedDomains: []string{srvHostname, "example.com"},
+	})
+
+	tests := []struct {
+		name         string
+		domains      []string
+		wantRejected []string
+		wantAccepted []string
+		description  string
+	}{
+		{
+			name:         "reject localhost",
+			domains:      []string{"localhost", "example.com"},
+			wantRejected: []string{"localhost"},
+			wantAccepted: []string{"example.com"},
+			description:  "localhost should be rejected to prevent local credential theft",
+		},
+		{
+			name:         "reject IPv4",
+			domains:      []string{"192.168.1.1", "example.com"},
+			wantRejected: []string{"192.168.1.1"},
+			wantAccepted: []string{"example.com"},
+			description:  "IPv4 addresses should be rejected",
+		},
+		{
+			name:         "reject IPv6",
+			domains:      []string{"::1", "2001:db8::1", "example.com"},
+			wantRejected: []string{"::1", "2001:db8::1"},
+			wantAccepted: []string{"example.com"},
+			description:  "IPv6 addresses should be rejected",
+		},
+		{
+			name:         "reject IPv6 brackets",
+			domains:      []string{"[::1]", "example.com"},
+			wantRejected: []string{"[::1]"},
+			wantAccepted: []string{"example.com"},
+			description:  "IPv6 addresses in brackets should be rejected",
+		},
+		{
+			name:         "reject wildcards",
+			domains:      []string{"*.example.com", "example.com"},
+			wantRejected: []string{"*.example.com"},
+			wantAccepted: []string{"example.com"},
+			description:  "wildcard domains should be rejected",
+		},
+		{
+			name:         "reject empty",
+			domains:      []string{"", "example.com"},
+			wantRejected: []string{""},
+			wantAccepted: []string{"example.com"},
+			description:  "empty domains should be rejected",
+		},
+		{
+			name:         "enforce 10 domain cap",
+			domains:      []string{"d1.example.com", "d2.example.com", "d3.example.com", "d4.example.com", "d5.example.com", "d6.example.com", "d7.example.com", "d8.example.com", "d9.example.com", "d10.example.com", "d11.example.com", "d12.example.com"},
+			wantRejected: []string{"d11.example.com", "d12.example.com"},
+			wantAccepted: []string{"d1.example.com", "d2.example.com", "d3.example.com", "d4.example.com", "d5.example.com", "d6.example.com", "d7.example.com", "d8.example.com", "d9.example.com", "d10.example.com"},
+			description:  "should cap at 10 domains per request",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Reset AllowedDomains and BaseDomains for each test
+			p.pluginsMu.Lock()
+			p.plugins["test"].AllowedDomains = []string{srvHostname, "example.com"}
+			p.plugins["test"].BaseDomains = []string{"example.com"}
+			p.pluginsMu.Unlock()
+
+			// Make request with domains
+			resp := p.Execute(context.Background(), "test", protocol.Message{
+				ID:      "test-1",
+				Type:    protocol.TypeHTTPRequest,
+				Method:  "GET",
+				URL:     srv.URL + "/api/test",
+				Domains: tt.domains,
+			})
+
+			// Request should succeed even if some domains are rejected
+			if resp.Status != 200 && len(tt.wantAccepted) > 0 {
+				t.Errorf("status = %d, want 200 (error = %v)", resp.Status, resp.Error)
+			}
+
+			// Check which domains were added
+			p.pluginsMu.RLock()
+			allowed := p.plugins["test"].AllowedDomains
+			p.pluginsMu.RUnlock()
+
+			// Verify rejected domains are not in allowlist
+			for _, rejected := range tt.wantRejected {
+				if containsDomain(allowed, rejected) {
+					t.Errorf("%s: rejected domain %q should not be in AllowedDomains %v", tt.description, rejected, allowed)
+				}
+			}
+
+			// Verify accepted domains are in allowlist
+			for _, accepted := range tt.wantAccepted {
+				if !containsDomain(allowed, accepted) {
+					t.Errorf("%s: accepted domain %q should be in AllowedDomains %v", tt.description, accepted, allowed)
+				}
+			}
+		})
+	}
+}
+
+// TestSubdomainValidationInExecute verifies that Execute() rejects per-request
+// domains that are not subdomains of base domains, preventing credential theft.
+func TestSubdomainValidationInExecute(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer srv.Close()
+
+	p := newTestProxy(srv.Client())
+	srvHostname := mustHostname(srv.URL)
+
+	// Register plugin with jenkins.example.com as a base domain
+	p.RegisterPlugin("test", &PluginAuth{
+		BaseURL:        srv.URL,
+		AllowedDomains: []string{srvHostname, "jenkins.example.com"},
+	})
+
+	tests := []struct {
+		name         string
+		domains      []string
+		wantAccepted []string
+		wantRejected []string
+	}{
+		{
+			name:         "accept exact match",
+			domains:      []string{"jenkins.example.com"},
+			wantAccepted: []string{"jenkins.example.com"},
+			wantRejected: []string{},
+		},
+		{
+			name:         "accept subdomain",
+			domains:      []string{"api.jenkins.example.com"},
+			wantAccepted: []string{"api.jenkins.example.com"},
+			wantRejected: []string{},
+		},
+		{
+			name:         "reject attacker domain",
+			domains:      []string{"attacker.com"},
+			wantAccepted: []string{},
+			wantRejected: []string{"attacker.com"},
+		},
+		{
+			name:         "reject prefix that looks like subdomain",
+			domains:      []string{"eviljenkins.example.com"},
+			wantAccepted: []string{},
+			wantRejected: []string{"eviljenkins.example.com"},
+		},
+		{
+			name:         "mixed valid and invalid",
+			domains:      []string{"ci.jenkins.example.com", "evil.com", "api.jenkins.example.com"},
+			wantAccepted: []string{"ci.jenkins.example.com", "api.jenkins.example.com"},
+			wantRejected: []string{"evil.com"},
+		},
+		{
+			name:         "reject when base domains empty",
+			domains:      []string{"any.domain.com"},
+			wantAccepted: []string{},
+			wantRejected: []string{"any.domain.com"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Reset AllowedDomains to base domains only
+			p.pluginsMu.Lock()
+			p.plugins["test"].AllowedDomains = []string{srvHostname, "jenkins.example.com"}
+			// For the "empty base domains" test, clear BaseDomains
+			if tt.name == "reject when base domains empty" {
+				p.plugins["test"].BaseDomains = []string{}
+			} else {
+				p.plugins["test"].BaseDomains = []string{"jenkins.example.com"}
+			}
+			p.pluginsMu.Unlock()
+
+			// Make request with domains
+			resp := p.Execute(context.Background(), "test", protocol.Message{
+				ID:      "test-" + tt.name,
+				Type:    protocol.TypeHTTPRequest,
+				Method:  "GET",
+				URL:     srv.URL + "/api/test",
+				Domains: tt.domains,
+			})
+
+			// Request should succeed using pre-allowed server hostname
+			if resp.Status != 200 {
+				t.Errorf("status = %d, want 200 (error = %v)", resp.Status, resp.Error)
+			}
+
+			// Check which domains were added
+			p.pluginsMu.RLock()
+			allowed := p.plugins["test"].AllowedDomains
+			p.pluginsMu.RUnlock()
+
+			// Verify accepted domains are in allowlist
+			for _, accepted := range tt.wantAccepted {
+				if !containsDomain(allowed, accepted) {
+					t.Errorf("accepted domain %q should be in AllowedDomains %v", accepted, allowed)
+				}
+			}
+
+			// Verify rejected domains are NOT in allowlist
+			for _, rejected := range tt.wantRejected {
+				if containsDomain(allowed, rejected) {
+					t.Errorf("rejected domain %q should NOT be in AllowedDomains %v", rejected, allowed)
+				}
+			}
+		})
+	}
+}
+
+// TestCumulativeDomainCap verifies that the cumulative domain cap
+// prevents unlimited domain accumulation across multiple requests.
+func TestCumulativeDomainCap(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer srv.Close()
+
+	p := newTestProxy(srv.Client())
+	srvHostname := mustHostname(srv.URL)
+
+	// Register plugin with example.com as base domain
+	p.RegisterPlugin("test", &PluginAuth{
+		BaseURL:        srv.URL,
+		AllowedDomains: []string{srvHostname, "example.com"},
+	})
+
+	// The plugin starts with 2 domains (srvHostname + example.com)
+	// maxTotalDomains is 50, so we can add 48 more
+
+	// Add domains in batches to approach the cap
+	for batch := 0; batch < 5; batch++ {
+		domains := make([]string, 10)
+		for i := 0; i < 10; i++ {
+			domains[i] = fmt.Sprintf("batch%d-api%d.example.com", batch, i)
+		}
+
+		resp := p.Execute(context.Background(), "test", protocol.Message{
+			ID:      fmt.Sprintf("batch-%d", batch),
+			Type:    protocol.TypeHTTPRequest,
+			Method:  "GET",
+			URL:     srv.URL + "/api/test",
+			Domains: domains,
+		})
+
+		if resp.Status != 200 {
+			t.Errorf("batch %d: status = %d, want 200 (error = %v)", batch, resp.Status, resp.Error)
+		}
+	}
+
+	// Check how many domains were actually added
+	p.pluginsMu.RLock()
+	totalDomains := len(p.plugins["test"].AllowedDomains)
+	p.pluginsMu.RUnlock()
+
+	// Should be capped at maxTotalDomains (50)
+	if totalDomains > 50 {
+		t.Errorf("total domains = %d, want <= 50 (cumulative cap not enforced)", totalDomains)
+	}
+
+	// Try to add more domains - should all be rejected
+	resp := p.Execute(context.Background(), "test", protocol.Message{
+		ID:      "overflow",
+		Type:    protocol.TypeHTTPRequest,
+		Method:  "GET",
+		URL:     srv.URL + "/api/test",
+		Domains: []string{"overflow1.example.com", "overflow2.example.com"},
+	})
+
+	if resp.Status != 200 {
+		t.Errorf("overflow request: status = %d, want 200 (error = %v)", resp.Status, resp.Error)
+	}
+
+	// Verify overflow domains were NOT added
+	p.pluginsMu.RLock()
+	allowed := p.plugins["test"].AllowedDomains
+	finalCount := len(allowed)
+	p.pluginsMu.RUnlock()
+
+	if finalCount > 50 {
+		t.Errorf("final domain count = %d, want <= 50 (cap should prevent overflow)", finalCount)
+	}
+
+	if containsDomain(allowed, "overflow1.example.com") || containsDomain(allowed, "overflow2.example.com") {
+		t.Errorf("overflow domains should be rejected but found in allowlist: %v", allowed)
+	}
 }

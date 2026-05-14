@@ -27,8 +27,21 @@ import (
 	"github.com/LeGambiArt/wtmcp/internal/auth"
 	"github.com/LeGambiArt/wtmcp/internal/auth/kerberos"
 	"github.com/LeGambiArt/wtmcp/internal/config"
+	"github.com/LeGambiArt/wtmcp/internal/domaincheck"
 	"github.com/LeGambiArt/wtmcp/internal/protocol"
 	"github.com/LeGambiArt/wtmcp/internal/ratelimit"
+)
+
+const (
+	// maxDynamicDomains is the maximum number of domains that can be added
+	// to the allowlist in a single request. This prevents a single malicious
+	// request from flooding the allowlist.
+	maxDynamicDomains = 10
+
+	// maxTotalDomains is the cumulative maximum number of domains allowed
+	// per plugin across all requests. This prevents allowlist bloat and
+	// DoS via unlimited domain accumulation across multiple requests.
+	maxTotalDomains = 50
 )
 
 // TLSConfig holds per-plugin TLS settings for custom CAs and mTLS.
@@ -55,6 +68,12 @@ type PluginAuth struct {
 	AllowedDomains  []string
 	AllowPrivateIPs bool
 	TLS             TLSConfig
+
+	// BaseDomains holds the trusted anchor domains registered at plugin
+	// init time (from plugin.yaml allowed_domains or init_ok response).
+	// Per-request domain additions must be subdomains of these base domains
+	// to prevent credential exfiltration to attacker-controlled servers.
+	BaseDomains []string
 
 	// Client is an optional per-plugin HTTP client. When set (e.g., for
 	// Kerberos or mTLS plugins), it is used instead of the shared proxy
@@ -121,6 +140,9 @@ func (p *Proxy) SetRetryConfig(cfg config.RetryConfig) {
 // plugin's proxy allowlist. Must be called before the plugin starts
 // accepting tool calls (i.e., in the sequential result-collection
 // phase after Start() returns).
+//
+// Enforces a cumulative cap of maxTotalDomains per plugin to prevent
+// allowlist bloat and DoS via domain accumulation across multiple requests.
 func (p *Proxy) AddAllowedDomains(pluginName string, domains []string) {
 	p.pluginsMu.Lock()
 	defer p.pluginsMu.Unlock()
@@ -130,9 +152,42 @@ func (p *Proxy) AddAllowedDomains(pluginName string, domains []string) {
 		log.Printf("proxy: AddAllowedDomains for unknown plugin %q", pluginName)
 		return
 	}
+
 	for _, d := range domains {
-		if !containsDomain(pa.AllowedDomains, d) {
+		// Check cumulative cap before adding
+		if len(pa.AllowedDomains) >= maxTotalDomains {
+			log.Printf("[%s] WARNING: domain allowlist cap reached (%d domains), rejecting %q",
+				pluginName, maxTotalDomains, d)
+			continue
+		}
+
+		// Use domaincheck.Contains for normalized comparison
+		if !domaincheck.Contains(pa.AllowedDomains, d) {
 			pa.AllowedDomains = append(pa.AllowedDomains, d)
+		}
+	}
+}
+
+// AddBaseDomains adds domains to both AllowedDomains and BaseDomains.
+// This is used by the init-time registration path (registerDynamicDomains)
+// to add domains from init_ok responses. These domains become trusted
+// anchors for validating per-request domain additions.
+func (p *Proxy) AddBaseDomains(pluginName string, domains []string) {
+	p.pluginsMu.Lock()
+	defer p.pluginsMu.Unlock()
+
+	pa, ok := p.plugins[pluginName]
+	if !ok {
+		log.Printf("proxy: AddBaseDomains for unknown plugin %q", pluginName)
+		return
+	}
+	for _, d := range domains {
+		// Use domaincheck.Contains for normalized comparison
+		if !domaincheck.Contains(pa.AllowedDomains, d) {
+			pa.AllowedDomains = append(pa.AllowedDomains, d)
+		}
+		if !domaincheck.Contains(pa.BaseDomains, d) {
+			pa.BaseDomains = append(pa.BaseDomains, d)
 		}
 	}
 }
@@ -169,6 +224,9 @@ func (p *Proxy) auditHTTP(ctx context.Context, pluginName, method, rawURL string
 // RegisterPlugin associates auth and HTTP config with a plugin name.
 func (p *Proxy) RegisterPlugin(name string, pa *PluginAuth) {
 	p.pluginsMu.Lock()
+	// Initialize BaseDomains with the static allowed_domains from plugin.yaml.
+	// These serve as trusted anchors for per-request domain validation.
+	pa.BaseDomains = append([]string(nil), pa.AllowedDomains...)
 	p.plugins[name] = pa
 	p.pluginsMu.Unlock()
 }
@@ -208,22 +266,54 @@ func (p *Proxy) Execute(ctx context.Context, pluginName string, req protocol.Mes
 		p.pluginsMu.RUnlock()
 		return errResponse(req.ID, "no_config", "no HTTP config registered for plugin "+pluginName)
 	}
-	// Snapshot value types and clone AllowedDomains so Execute works
-	// on immutable data after releasing the lock. Provider and Client
-	// are shared by design: both are concurrency-safe (write-once after
-	// init, and http.Client is documented thread-safe).
+	// Snapshot value types and clone AllowedDomains and BaseDomains so
+	// Execute works on immutable data after releasing the lock. Provider
+	// and Client are shared by design: both are concurrency-safe
+	// (write-once after init, and http.Client is documented thread-safe).
 	paCopy := *ptr
 	pa := &paCopy
 	pa.AllowedDomains = append([]string(nil), ptr.AllowedDomains...)
+	baseDomains := append([]string(nil), ptr.BaseDomains...)
 	p.pluginsMu.RUnlock()
 
 	if len(req.Domains) > 0 {
-		p.AddAllowedDomains(pluginName, req.Domains)
-		p.pluginsMu.RLock()
-		if ptr, ok := p.plugins[pluginName]; ok {
-			pa.AllowedDomains = append([]string(nil), ptr.AllowedDomains...)
+		// Cap at maxDynamicDomains to prevent unbounded allowlist growth
+		domains := req.Domains
+		if len(domains) > maxDynamicDomains {
+			log.Printf("[%s] WARNING: request domains capped from %d to %d",
+				pluginName, len(domains), maxDynamicDomains)
+			domains = domains[:maxDynamicDomains]
 		}
-		p.pluginsMu.RUnlock()
+
+		// Validate each domain before adding to allowlist:
+		// 1. Basic validation (no IPs, localhost, wildcards, etc.)
+		// 2. Subdomain validation (must be subdomain of a base domain)
+		var valid []string
+		for _, d := range domains {
+			if err := domaincheck.Validate(d); err != nil {
+				log.Printf("[%s] rejected request domain %q: %v", pluginName, d, err)
+				continue
+			}
+
+			// Verify the domain is a subdomain of (or exact match to) a base domain.
+			// This prevents credential exfiltration to arbitrary attacker domains.
+			if !domaincheck.IsSubdomain(d, baseDomains) {
+				log.Printf("[%s] rejected request domain %q: not a subdomain of base domains %v",
+					pluginName, d, baseDomains)
+				continue
+			}
+
+			valid = append(valid, d)
+		}
+
+		if len(valid) > 0 {
+			p.AddAllowedDomains(pluginName, valid)
+			p.pluginsMu.RLock()
+			if ptr, ok := p.plugins[pluginName]; ok {
+				pa.AllowedDomains = append([]string(nil), ptr.AllowedDomains...)
+			}
+			p.pluginsMu.RUnlock()
+		}
 	}
 
 	fullURL, err := p.resolveURL(pluginName, pa, req)
@@ -581,13 +671,10 @@ func (p *Proxy) readBody(resp *http.Response) (json.RawMessage, string, error) {
 	return json.RawMessage(b), "base64", err
 }
 
+// containsDomain is a wrapper around domaincheck.Contains for backward
+// compatibility with tests. Uses normalized domain comparison.
 func containsDomain(domains []string, d string) bool {
-	for _, existing := range domains {
-		if strings.EqualFold(existing, d) {
-			return true
-		}
-	}
-	return false
+	return domaincheck.Contains(domains, d)
 }
 
 func (p *Proxy) isDomainAllowed(_ string, pa *PluginAuth, rawURL string) bool {

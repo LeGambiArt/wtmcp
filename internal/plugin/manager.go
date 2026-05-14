@@ -445,8 +445,8 @@ func (m *Manager) registerDynamicDomains(name string, handle *Handle) {
 	}
 
 	if len(valid) > 0 {
-		m.proxy.AddAllowedDomains(name, valid)
-		log.Printf("[%s] registered dynamic domains: %v", name, valid)
+		m.proxy.AddBaseDomains(name, valid)
+		log.Printf("[%s] registered dynamic base domains: %v", name, valid)
 	}
 }
 

@@ -5,13 +5,13 @@ package plugin
 import (
 	"encoding/json"
 	"fmt"
-	"net"
 	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 
+	"github.com/LeGambiArt/wtmcp/internal/domaincheck"
 	"gopkg.in/yaml.v3"
 )
 
@@ -457,31 +457,10 @@ func (t *ToolDef) ParamsSchema() map[string]any {
 // declaration order, since Go maps don't preserve insertion order.
 // validateDomain rejects domain entries that are IP addresses,
 // localhost, or private/link-local ranges.
+// validateDomain validates a domain using the shared domaincheck package.
+// This ensures consistent validation across init-time and per-request paths.
 func validateDomain(domain string) error {
-	if domain == "" {
-		return fmt.Errorf("empty domain is not allowed")
-	}
-
-	if strings.HasPrefix(domain, "*") {
-		return fmt.Errorf("%q is not allowed (wildcards are not supported)", domain)
-	}
-
-	lower := strings.ToLower(domain)
-	if lower == "localhost" {
-		return fmt.Errorf("%q is not allowed (localhost)", domain)
-	}
-
-	ip := net.ParseIP(domain)
-	if ip != nil {
-		return fmt.Errorf("%q is not allowed (IP addresses are not permitted, use domain names)", domain)
-	}
-
-	// Check for IPv6 in brackets (e.g., [::1])
-	if strings.HasPrefix(domain, "[") && strings.HasSuffix(domain, "]") {
-		return fmt.Errorf("%q is not allowed (IP addresses are not permitted)", domain)
-	}
-
-	return nil
+	return domaincheck.Validate(domain)
 }
 
 func extractVariantOrder(data []byte) ([]string, error) {
