@@ -675,6 +675,14 @@ func (m *Manager) preparePlugin(name string) (*Handle, error) {
 	// sequentially, never from concurrent goroutines.
 	m.proxy.RegisterPlugin(name, pa)
 
+	if samlInit := manifest.Services.Auth.SAMLInit; samlInit != "" && pa.IsKerberos && pa.Client != nil {
+		resolved := config.ResolveVars(samlInit, vars)
+		if err := proxy.InitSAMLSession(pa.Client, resolved, pa.BaseURL, pa.AllowedDomains); err != nil {
+			return nil, fmt.Errorf("[%s] SAML init login failed: %w", name, err)
+		}
+		log.Printf("[%s] SAML init login completed", name)
+	}
+
 	processCfg := ProcessConfig{
 		InitTimeout:       m.cfg.Plugins.InitTimeout,
 		ShutdownTimeout:   m.cfg.Plugins.ShutdownTimeout,

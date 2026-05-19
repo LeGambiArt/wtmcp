@@ -3,6 +3,7 @@ package proxy
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"html"
 	"io"
 	"log"
@@ -213,4 +214,93 @@ func (p *Proxy) trySAMLSSO(ctx context.Context, pa *PluginAuth, resp *http.Respo
 		return resp
 	}
 	return retryResp
+}
+
+const samlInitBodyLimit = 1 << 20 // 1MB
+
+// InitSAMLSession proactively authenticates by following a SAML SSO
+// flow. It GETs initURL, detects whether the response contains a
+// SAML form (form-first pattern) or a redirect (redirect-first
+// pattern), and follows the chain to establish session cookies in
+// the client's jar.
+func InitSAMLSession(client *http.Client, initURL, baseURL string, allowedDomains []string) error {
+	fullURL := initURL
+	if strings.HasPrefix(initURL, "/") {
+		fullURL = strings.TrimRight(baseURL, "/") + initURL
+	}
+
+	resp, err := client.Get(fullURL) //nolint:gosec // initURL is from plugin config, not user input
+	if err != nil {
+		return fmt.Errorf("GET %s: %w", fullURL, err)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, samlInitBodyLimit))
+	resp.Body.Close() //nolint:errcheck,gosec
+	if err != nil {
+		return fmt.Errorf("read response from %s: %w", fullURL, err)
+	}
+
+	action, formData, ok := parseSAMLForm(body)
+	if ok && formData.Get("SAMLRequest") != "" {
+		return followSAMLFormChain(client, action, formData, baseURL, allowedDomains)
+	}
+
+	if handleSAMLSSO(client, body, baseURL, allowedDomains) {
+		return nil
+	}
+
+	return fmt.Errorf("no SAML form or redirect found at %s (status %d)", fullURL, resp.StatusCode)
+}
+
+// followSAMLFormChain handles the form-first SAML pattern:
+//  1. POST SAMLRequest to the IdP (form action URL)
+//  2. Parse SAMLResponse from IdP response
+//  3. POST SAMLResponse back to the origin server
+func followSAMLFormChain(client *http.Client, idpURL string, formData url.Values, baseURL string, allowedDomains []string) error {
+	if !isDomainAllowedForSSO(idpURL, baseURL, allowedDomains) {
+		return fmt.Errorf("IdP URL %q not in allowed domains", idpURL)
+	}
+
+	idpReq, err := http.NewRequest("POST", idpURL, strings.NewReader(formData.Encode()))
+	if err != nil {
+		return fmt.Errorf("build IdP request: %w", err)
+	}
+	idpReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	idpResp, err := client.Do(idpReq)
+	if err != nil {
+		return fmt.Errorf("IdP request failed: %w", err)
+	}
+	idpBody, err := io.ReadAll(io.LimitReader(idpResp.Body, samlInitBodyLimit))
+	idpResp.Body.Close() //nolint:errcheck,gosec
+	if err != nil {
+		return fmt.Errorf("read IdP response: %w", err)
+	}
+
+	respAction, respFormData, ok := parseSAMLForm(idpBody)
+	if !ok || respFormData.Get("SAMLResponse") == "" {
+		return fmt.Errorf("no SAMLResponse in IdP response (status %d)", idpResp.StatusCode)
+	}
+
+	if !isDomainAllowedForSSO(respAction, baseURL, allowedDomains) {
+		return fmt.Errorf("SAMLResponse action %q not in allowed domains", respAction)
+	}
+
+	finalReq, err := http.NewRequest("POST", respAction, strings.NewReader(respFormData.Encode()))
+	if err != nil {
+		return fmt.Errorf("build final SAML request: %w", err)
+	}
+	finalReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	finalResp, err := client.Do(finalReq)
+	if err != nil {
+		return fmt.Errorf("final SAML POST failed: %w", err)
+	}
+	io.Copy(io.Discard, finalResp.Body) //nolint:errcheck,gosec
+	finalResp.Body.Close()              //nolint:errcheck,gosec
+
+	if finalResp.StatusCode >= 200 && finalResp.StatusCode < 400 {
+		log.Printf("proxy: saml: proactive SSO login completed")
+		return nil
+	}
+	return fmt.Errorf("final SAML POST returned status %d", finalResp.StatusCode)
 }

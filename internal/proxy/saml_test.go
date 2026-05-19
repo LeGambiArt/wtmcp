@@ -375,6 +375,206 @@ func TestTrySAMLSSONonKerberos(t *testing.T) {
 	}
 }
 
+// --- InitSAMLSession tests ---
+
+func TestInitSAMLSessionFormFirst(t *testing.T) {
+	var step atomic.Int32
+	mux := http.NewServeMux()
+	srv := httptest.NewTLSServer(mux)
+	defer srv.Close()
+
+	// Step 1: SAML init URL returns form with SAMLRequest
+	mux.HandleFunc("/saml.redirect", func(w http.ResponseWriter, _ *http.Request) {
+		step.Add(1)
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = fmt.Fprintf(w, `<html><body><form action="%s/idp/saml">
+			<input type="hidden" name="SAMLRequest" value="base64encodedrequest"/>
+			<input type="hidden" name="RelayState" value="/"/>
+		</form></body></html>`, srv.URL)
+	})
+
+	// Step 2: IdP processes SAMLRequest, returns SAMLResponse
+	mux.HandleFunc("/idp/saml", func(w http.ResponseWriter, r *http.Request) {
+		step.Add(1)
+		if r.Method != "POST" {
+			t.Errorf("IdP expected POST, got %s", r.Method)
+		}
+		_ = r.ParseForm() //nolint:gosec // test handler, no real request body
+		if r.Form.Get("SAMLRequest") == "" {
+			t.Error("IdP request missing SAMLRequest")
+		}
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = fmt.Fprintf(w, `<html><body><form action="%s/saml.digest">
+			<input type="hidden" name="SAMLResponse" value="base64encodedresponse"/>
+			<input type="hidden" name="RelayState" value="/"/>
+		</form></body></html>`, srv.URL)
+	})
+
+	// Step 3: Origin processes SAMLResponse, sets session
+	mux.HandleFunc("/saml.digest", func(w http.ResponseWriter, r *http.Request) {
+		step.Add(1)
+		if r.Method != "POST" {
+			t.Errorf("digest expected POST, got %s", r.Method)
+		}
+		_ = r.ParseForm() //nolint:gosec // test handler, no real request body
+		if r.Form.Get("SAMLResponse") == "" {
+			t.Error("digest request missing SAMLResponse")
+		}
+		http.SetCookie(w, &http.Cookie{Name: "session", Value: "authenticated"})
+		w.WriteHeader(200)
+	})
+
+	jar, _ := cookiejar.New(nil)
+	client := srv.Client()
+	client.Jar = jar
+
+	err := InitSAMLSession(client, "/saml.redirect", srv.URL, []string{})
+	if err != nil {
+		t.Fatalf("InitSAMLSession failed: %v", err)
+	}
+	if step.Load() != 3 {
+		t.Errorf("expected 3 steps, got %d", step.Load())
+	}
+
+	u, _ := url.Parse(srv.URL)
+	cookies := jar.Cookies(u)
+	found := false
+	for _, c := range cookies {
+		if c.Name == "session" && c.Value == "authenticated" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("session cookie not set after SAML init")
+	}
+}
+
+func TestInitSAMLSessionRedirectFirst(t *testing.T) {
+	var ssoHandled atomic.Bool
+	mux := http.NewServeMux()
+	srv := httptest.NewTLSServer(mux)
+	defer srv.Close()
+
+	// Init URL returns a page with a meta-refresh redirect
+	mux.HandleFunc("/login", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = fmt.Fprintf(w, `<html><meta content="0;url=%s/idp/sso" /></html>`, srv.URL)
+	})
+
+	// IdP returns SAML form
+	mux.HandleFunc("/idp/sso", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = fmt.Fprintf(w, `<html><body>
+			<div id="saml-post-binding">
+			<form action="%s/saml/consume">
+				<input type="hidden" name="SAMLResponse" value="response123"/>
+			</form></div></body></html>`, srv.URL)
+	})
+
+	// Origin consumes SAMLResponse
+	mux.HandleFunc("/saml/consume", func(w http.ResponseWriter, _ *http.Request) {
+		ssoHandled.Store(true)
+		w.WriteHeader(200)
+	})
+
+	jar, _ := cookiejar.New(nil)
+	client := srv.Client()
+	client.Jar = jar
+
+	err := InitSAMLSession(client, "/login", srv.URL, []string{})
+	if err != nil {
+		t.Fatalf("InitSAMLSession redirect-first failed: %v", err)
+	}
+	if !ssoHandled.Load() {
+		t.Error("SSO handler was not called")
+	}
+}
+
+func TestInitSAMLSessionNoSAMLContent(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = fmt.Fprint(w, `<html><body>Just a normal page</body></html>`)
+	}))
+	defer srv.Close()
+
+	jar, _ := cookiejar.New(nil)
+	client := srv.Client()
+	client.Jar = jar
+
+	err := InitSAMLSession(client, "/", srv.URL, []string{})
+	if err == nil {
+		t.Fatal("expected error for page with no SAML content")
+	}
+	if !strings.Contains(err.Error(), "no SAML form or redirect") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestInitSAMLSessionIdPDomainBlocked(t *testing.T) {
+	mux := http.NewServeMux()
+	srv := httptest.NewTLSServer(mux)
+	defer srv.Close()
+
+	mux.HandleFunc("/saml.redirect", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		// Form action points to a different domain not in allowedDomains
+		_, _ = fmt.Fprint(w, `<html><form action="https://evil.example.com/idp">
+			<input type="hidden" name="SAMLRequest" value="req"/>
+		</form></html>`)
+	})
+
+	jar, _ := cookiejar.New(nil)
+	client := srv.Client()
+	client.Jar = jar
+
+	err := InitSAMLSession(client, "/saml.redirect", srv.URL, []string{})
+	if err == nil {
+		t.Fatal("expected error for blocked IdP domain")
+	}
+	if !strings.Contains(err.Error(), "not in allowed domains") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestInitSAMLSessionAbsoluteURL(t *testing.T) {
+	var called atomic.Bool
+	mux := http.NewServeMux()
+	srv := httptest.NewTLSServer(mux)
+	defer srv.Close()
+
+	mux.HandleFunc("/saml.redirect", func(w http.ResponseWriter, _ *http.Request) {
+		called.Store(true)
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = fmt.Fprintf(w, `<html><form action="%s/idp">
+			<input type="hidden" name="SAMLRequest" value="req"/>
+		</form></html>`, srv.URL)
+	})
+
+	mux.HandleFunc("/idp", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = fmt.Fprintf(w, `<html><form action="%s/digest">
+			<input type="hidden" name="SAMLResponse" value="resp"/>
+		</form></html>`, srv.URL)
+	})
+
+	mux.HandleFunc("/digest", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(200)
+	})
+
+	jar, _ := cookiejar.New(nil)
+	client := srv.Client()
+	client.Jar = jar
+
+	// Pass absolute URL instead of relative path
+	err := InitSAMLSession(client, srv.URL+"/saml.redirect", srv.URL, []string{})
+	if err != nil {
+		t.Fatalf("InitSAMLSession with absolute URL failed: %v", err)
+	}
+	if !called.Load() {
+		t.Error("init URL was not called")
+	}
+}
+
 func TestTrySAMLSSOSkippedWithNoAuth(t *testing.T) {
 	var requestCount atomic.Int32
 

@@ -87,6 +87,7 @@ type AuthServiceConfig struct {
 	Password        string                       `yaml:"password"`
 	SPN             string                       `yaml:"spn"`
 	SPNEGOProactive *bool                        `yaml:"spnego_proactive"`
+	SAMLInit        string                       `yaml:"saml_init"`
 	Scopes          []string                     `yaml:"scopes"`
 	CredentialsFile string                       `yaml:"credentials_file"`
 	TokenFile       string                       `yaml:"token_file"`
