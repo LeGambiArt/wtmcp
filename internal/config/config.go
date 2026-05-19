@@ -441,13 +441,16 @@ func resolveVarsFunc(s string, lookup func(string) (string, bool)) string {
 			depth := 1
 			j := i + 2
 			for j < len(s) && depth > 0 {
-				switch s[j] {
-				case '{':
+				switch {
+				case j+1 < len(s) && s[j] == '$' && s[j+1] == '{':
 					depth++
-				case '}':
+					j += 2
+				case s[j] == '}':
 					depth--
+					j++
+				default:
+					j++
 				}
-				j++
 			}
 
 			if depth == 0 {
@@ -500,29 +503,24 @@ func resolveVarExpression(inner string, lookup func(string) (string, bool)) stri
 		return ""
 	}
 
-	// Check for :+ syntax (use value if variable is set): ${VAR:+value}
-	// Only match if not inside nested ${...}
-	if idx := findTopLevelPattern(inner, ":+"); idx >= 0 {
-		varName := inner[:idx]
-		valueIfSet := inner[idx+2:]
-		if val, ok := lookup(varName); ok && val != "" {
-			// Variable is set, return the provided value (recursively resolved)
-			return resolveVarsFunc(valueIfSet, lookup)
-		}
-		// Variable not set or empty, return empty string
-		return ""
-	}
+	// Use positional disambiguation: whichever operator appears first wins.
+	idxDefault := findTopLevelPattern(inner, ":-")
+	idxConditional := findTopLevelPattern(inner, ":+")
 
-	// Check for :-default syntax
-	// Only match if not inside nested ${...}
-	if idx := findTopLevelPattern(inner, ":-"); idx >= 0 {
-		varName := inner[:idx]
-		defaultVal := inner[idx+2:]
+	if idxDefault >= 0 && (idxConditional < 0 || idxDefault < idxConditional) {
+		varName := inner[:idxDefault]
+		defaultVal := inner[idxDefault+2:]
 		if val, ok := lookup(varName); ok && val != "" {
 			return val
 		}
-		// Recursively resolve the default value to support ${VAR:-${OTHER|hostname}}
 		return resolveVarsFunc(defaultVal, lookup)
+	} else if idxConditional >= 0 {
+		varName := inner[:idxConditional]
+		valueIfSet := inner[idxConditional+2:]
+		if val, ok := lookup(varName); ok && val != "" {
+			return resolveVarsFunc(valueIfSet, lookup)
+		}
+		return ""
 	}
 
 	// Simple ${VAR}

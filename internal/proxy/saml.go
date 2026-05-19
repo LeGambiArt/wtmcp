@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/LeGambiArt/wtmcp/internal/domaincheck"
 	"github.com/LeGambiArt/wtmcp/internal/protocol"
 )
 
@@ -19,9 +20,8 @@ var (
 	metaRefreshRe  = regexp.MustCompile(`(?i)content=['"][^'"]*url=([^'">\s]+)`)
 	dataRedirectRe = regexp.MustCompile(`(?i)data-redirect-url=['"]([^'"]+)`)
 	formActionRe   = regexp.MustCompile(`(?i)<form[^>]*action=['"]([^'"]+)`)
-	hiddenInputRe  = regexp.MustCompile(
-		`(?i)<input[^>]*type=['"]hidden['"][^>]*name=['"]([^'"]+)['"][^>]*value=['"]([^'"]*)['"]`,
-	)
+	inputTagRe     = regexp.MustCompile(`(?i)<input\s([^>]+)`)
+	attrRe         = regexp.MustCompile(`(?i)(\w+)=['"]([^'"]*)['"]\s*`)
 )
 
 func isAuthRedirect(statusCode int, contentType string) bool {
@@ -44,16 +44,26 @@ func extractRedirectURL(body []byte, baseURL string) string {
 	return redirect
 }
 
-func parseSAMLForm(body []byte) (action string, formData url.Values, ok bool) {
+func parseSAMLForm(body []byte, baseURL string) (action string, formData url.Values, ok bool) {
 	text := string(body)
 	actionMatch := formActionRe.FindStringSubmatch(text)
 	if actionMatch == nil {
 		return "", nil, false
 	}
 	action = html.UnescapeString(actionMatch[1])
+	if strings.HasPrefix(action, "/") {
+		action = strings.TrimRight(baseURL, "/") + action
+	}
+
 	formData = url.Values{}
-	for _, m := range hiddenInputRe.FindAllStringSubmatch(text, -1) {
-		formData.Set(html.UnescapeString(m[1]), html.UnescapeString(m[2]))
+	for _, inputMatch := range inputTagRe.FindAllStringSubmatch(text, -1) {
+		attrs := make(map[string]string)
+		for _, a := range attrRe.FindAllStringSubmatch(inputMatch[1], -1) {
+			attrs[strings.ToLower(a[1])] = html.UnescapeString(a[2])
+		}
+		if attrs["type"] == "hidden" && attrs["name"] != "" {
+			formData.Set(attrs["name"], attrs["value"])
+		}
 	}
 	if len(formData) == 0 {
 		return "", nil, false
@@ -73,12 +83,7 @@ func isDomainAllowedForSSO(rawURL string, baseURL string, allowedDomains []strin
 	if baseHost := extractHostname(baseURL); strings.EqualFold(host, baseHost) {
 		return true
 	}
-	for _, d := range allowedDomains {
-		if strings.EqualFold(host, d) {
-			return true
-		}
-	}
-	return false
+	return domaincheck.Contains(allowedDomains, host)
 }
 
 func extractHostname(rawURL string) string {
@@ -89,17 +94,36 @@ func extractHostname(rawURL string) string {
 	return u.Hostname()
 }
 
+// safeRedirectClient returns a copy of client that only follows
+// redirects to allowed domains. Redirects to unknown domains are
+// stopped, preventing SPNEGO token leakage while allowing
+// legitimate intra-IdP redirect chains.
+func safeRedirectClient(client *http.Client, baseURL string, allowedDomains []string) *http.Client {
+	c := *client
+	c.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 10 {
+			return fmt.Errorf("stopped after 10 redirects")
+		}
+		if !isDomainAllowedForSSO(req.URL.String(), baseURL, allowedDomains) {
+			return http.ErrUseLastResponse
+		}
+		return nil
+	}
+	return &c
+}
+
 // handleSAMLSSO follows a SAML SSO redirect flow using the given
 // Kerberos-authenticated HTTP client. The flow is:
-//  1. Extract redirect URL from Jenkins HTML (meta-refresh)
+//  1. Extract redirect URL from the HTML response (meta-refresh or
+//     data-redirect-url attribute)
 //  2. Validate the URL against allowed domains
 //  3. Follow it to the IdP — SPNEGORoundTripper handles Kerberos
 //  4. IdP returns a SAML POST binding form
 //  5. Validate the form action URL against allowed domains
-//  6. Submit the form back to Jenkins to establish a session cookie
+//  6. Submit the form back to the origin to establish a session cookie
 //
 // Returns true if login succeeded.
-func handleSAMLSSO(client *http.Client, body []byte, baseURL string, allowedDomains []string) bool {
+func handleSAMLSSO(ctx context.Context, client *http.Client, body []byte, baseURL string, allowedDomains []string) bool {
 	redirectURL := extractRedirectURL(body, baseURL)
 	if redirectURL == "" {
 		return false
@@ -110,13 +134,15 @@ func handleSAMLSSO(client *http.Client, body []byte, baseURL string, allowedDoma
 		return false
 	}
 
-	idpReq, err := http.NewRequest("GET", redirectURL, nil)
+	safeClient := safeRedirectClient(client, baseURL, allowedDomains)
+
+	idpReq, err := http.NewRequestWithContext(ctx, "GET", redirectURL, nil)
 	if err != nil {
 		log.Printf("proxy: saml: invalid redirect URL %q: %v", redirectURL, err)
 		return false
 	}
 
-	idpResp, err := client.Do(idpReq)
+	idpResp, err := safeClient.Do(idpReq)
 	if err != nil {
 		log.Printf("proxy: saml: IdP request failed: %v", err)
 		return false
@@ -134,10 +160,10 @@ func handleSAMLSSO(client *http.Client, body []byte, baseURL string, allowedDoma
 
 	idpText := string(idpBody)
 	if !strings.Contains(idpText, "saml-post-binding") && !strings.Contains(idpText, "SAMLResponse") {
-		return idpResp.StatusCode == 200
+		return false
 	}
 
-	action, formData, ok := parseSAMLForm(idpBody)
+	action, formData, ok := parseSAMLForm(idpBody, baseURL)
 	if !ok {
 		log.Printf("proxy: saml: could not parse SAML form from IdP response")
 		return false
@@ -148,13 +174,13 @@ func handleSAMLSSO(client *http.Client, body []byte, baseURL string, allowedDoma
 		return false
 	}
 
-	formReq, err := http.NewRequest("POST", action, strings.NewReader(formData.Encode()))
+	formReq, err := http.NewRequestWithContext(ctx, "POST", action, strings.NewReader(formData.Encode()))
 	if err != nil {
 		return false
 	}
 	formReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	formResp, err := client.Do(formReq)
+	formResp, err := safeClient.Do(formReq)
 	if err != nil {
 		log.Printf("proxy: saml: SAML form POST failed: %v", err)
 		return false
@@ -162,7 +188,7 @@ func handleSAMLSSO(client *http.Client, body []byte, baseURL string, allowedDoma
 	io.Copy(io.Discard, formResp.Body) //nolint:errcheck,gosec
 	formResp.Body.Close()              //nolint:errcheck,gosec
 
-	if formResp.StatusCode == 200 {
+	if formResp.StatusCode >= 200 && formResp.StatusCode < 400 {
 		log.Printf("proxy: saml: SSO login completed")
 		return true
 	}
@@ -172,11 +198,12 @@ func handleSAMLSSO(client *http.Client, body []byte, baseURL string, allowedDoma
 
 // trySAMLSSO checks if an HTTP response is a SAML SSO auth redirect
 // and, if so, follows the SSO flow. On success, it retries the
-// original request and returns the new response. On failure (or if
-// not an auth redirect), it returns the original response unchanged.
+// original request (only for idempotent methods) and returns the new
+// response. On failure (or if not an auth redirect), it returns the
+// original response unchanged.
 //
 // The caller must not have read resp.Body yet.
-func (p *Proxy) trySAMLSSO(ctx context.Context, pa *PluginAuth, resp *http.Response, client *http.Client, fullURL string, req protocol.Message) *http.Response {
+func (p *Proxy) trySAMLSSO(ctx context.Context, pa *PluginAuth, resp *http.Response, client *http.Client, fullURL string, req protocol.Message, idempotent bool) *http.Response {
 	ct := resp.Header.Get("Content-Type")
 	if !isAuthRedirect(resp.StatusCode, ct) {
 		return resp
@@ -197,7 +224,12 @@ func (p *Proxy) trySAMLSSO(ctx context.Context, pa *PluginAuth, resp *http.Respo
 		}
 	}
 
-	if !handleSAMLSSO(client, body, baseURL, pa.AllowedDomains) {
+	if !handleSAMLSSO(ctx, client, body, baseURL, pa.AllowedDomains) {
+		resp.Body = io.NopCloser(bytes.NewReader(body))
+		return resp
+	}
+
+	if !idempotent {
 		resp.Body = io.NopCloser(bytes.NewReader(body))
 		return resp
 	}
@@ -223,13 +255,20 @@ const samlInitBodyLimit = 1 << 20 // 1MB
 // SAML form (form-first pattern) or a redirect (redirect-first
 // pattern), and follows the chain to establish session cookies in
 // the client's jar.
-func InitSAMLSession(client *http.Client, initURL, baseURL string, allowedDomains []string) error {
+func InitSAMLSession(ctx context.Context, client *http.Client, initURL, baseURL string, allowedDomains []string) error {
 	fullURL := initURL
 	if strings.HasPrefix(initURL, "/") {
 		fullURL = strings.TrimRight(baseURL, "/") + initURL
 	}
 
-	resp, err := client.Get(fullURL) //nolint:gosec // initURL is from plugin config, not user input
+	safeClient := safeRedirectClient(client, baseURL, allowedDomains)
+
+	req, err := http.NewRequestWithContext(ctx, "GET", fullURL, nil)
+	if err != nil {
+		return fmt.Errorf("build request for %s: %w", fullURL, err)
+	}
+
+	resp, err := safeClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("GET %s: %w", fullURL, err)
 	}
@@ -239,12 +278,12 @@ func InitSAMLSession(client *http.Client, initURL, baseURL string, allowedDomain
 		return fmt.Errorf("read response from %s: %w", fullURL, err)
 	}
 
-	action, formData, ok := parseSAMLForm(body)
+	action, formData, ok := parseSAMLForm(body, baseURL)
 	if ok && formData.Get("SAMLRequest") != "" {
-		return followSAMLFormChain(client, action, formData, baseURL, allowedDomains)
+		return followSAMLFormChain(ctx, client, action, formData, baseURL, allowedDomains)
 	}
 
-	if handleSAMLSSO(client, body, baseURL, allowedDomains) {
+	if handleSAMLSSO(ctx, client, body, baseURL, allowedDomains) {
 		return nil
 	}
 
@@ -255,18 +294,20 @@ func InitSAMLSession(client *http.Client, initURL, baseURL string, allowedDomain
 //  1. POST SAMLRequest to the IdP (form action URL)
 //  2. Parse SAMLResponse from IdP response
 //  3. POST SAMLResponse back to the origin server
-func followSAMLFormChain(client *http.Client, idpURL string, formData url.Values, baseURL string, allowedDomains []string) error {
+func followSAMLFormChain(ctx context.Context, client *http.Client, idpURL string, formData url.Values, baseURL string, allowedDomains []string) error {
 	if !isDomainAllowedForSSO(idpURL, baseURL, allowedDomains) {
 		return fmt.Errorf("IdP URL %q not in allowed domains", idpURL)
 	}
 
-	idpReq, err := http.NewRequest("POST", idpURL, strings.NewReader(formData.Encode()))
+	safeClient := safeRedirectClient(client, baseURL, allowedDomains)
+
+	idpReq, err := http.NewRequestWithContext(ctx, "POST", idpURL, strings.NewReader(formData.Encode()))
 	if err != nil {
 		return fmt.Errorf("build IdP request: %w", err)
 	}
 	idpReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	idpResp, err := client.Do(idpReq)
+	idpResp, err := safeClient.Do(idpReq)
 	if err != nil {
 		return fmt.Errorf("IdP request failed: %w", err)
 	}
@@ -276,7 +317,7 @@ func followSAMLFormChain(client *http.Client, idpURL string, formData url.Values
 		return fmt.Errorf("read IdP response: %w", err)
 	}
 
-	respAction, respFormData, ok := parseSAMLForm(idpBody)
+	respAction, respFormData, ok := parseSAMLForm(idpBody, baseURL)
 	if !ok || respFormData.Get("SAMLResponse") == "" {
 		return fmt.Errorf("no SAMLResponse in IdP response (status %d)", idpResp.StatusCode)
 	}
@@ -285,13 +326,13 @@ func followSAMLFormChain(client *http.Client, idpURL string, formData url.Values
 		return fmt.Errorf("SAMLResponse action %q not in allowed domains", respAction)
 	}
 
-	finalReq, err := http.NewRequest("POST", respAction, strings.NewReader(respFormData.Encode()))
+	finalReq, err := http.NewRequestWithContext(ctx, "POST", respAction, strings.NewReader(respFormData.Encode()))
 	if err != nil {
 		return fmt.Errorf("build final SAML request: %w", err)
 	}
 	finalReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	finalResp, err := client.Do(finalReq)
+	finalResp, err := safeClient.Do(finalReq)
 	if err != nil {
 		return fmt.Errorf("final SAML POST failed: %w", err)
 	}

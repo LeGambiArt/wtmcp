@@ -182,6 +182,11 @@ func (p *Proxy) AddBaseDomains(pluginName string, domains []string) {
 		return
 	}
 	for _, d := range domains {
+		if len(pa.AllowedDomains) >= maxTotalDomains {
+			log.Printf("[%s] WARNING: domain allowlist cap reached (%d domains), rejecting %q",
+				pluginName, maxTotalDomains, d)
+			continue
+		}
 		// Use domaincheck.Contains for normalized comparison
 		if !domaincheck.Contains(pa.AllowedDomains, d) {
 			pa.AllowedDomains = append(pa.AllowedDomains, d)
@@ -413,7 +418,7 @@ func (p *Proxy) Execute(ctx context.Context, pluginName string, req protocol.Mes
 	}
 
 	if pa.IsKerberos && pa.Client != nil && !req.NoAuth {
-		resp = p.trySAMLSSO(ctx, pa, resp, pa.Client, fullURL, req)
+		resp = p.trySAMLSSO(ctx, pa, resp, pa.Client, fullURL, req, isIdempotent(method))
 	}
 
 	defer func() {
@@ -690,13 +695,7 @@ func (p *Proxy) isDomainAllowed(_ string, pa *PluginAuth, rawURL string) bool {
 
 	// AllowedDomains already includes the base_url hostname
 	// (auto-added at load time by manager.go).
-	reqHost := reqURL.Hostname()
-	for _, domain := range pa.AllowedDomains {
-		if strings.EqualFold(reqHost, domain) {
-			return true
-		}
-	}
-	return false
+	return domaincheck.Contains(pa.AllowedDomains, reqURL.Hostname())
 }
 
 func responseHeaders(resp *http.Response) map[string]string {
@@ -730,7 +729,9 @@ func StripAuthOnCrossDomainRedirect(req *http.Request, via []*http.Request) erro
 	if len(via) > 0 {
 		origHost := via[0].URL.Hostname()
 		newHost := req.URL.Hostname()
-		if !strings.EqualFold(origHost, newHost) {
+		origNorm, _ := domaincheck.Normalize(origHost)
+		newNorm, _ := domaincheck.Normalize(newHost)
+		if origNorm != newNorm {
 			req.Header.Del("Authorization")
 			req.Header.Del("Cookie")
 			req.Header.Del("Private-Token")

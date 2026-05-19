@@ -1305,7 +1305,7 @@ func TestPreparePluginDoesNotStart(t *testing.T) {
 		t.Fatalf("Discover: %v", err)
 	}
 
-	handle, err := m.preparePlugin("nostart")
+	handle, err := m.preparePlugin(context.Background(), "nostart")
 	if err != nil {
 		t.Fatalf("preparePlugin: %v", err)
 	}

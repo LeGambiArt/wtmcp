@@ -97,7 +97,7 @@ func TestParseSAMLForm(t *testing.T) {
 			<input type="hidden" name="RelayState" value="token123" />
 		</form></html>`
 
-		action, formData, ok := parseSAMLForm([]byte(body))
+		action, formData, ok := parseSAMLForm([]byte(body), "")
 		if !ok {
 			t.Fatal("expected ok=true")
 		}
@@ -116,7 +116,7 @@ func TestParseSAMLForm(t *testing.T) {
 		body := `<html><form action="https://jenkins.example.com/finish?a=1&amp;b=2">
 			<input type="hidden" name="SAMLResponse" value="data" />
 		</form></html>`
-		action, _, ok := parseSAMLForm([]byte(body))
+		action, _, ok := parseSAMLForm([]byte(body), "")
 		if !ok {
 			t.Fatal("expected ok=true")
 		}
@@ -127,7 +127,7 @@ func TestParseSAMLForm(t *testing.T) {
 
 	t.Run("no form", func(t *testing.T) {
 		body := `<html><body>No form here</body></html>`
-		_, _, ok := parseSAMLForm([]byte(body))
+		_, _, ok := parseSAMLForm([]byte(body), "")
 		if ok {
 			t.Error("expected ok=false for body without form")
 		}
@@ -137,7 +137,7 @@ func TestParseSAMLForm(t *testing.T) {
 		body := `<html><form action="https://example.com/login">
 			<input type="text" name="username" />
 		</form></html>`
-		_, _, ok := parseSAMLForm([]byte(body))
+		_, _, ok := parseSAMLForm([]byte(body), "")
 		if ok {
 			t.Error("expected ok=false for form without hidden inputs")
 		}
@@ -250,7 +250,7 @@ func TestHandleSAMLSSO(t *testing.T) {
 		srv.URL,
 	)
 
-	ok := handleSAMLSSO(client, []byte(authRedirectBody), srv.URL, []string{srvHost.Hostname()})
+	ok := handleSAMLSSO(context.Background(), client, []byte(authRedirectBody), srv.URL, []string{srvHost.Hostname()})
 	if !ok {
 		t.Fatal("expected handleSAMLSSO to succeed")
 	}
@@ -276,7 +276,7 @@ func TestHandleSAMLSSO(t *testing.T) {
 
 func TestHandleSAMLSSONoRedirect(t *testing.T) {
 	body := `<html><body>Access denied, no redirect</body></html>`
-	ok := handleSAMLSSO(&http.Client{}, []byte(body), "https://example.com", nil)
+	ok := handleSAMLSSO(context.Background(), &http.Client{}, []byte(body), "https://example.com", nil)
 	if ok {
 		t.Error("expected failure when no redirect URL found")
 	}
@@ -284,7 +284,7 @@ func TestHandleSAMLSSONoRedirect(t *testing.T) {
 
 func TestHandleSAMLSSOBlocksDisallowedDomain(t *testing.T) {
 	body := `<html><meta content="0;url=https://evil.com/steal" /></html>`
-	ok := handleSAMLSSO(&http.Client{}, []byte(body), "https://jenkins.example.com", []string{"jenkins.example.com"})
+	ok := handleSAMLSSO(context.Background(), &http.Client{}, []byte(body), "https://jenkins.example.com", []string{"jenkins.example.com"})
 	if ok {
 		t.Error("expected failure for redirect to disallowed domain")
 	}
@@ -428,7 +428,7 @@ func TestInitSAMLSessionFormFirst(t *testing.T) {
 	client := srv.Client()
 	client.Jar = jar
 
-	err := InitSAMLSession(client, "/saml.redirect", srv.URL, []string{})
+	err := InitSAMLSession(context.Background(), client, "/saml.redirect", srv.URL, []string{})
 	if err != nil {
 		t.Fatalf("InitSAMLSession failed: %v", err)
 	}
@@ -481,7 +481,7 @@ func TestInitSAMLSessionRedirectFirst(t *testing.T) {
 	client := srv.Client()
 	client.Jar = jar
 
-	err := InitSAMLSession(client, "/login", srv.URL, []string{})
+	err := InitSAMLSession(context.Background(), client, "/login", srv.URL, []string{})
 	if err != nil {
 		t.Fatalf("InitSAMLSession redirect-first failed: %v", err)
 	}
@@ -501,7 +501,7 @@ func TestInitSAMLSessionNoSAMLContent(t *testing.T) {
 	client := srv.Client()
 	client.Jar = jar
 
-	err := InitSAMLSession(client, "/", srv.URL, []string{})
+	err := InitSAMLSession(context.Background(), client, "/", srv.URL, []string{})
 	if err == nil {
 		t.Fatal("expected error for page with no SAML content")
 	}
@@ -527,7 +527,7 @@ func TestInitSAMLSessionIdPDomainBlocked(t *testing.T) {
 	client := srv.Client()
 	client.Jar = jar
 
-	err := InitSAMLSession(client, "/saml.redirect", srv.URL, []string{})
+	err := InitSAMLSession(context.Background(), client, "/saml.redirect", srv.URL, []string{})
 	if err == nil {
 		t.Fatal("expected error for blocked IdP domain")
 	}
@@ -566,7 +566,7 @@ func TestInitSAMLSessionAbsoluteURL(t *testing.T) {
 	client.Jar = jar
 
 	// Pass absolute URL instead of relative path
-	err := InitSAMLSession(client, srv.URL+"/saml.redirect", srv.URL, []string{})
+	err := InitSAMLSession(context.Background(), client, srv.URL+"/saml.redirect", srv.URL, []string{})
 	if err != nil {
 		t.Fatalf("InitSAMLSession with absolute URL failed: %v", err)
 	}
@@ -612,5 +612,142 @@ func TestTrySAMLSSOSkippedWithNoAuth(t *testing.T) {
 	}
 	if requestCount.Load() != 1 {
 		t.Errorf("request count = %d, want 1 (no SSO retry with noAuth)", requestCount.Load())
+	}
+}
+
+// --- Regression tests for review findings ---
+
+func TestParseSAMLFormReversedAttributes(t *testing.T) {
+	// F2: attribute ordering — name before type
+	body := `<html><form action="https://idp.example.com/saml">
+		<input name="SAMLRequest" type="hidden" value="req123"/>
+		<input value="/" name="RelayState" type="hidden"/>
+	</form></html>`
+	action, formData, ok := parseSAMLForm([]byte(body), "")
+	if !ok {
+		t.Fatal("parseSAMLForm should handle reversed attribute ordering")
+	}
+	if action != "https://idp.example.com/saml" {
+		t.Errorf("action = %q, want https://idp.example.com/saml", action)
+	}
+	if formData.Get("SAMLRequest") != "req123" {
+		t.Errorf("SAMLRequest = %q, want req123", formData.Get("SAMLRequest"))
+	}
+	if formData.Get("RelayState") != "/" {
+		t.Errorf("RelayState = %q, want /", formData.Get("RelayState"))
+	}
+}
+
+func TestParseSAMLFormRelativeAction(t *testing.T) {
+	// F8: relative action URL resolved against baseURL
+	body := `<html><form action="/saml/consume">
+		<input type="hidden" name="SAMLResponse" value="resp"/>
+	</form></html>`
+	action, _, ok := parseSAMLForm([]byte(body), "https://app.example.com")
+	if !ok {
+		t.Fatal("parseSAMLForm should handle relative action")
+	}
+	if action != "https://app.example.com/saml/consume" {
+		t.Errorf("action = %q, want https://app.example.com/saml/consume", action)
+	}
+}
+
+func TestIsDomainAllowedForSSOTrailingDot(t *testing.T) {
+	// F3: domain normalization — trailing dot should match
+	allowed := []string{"idp.example.com."}
+	if !isDomainAllowedForSSO("https://idp.example.com/saml", "https://app.example.com", allowed) {
+		t.Error("trailing dot in allowed domain should match normalized request host")
+	}
+}
+
+func TestHandleSAMLSSOBlocksRedirectToUnknownDomain(t *testing.T) {
+	// F1: redirect to unallowed domain must be blocked
+	var evilCalled atomic.Bool
+	mux := http.NewServeMux()
+	srv := httptest.NewTLSServer(mux)
+	defer srv.Close()
+
+	evil := httptest.NewTLSServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		evilCalled.Store(true)
+	}))
+	defer evil.Close()
+
+	mux.HandleFunc("/login", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		// IdP redirects to an evil domain via meta-refresh
+		_, _ = fmt.Fprintf(w, `<html><meta content="0;url=%s/steal" /></html>`, evil.URL)
+	})
+
+	body := fmt.Sprintf(`<html><meta content="0;url=%s/login" /></html>`, srv.URL)
+
+	jar, _ := cookiejar.New(nil)
+	client := srv.Client()
+	client.Jar = jar
+
+	// Only allow srv.URL's domain, not the evil domain
+	srvHost, _ := url.Parse(srv.URL)
+	ok := handleSAMLSSO(context.Background(), client, []byte(body), srv.URL, []string{srvHost.Hostname()})
+	if ok {
+		t.Error("handleSAMLSSO should fail when IdP redirects to unallowed domain")
+	}
+	if evilCalled.Load() {
+		t.Error("evil server was contacted despite domain not being allowed")
+	}
+}
+
+func TestTrySAMLSSOSkipsReplayForPOST(t *testing.T) {
+	// F4: non-idempotent methods should not be replayed after SSO
+	var apiCalls atomic.Int32
+	mux := http.NewServeMux()
+	srv := httptest.NewTLSServer(mux)
+	defer srv.Close()
+
+	srvHost, _ := url.Parse(srv.URL)
+
+	mux.HandleFunc("/api/create", func(w http.ResponseWriter, _ *http.Request) {
+		apiCalls.Add(1)
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(401)
+		_, _ = fmt.Fprintf(w, `<html><meta content="0;url=%s/idp/sso" /></html>`, srv.URL)
+	})
+
+	mux.HandleFunc("/idp/sso", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = fmt.Fprintf(w, `<html><body>
+			<div id="saml-post-binding">
+			<form action="%s/saml/consume">
+				<input type="hidden" name="SAMLResponse" value="resp"/>
+			</form></div></body></html>`, srv.URL)
+	})
+
+	mux.HandleFunc("/saml/consume", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(200)
+	})
+
+	jar, _ := cookiejar.New(nil)
+	client := srv.Client()
+	client.Jar = jar
+
+	p := newTestProxy(client)
+	pa := testPluginAuth(srv.URL)
+	pa.Client = client
+	pa.IsKerberos = true
+	pa.AllowedDomains = []string{srvHost.Hostname()}
+	p.RegisterPlugin("test", pa)
+
+	resp := p.Execute(context.Background(), "test", protocol.Message{
+		ID:     "req-post",
+		Type:   protocol.TypeHTTPRequest,
+		Method: "POST",
+		Path:   "/api/create",
+	})
+
+	// SSO should run but the POST should NOT be replayed
+	if apiCalls.Load() != 1 {
+		t.Errorf("api calls = %d, want 1 (POST should not be replayed after SSO)", apiCalls.Load())
+	}
+	// The original 401 response should be returned since POST is not replayed
+	if resp.Status != 401 {
+		t.Errorf("status = %d, want 401 (original response for non-idempotent)", resp.Status)
 	}
 }

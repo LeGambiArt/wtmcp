@@ -269,7 +269,7 @@ func (m *Manager) LoadAll(ctx context.Context) error {
 	for i, level := range levels {
 		var prepared []string
 		for _, name := range level {
-			handle, err := m.preparePlugin(name)
+			handle, err := m.preparePlugin(ctx, name)
 			if err != nil {
 				m.disablePlugin(name, err.Error())
 				continue
@@ -395,7 +395,7 @@ func (m *Manager) startLevel(ctx context.Context, names []string) {
 
 // Load starts a single plugin by name.
 func (m *Manager) Load(ctx context.Context, name string) error {
-	handle, err := m.preparePlugin(name)
+	handle, err := m.preparePlugin(ctx, name)
 	if err != nil {
 		return err
 	}
@@ -527,7 +527,7 @@ func (m *Manager) registerAuthBindings(name string, handle *Handle) {
 // IMPORTANT: This method writes to m.proxy (RegisterPlugin) and reads
 // from m.manifests/m.envGroups — it must be called sequentially, never
 // from concurrent goroutines.
-func (m *Manager) preparePlugin(name string) (*Handle, error) {
+func (m *Manager) preparePlugin(ctx context.Context, name string) (*Handle, error) {
 	manifest, ok := m.manifests[name]
 	if !ok {
 		return nil, fmt.Errorf("unknown plugin: %s", name)
@@ -677,7 +677,7 @@ func (m *Manager) preparePlugin(name string) (*Handle, error) {
 
 	if samlInit := manifest.Services.Auth.SAMLInit; samlInit != "" && pa.IsKerberos && pa.Client != nil {
 		resolved := config.ResolveVars(samlInit, vars)
-		if err := proxy.InitSAMLSession(pa.Client, resolved, pa.BaseURL, pa.AllowedDomains); err != nil {
+		if err := proxy.InitSAMLSession(ctx, pa.Client, resolved, pa.BaseURL, pa.AllowedDomains); err != nil {
 			return nil, fmt.Errorf("[%s] SAML init login failed: %w", name, err)
 		}
 		log.Printf("[%s] SAML init login completed", name)
