@@ -16,7 +16,7 @@ This creates `wtmcpctl` in the repository root.
 
 | Flag | Description |
 |---|---|
-| `--workdir <path>` | Override the wtmcp working directory (default: `~/.local/share/wtmcp`) |
+| `--workdir <path>` | Override the wtmcp working directory (default: `~/.config/wtmcp`) |
 | `--verbose`, `-v` | Show verbose output (discovery logs, etc.) |
 | `--version` | Show version information |
 
