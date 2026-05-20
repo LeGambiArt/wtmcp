@@ -4057,6 +4057,20 @@ func TestConvertMarkdownToRequestsFinalIndex(t *testing.T) {
 	}
 }
 
+func TestFormattedNestedListNoMidTextTabs(t *testing.T) {
+	segments := parseMarkdown("    - **bold** text\n")
+	requests, _ := convertMarkdownToRequests(segments, 1)
+
+	tabCount := 0
+	for _, req := range requests {
+		if req.InsertText != nil && strings.Contains(req.InsertText.Text, "\t") {
+			tabCount++
+		}
+	}
+	if tabCount != 1 {
+		t.Errorf("expected 1 InsertText with tab, got %d", tabCount)
+	}
+}
 func TestConvertMarkdownToRequests_CodeBlock(t *testing.T) {
 	t.Run("code block applies Courier New font", func(t *testing.T) {
 		markdown := "```\nfmt.Println(\"hello\")\n```"

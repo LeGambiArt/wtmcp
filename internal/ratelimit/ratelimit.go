@@ -71,25 +71,34 @@ func New(defaultRate string, overrides map[string]string, globalRate string) (*R
 
 // Allow checks whether a request for the given key is allowed.
 // Returns the wait duration if rate limited, or zero if allowed.
-// Per-key limits are checked before the global limit to avoid
-// consuming global tokens for requests rejected by a tighter
-// per-key limit.
+//
+// The global limit is checked first so that a global rejection
+// never touches the per-key limiter. This avoids a subtle issue
+// where rate.Reservation.Cancel() is a no-op for zero-delay
+// reservations (the token is silently lost).
+//
+// Trade-off: when global passes but per-key rejects, a global
+// token is consumed without a corresponding request (Cancel is
+// equally a no-op in this direction). This is acceptable because
+// global capacity is typically much higher than per-key capacity.
 func (r *Registry) Allow(key string) time.Duration {
 	if r == nil {
 		return 0
 	}
 
-	limiter := r.getLimiter(key)
-	if limiter != nil {
-		res := limiter.Reserve()
+	if r.global != nil {
+		res := r.global.Reserve()
 		if d := res.Delay(); d > 0 {
 			res.Cancel()
 			return d
 		}
 	}
 
-	if r.global != nil {
-		res := r.global.Reserve()
+	// NOTE: if per-key rejects below, the global token consumed
+	// above is lost (Cancel is a no-op for zero-delay reservations).
+	limiter := r.getLimiter(key)
+	if limiter != nil {
+		res := limiter.Reserve()
 		if d := res.Delay(); d > 0 {
 			res.Cancel()
 			return d

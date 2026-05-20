@@ -2333,3 +2333,245 @@ func TestScrubErrorPassesThroughSafeMessages(t *testing.T) {
 		t.Errorf("safe message should pass through unchanged, got: %s", got)
 	}
 }
+
+// --- Rate-limit wait tests ---
+
+// mockRateLimiter returns pre-configured delays in sequence.
+// After all delays are consumed, Allow() returns 0 (token acquired).
+type mockRateLimiter struct {
+	delays []time.Duration
+	mu     sync.Mutex
+	idx    int
+}
+
+func (m *mockRateLimiter) Allow(_ string) time.Duration {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.idx >= len(m.delays) {
+		return 0
+	}
+	d := m.delays[m.idx]
+	m.idx++
+	return d
+}
+
+func TestRateLimitTokenAcquiredFirstTry(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(200)
+		w.Write([]byte(`{"ok":true}`)) //nolint:errcheck,gosec
+	}))
+	defer srv.Close()
+
+	p := newTestProxy(srv.Client())
+	p.rateLimiter = &mockRateLimiter{} // empty delays → immediate token
+	p.RegisterPlugin("test", testPluginAuth(srv.URL))
+
+	var sleepCount atomic.Int32
+	p.sleepFn = func(_ context.Context, _ time.Duration) error {
+		sleepCount.Add(1)
+		return nil
+	}
+
+	resp := p.Execute(context.Background(), "test", protocol.Message{
+		ID:   "rl1",
+		Type: protocol.TypeHTTPRequest,
+		Path: "/api/test",
+	})
+
+	if resp.Status != 200 {
+		t.Errorf("expected 200, got %d", resp.Status)
+	}
+	if sleepCount.Load() != 0 {
+		t.Errorf("expected 0 sleeps, got %d", sleepCount.Load())
+	}
+}
+
+func TestRateLimitTokenAcquiredAfterWait(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(200)
+		w.Write([]byte(`{"ok":true}`)) //nolint:errcheck,gosec
+	}))
+	defer srv.Close()
+
+	p := newTestProxy(srv.Client())
+	p.rateLimiter = &mockRateLimiter{
+		delays: []time.Duration{500 * time.Millisecond}, // wait once, then token acquired
+	}
+	p.RegisterPlugin("test", testPluginAuth(srv.URL))
+
+	var sleepCount atomic.Int32
+	var sleepDuration atomic.Int64
+	p.sleepFn = func(_ context.Context, d time.Duration) error {
+		sleepCount.Add(1)
+		sleepDuration.Store(int64(d))
+		return nil
+	}
+
+	resp := p.Execute(context.Background(), "test", protocol.Message{
+		ID:   "rl2",
+		Type: protocol.TypeHTTPRequest,
+		Path: "/api/test",
+	})
+
+	if resp.Status != 200 {
+		t.Errorf("expected 200, got %d", resp.Status)
+	}
+	if sleepCount.Load() != 1 {
+		t.Errorf("expected 1 sleep, got %d", sleepCount.Load())
+	}
+	if d := time.Duration(sleepDuration.Load()); d != 500*time.Millisecond {
+		t.Errorf("expected 500ms sleep, got %s", d)
+	}
+}
+
+func TestRateLimitContextCancelled(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+
+	p := newTestProxy(srv.Client())
+	p.rateLimiter = &mockRateLimiter{
+		delays: []time.Duration{time.Second, time.Second, time.Second},
+	}
+	p.RegisterPlugin("test", testPluginAuth(srv.URL))
+
+	p.sleepFn = func(_ context.Context, _ time.Duration) error {
+		return context.Canceled
+	}
+
+	resp := p.Execute(context.Background(), "test", protocol.Message{
+		ID: "rl3", Type: protocol.TypeHTTPRequest, Path: "/api/test",
+	})
+	if resp.Error == nil || resp.Error.Code != "request_cancelled" {
+		t.Errorf("expected request_cancelled error, got %+v", resp.Error)
+	}
+}
+
+func TestRateLimitMaxRetriesExceeded(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+
+	// 3 delays = 3 Allow() calls returning d>0. With maxRateLimitRetries=2,
+	// the loop sleeps on attempts 0 and 1, then gives up on attempt 2.
+	p := newTestProxy(srv.Client())
+	p.rateLimiter = &mockRateLimiter{
+		delays: []time.Duration{time.Second, time.Second, time.Second},
+	}
+	p.RegisterPlugin("test", testPluginAuth(srv.URL))
+
+	var sleepCount atomic.Int32
+	p.sleepFn = func(_ context.Context, _ time.Duration) error {
+		sleepCount.Add(1)
+		return nil
+	}
+
+	resp := p.Execute(context.Background(), "test", protocol.Message{
+		ID: "rl4", Type: protocol.TypeHTTPRequest, Path: "/api/test",
+	})
+	if resp.Error == nil || resp.Error.Code != "rate_limited" {
+		t.Errorf("expected rate_limited error, got %+v", resp.Error)
+	}
+	// maxRateLimitRetries=2: sleeps on attempts 0 and 1, fails on attempt 2
+	if sleepCount.Load() != 2 {
+		t.Errorf("expected exactly 2 sleeps (maxRateLimitRetries), got %d", sleepCount.Load())
+	}
+}
+
+func TestRateLimitWaitExceedsMaxWait(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+
+	p := newTestProxy(srv.Client())
+	p.rateLimiter = &mockRateLimiter{
+		delays: []time.Duration{maxRateLimitWait + time.Millisecond},
+	}
+	p.RegisterPlugin("test", testPluginAuth(srv.URL))
+
+	var sleepCount atomic.Int32
+	p.sleepFn = func(_ context.Context, _ time.Duration) error {
+		sleepCount.Add(1)
+		return nil
+	}
+
+	resp := p.Execute(context.Background(), "test", protocol.Message{
+		ID: "rl5", Type: protocol.TypeHTTPRequest, Path: "/api/test",
+	})
+	if resp.Error == nil || resp.Error.Code != "rate_limited" {
+		t.Errorf("expected rate_limited error, got %+v", resp.Error)
+	}
+	if sleepCount.Load() != 0 {
+		t.Errorf("expected 0 sleeps (duration exceeds maxRateLimitWait), got %d", sleepCount.Load())
+	}
+}
+
+func TestRateLimitWaitAtExactBoundary(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(200)
+		w.Write([]byte(`{"ok":true}`)) //nolint:errcheck,gosec
+	}))
+	defer srv.Close()
+
+	p := newTestProxy(srv.Client())
+	p.rateLimiter = &mockRateLimiter{
+		delays: []time.Duration{maxRateLimitWait}, // exactly at boundary → accepted
+	}
+	p.RegisterPlugin("test", testPluginAuth(srv.URL))
+
+	p.sleepFn = func(_ context.Context, _ time.Duration) error { return nil }
+
+	resp := p.Execute(context.Background(), "test", protocol.Message{
+		ID: "rl6", Type: protocol.TypeHTTPRequest, Path: "/api/test",
+	})
+	if resp.Status != 200 {
+		t.Errorf("expected 200 (wait at boundary accepted), got status %d, error %+v", resp.Status, resp.Error)
+	}
+}
+
+func TestRateLimitWaitPlusFiveXXRetry(t *testing.T) {
+	var httpAttempts atomic.Int32
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if httpAttempts.Add(1) == 1 {
+			w.WriteHeader(503)
+			return
+		}
+		w.WriteHeader(200)
+		w.Write([]byte(`{"ok":true}`)) //nolint:errcheck,gosec
+	}))
+	defer srv.Close()
+
+	p := newTestProxy(srv.Client())
+	p.rateLimiter = &mockRateLimiter{
+		delays: []time.Duration{200 * time.Millisecond}, // one rate-limit wait
+	}
+	p.SetRetryConfig(config.RetryConfig{
+		Max:     3,
+		Backoff: "exponential",
+		RetryOn: []int{503},
+	})
+	p.RegisterPlugin("test", testPluginAuth(srv.URL))
+
+	var sleepCount atomic.Int32
+	p.sleepFn = func(_ context.Context, _ time.Duration) error {
+		sleepCount.Add(1)
+		return nil
+	}
+
+	resp := p.Execute(context.Background(), "test", protocol.Message{
+		ID: "rl7", Type: protocol.TypeHTTPRequest, Path: "/api/test",
+	})
+	if resp.Status != 200 {
+		t.Errorf("expected 200, got %d", resp.Status)
+	}
+	if httpAttempts.Load() != 2 {
+		t.Errorf("expected 2 HTTP attempts, got %d", httpAttempts.Load())
+	}
+	// 1 rate-limit wait sleep + 1 retry backoff sleep = 2 total
+	if sleepCount.Load() != 2 {
+		t.Errorf("expected 2 sleeps (rate-limit + retry backoff), got %d", sleepCount.Load())
+	}
+}

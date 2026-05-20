@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestParseRate(t *testing.T) {
@@ -129,7 +130,7 @@ func TestGlobalExhaustion(t *testing.T) {
 	}
 }
 
-func TestPerKeyBeforeGlobal(t *testing.T) {
+func TestGlobalBeforePerKey(t *testing.T) {
 	r, err := New("1/s", nil, "100/s")
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -139,13 +140,56 @@ func TestPerKeyBeforeGlobal(t *testing.T) {
 		t.Errorf("first request should be allowed, got delay %v", d)
 	}
 
+	// Per-key (1/s, burst=1) is exhausted; global (100/s) has budget.
+	// Global is checked first (passes), then per-key rejects.
 	if d := r.Allow("key"); d == 0 {
 		t.Error("second request should be per-key rate-limited")
 	}
 
-	// Global should still have tokens since per-key rejected first
+	// A different key gets a fresh per-key limiter, so it should pass.
 	if d := r.Allow("other"); d != 0 {
-		t.Errorf("different key should be allowed (global not wasted), got delay %v", d)
+		t.Errorf("different key should be allowed, got delay %v", d)
+	}
+}
+
+func TestGlobalRejectSkipsPerKey(t *testing.T) {
+	// Global is checked first. When it rejects, per-key is never
+	// touched — no token is consumed or leaked.
+	r, err := New("2/s", nil, "1/s")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// First request: both global (1/s) and per-key (2/s) allow.
+	if d := r.Allow("key"); d != 0 {
+		t.Fatalf("first request should be allowed, got delay %v", d)
+	}
+
+	// Second request: global (burst=1) is exhausted, rejects first.
+	// Per-key (burst=2, 1 consumed) is never touched.
+	if d := r.Allow("key"); d == 0 {
+		t.Fatal("second request should be globally rate-limited")
+	}
+
+	// Third request (immediate, no sleep): global is still exhausted.
+	// Under global-first order, this is rejected by global — per-key
+	// is never consulted. Under the old per-key-first order, per-key
+	// would reject (only 1 token left), which is the same outcome but
+	// for a different reason. The distinction matters after replenish.
+	if d := r.Allow("key"); d == 0 {
+		t.Fatal("third request should still be rate-limited (global exhausted)")
+	}
+
+	// Sleep for global to replenish (burst=1 at 1/s).
+	time.Sleep(1100 * time.Millisecond)
+
+	// Fourth request: global has replenished. Per-key still has 1
+	// token because it was never touched by requests 2 and 3.
+	// Under the old per-key-first order, per-key would have leaked
+	// a token on request 2 and been consumed on request 3, leaving
+	// 0 tokens — this request would fail.
+	if d := r.Allow("key"); d != 0 {
+		t.Fatalf("fourth request should be allowed after global replenish, got delay %v", d)
 	}
 }
 

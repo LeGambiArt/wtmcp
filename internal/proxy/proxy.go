@@ -93,6 +93,10 @@ type PluginAuth struct {
 	TLSTransport *http.Transport
 }
 
+type rateLimitChecker interface {
+	Allow(key string) time.Duration
+}
+
 // Proxy executes HTTP requests on behalf of plugins, injecting
 // authentication headers and enforcing security policies.
 type Proxy struct {
@@ -102,7 +106,7 @@ type Proxy struct {
 	privateClient *http.Client // for plugins with allow_private_ips
 	maxBodySize   int64
 	auditor       *audit.Logger
-	rateLimiter   *ratelimit.Registry
+	rateLimiter   rateLimitChecker
 	retryConfig   config.RetryConfig
 	sleepFn       func(context.Context, time.Duration) error // nil → sleepContext
 	samlCooldowns sync.Map                                   // map[string]int64 (unix-nano)
@@ -139,8 +143,12 @@ func (p *Proxy) SetAuditor(auditor *audit.Logger) {
 }
 
 // SetRateLimiter configures per-domain rate limiting.
+// A nil registry disables rate limiting; we avoid assigning it
+// to the interface field to prevent Go's typed-nil interface gotcha.
 func (p *Proxy) SetRateLimiter(rl *ratelimit.Registry) {
-	p.rateLimiter = rl
+	if rl != nil {
+		p.rateLimiter = rl
+	}
 }
 
 // SetRetryConfig configures HTTP retry behavior for transient errors.
@@ -338,13 +346,31 @@ func (p *Proxy) Execute(ctx context.Context, pluginName string, req protocol.Mes
 		return errResponse(req.ID, "invalid_url", p.scrubError(err.Error()))
 	}
 
+	// Rate-limit wait applies to all methods (including POST):
+	// this is pre-flight token acquisition, not request replay.
+	// The HTTP retry loop below only retries idempotent methods.
+	// NOTE: each retry may leak one global token — see ratelimit.go Allow() docs.
 	if p.rateLimiter != nil {
 		parsed, _ := url.Parse(fullURL)
 		if parsed != nil {
 			domain := parsed.Hostname()
-			if d := p.rateLimiter.Allow(domain); d > 0 {
-				return errResponse(req.ID, "rate_limited",
-					fmt.Sprintf("domain %s rate limited — retry after %s", domain, d.Truncate(time.Millisecond)))
+			for attempt := 0; ; attempt++ {
+				d := p.rateLimiter.Allow(domain)
+				if d == 0 {
+					break // token acquired
+				}
+				if attempt >= maxRateLimitRetries || d > maxRateLimitWait {
+					return errResponse(req.ID, "rate_limited",
+						fmt.Sprintf("domain %s rate limited — retry after %s", domain, d.Truncate(time.Millisecond)))
+				}
+				sleep := p.sleepFn
+				if sleep == nil {
+					sleep = sleepContext
+				}
+				if err := sleep(ctx, d); err != nil {
+					return errResponse(req.ID, "request_cancelled",
+						"rate-limit wait cancelled")
+				}
 			}
 		}
 	}
@@ -855,8 +881,10 @@ func stripDangerousHeaders(req *http.Request) {
 // --- Retry helpers ---
 
 const (
-	maxBackoff    = 30 * time.Second
-	maxRetryAfter = 30 * time.Second
+	maxBackoff          = 30 * time.Second
+	maxRetryAfter       = 30 * time.Second
+	maxRateLimitRetries = 2
+	maxRateLimitWait    = 15 * time.Second
 )
 
 func isIdempotent(method string) bool {

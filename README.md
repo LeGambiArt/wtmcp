@@ -104,7 +104,14 @@ a warning.
 
 Token-bucket rate limiting with configurable per-plugin, per-domain,
 and global limits. Defaults: 120 req/min per plugin, 600 req/min
-global.
+global. Google Workspace APIs (Docs, Drive, Gmail, Sheets) default
+to 300 req/min per domain.
+
+When the proxy's rate limiter would reject a request, it waits for
+a token instead of returning an error — up to 2 retries with a 15s
+per-wait cap. This applies to all HTTP methods (including POST)
+because it is pre-flight token acquisition, not request replay.
+The tool call timeout provides the hard outer bound.
 
 ```yaml
 http:
