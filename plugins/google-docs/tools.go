@@ -2374,22 +2374,41 @@ func convertMarkdownToRequests(segments []markdownSegment, startIndex int64, str
 			}
 		}
 
-		// For nested list items, prepend one tab per nesting level to EACH paragraph
-		// line. CreateParagraphBullets counts leading tabs to determine nesting level
-		// and removes them automatically — no manual deletion needed afterwards.
+		// For nested list items, prepend one tab per nesting level to each
+		// paragraph-starting line.  CreateParagraphBullets counts leading
+		// tabs to determine nesting level and removes them automatically.
+		//
+		// When a list item has inline formatting, parseSimpleFormatting
+		// splits it into multiple segments sharing the same listDepth.
+		// Only the first line of the first segment in each paragraph
+		// should get tabs — continuation segments within the same
+		// paragraph must not, or the tab becomes a literal character.
+		// We detect continuations by checking segments[i-1]: if the
+		// previous segment is a list item at the same depth whose text
+		// doesn't end with \n, this segment continues that paragraph.
 		insertText := seg.text
 		if isListItem && seg.listDepth > 0 {
 			tabs := strings.Repeat("\t", seg.listDepth)
-			// seg.text may contain multiple \n-separated paragraphs after merging;
-			// every non-empty line needs its own tab prefix.
+
+			isContinuation := i > 0 &&
+				(segments[i-1].orderedListItem || segments[i-1].unorderedListItem) &&
+				segments[i-1].listDepth == seg.listDepth &&
+				!strings.HasSuffix(segments[i-1].text, "\n")
+
 			var outLines []string
+			firstLine := true
 			for _, line := range strings.Split(seg.text, "\n") {
 				if line != "" {
-					outLines = append(outLines, tabs+line)
-					tabsInserted += int64(seg.listDepth)
+					if firstLine && isContinuation {
+						outLines = append(outLines, line)
+					} else {
+						outLines = append(outLines, tabs+line)
+						tabsInserted += int64(seg.listDepth)
+					}
 				} else {
 					outLines = append(outLines, line)
 				}
+				firstLine = false
 			}
 			insertText = strings.Join(outLines, "\n")
 		}

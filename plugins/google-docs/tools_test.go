@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -4095,6 +4096,7 @@ func TestFormattedNestedListNoMidTextTabs(t *testing.T) {
 		t.Errorf("expected 1 InsertText with tab, got %d", tabCount)
 	}
 }
+
 func TestConvertMarkdownToRequests_CodeBlock(t *testing.T) {
 	t.Run("code block applies Courier New font", func(t *testing.T) {
 		markdown := "```\nfmt.Println(\"hello\")\n```"
