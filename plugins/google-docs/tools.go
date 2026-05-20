@@ -1503,16 +1503,69 @@ func convertTableToRequests(table *tableSegment, startIndex int64) []*docs.Reque
 	}
 }
 
-// insertMarkdownWithTables handles insertion of markdown segments that may contain tables.
-// It properly creates and populates tables using the multi-phase approach:
-// 1. Create empty table structure
-// 2. Query document to get cell indices
-// 3. Populate all cells in a single batch
-// Returns a result map with document info and status.
-func insertMarkdownWithTables(docID string, title string, segments []markdownSegment, insertIndex int64) (map[string]any, error) {
-	var doc *docs.Document
+// maxCellReqsPerBatch caps the number of cell-population requests per
+// BatchUpdate.  This is a conservative heuristic — the Google Docs API
+// limits payload size (~10 MB), not request count.
+const maxCellReqsPerBatch = 500
 
-	// Check if there are any table segments
+// tableRecord holds a table's API-reported cell indices alongside its parsed
+// content, for deferred cell population in Phase 2.
+type tableRecord struct {
+	apiRows    []*docs.TableRow
+	parsedRows []tableRow
+	tableIdx   int
+}
+
+// buildCellBatches collects cell-population requests for all tables in
+// reverse document order, then splits them into batches that respect
+// the maxReqs limit. A single table's requests may be split across
+// batches when it exceeds the limit — this is safe because
+// collectTableCellRequests produces requests in strict reverse index
+// order, so any contiguous sub-slice is a valid independent batch.
+func buildCellBatches(tables []tableRecord, maxReqs int) [][]*docs.Request {
+	if maxReqs <= 0 {
+		maxReqs = maxCellReqsPerBatch
+	}
+
+	var allCells [][]*docs.Request
+	for i := len(tables) - 1; i >= 0; i-- {
+		cellGroups := collectTableCellRequests(tables[i].apiRows, tables[i].parsedRows)
+		allCells = append(allCells, cellGroups...)
+	}
+
+	if len(allCells) == 0 {
+		return nil
+	}
+
+	// Pack cells into batches without splitting any cell's requests.
+	// A single cell exceeding maxReqs gets its own (oversized) batch;
+	// this is correct because the API limits payload size, not count.
+	var batches [][]*docs.Request
+	var current []*docs.Request
+	for _, cell := range allCells {
+		if len(current) > 0 && len(current)+len(cell) > maxReqs {
+			batches = append(batches, current)
+			current = nil
+		}
+		current = append(current, cell...)
+	}
+	if len(current) > 0 {
+		batches = append(batches, current)
+	}
+	return batches
+}
+
+// insertMarkdownWithTables handles insertion of markdown segments that may
+// contain tables. It uses a two-phase approach to minimize API calls:
+//
+// Phase 1 — Build document structure: for each table, flush any preceding
+// text (using the returned final index to avoid a Get), create the empty
+// table, then Get to discover cell indices. Cell population is deferred.
+//
+// Phase 2 — Populate all table cells in chunked BatchUpdate calls,
+// processing tables in reverse document order so that insertions at later
+// positions don't invalidate earlier cell indices.
+func insertMarkdownWithTables(docID string, title string, segments []markdownSegment, insertIndex int64) (map[string]any, error) {
 	hasTable := false
 	tableCount := 0
 	for _, seg := range segments {
@@ -1531,52 +1584,41 @@ func insertMarkdownWithTables(docID string, title string, segments []markdownSeg
 		tableIdx := 0
 		totalReplies := 0
 		var pendingSegments []markdownSegment
+		var tables []tableRecord
 
-		flushPending := func() error {
-			if len(pendingSegments) == 0 {
-				return nil
-			}
-			segRequests, _ := convertMarkdownToRequests(pendingSegments, currentIndex)
-			if len(segRequests) > 0 {
-				batchUpdateReq := &docs.BatchUpdateDocumentRequest{Requests: segRequests}
-				resp, err := docsSvc.Documents.BatchUpdate(docID, batchUpdateReq).Do()
-				if err != nil {
-					return fmt.Errorf("insert content: %w", err)
-				}
-				totalReplies += len(resp.Replies)
-				doc, err = docsSvc.Documents.Get(docID).Do()
-				if err != nil {
-					return fmt.Errorf("get document after content insert: %w", err)
-				}
-				if doc.Body == nil || len(doc.Body.Content) == 0 {
-					return fmt.Errorf("document body is empty after content insert")
-				}
-				// NOTE: this assumes content was appended at the document end.
-				// Mid-document insertion (append_to_end=false) would need to
-				// track the actual insertion point rather than using the last element.
-				currentIndex = doc.Body.Content[len(doc.Body.Content)-1].EndIndex - 1
-			}
-			pendingSegments = nil
-			return nil
-		}
+		// --- Phase 1: create document structure (text + empty tables) ---
 
 		for _, seg := range segments {
 			if seg.isTable && seg.table != nil {
-				if err := flushPending(); err != nil {
-					return nil, err
+				// Flush preceding text via BatchUpdate; use the returned
+				// final index instead of a Documents.Get round-trip.
+				if len(pendingSegments) > 0 {
+					textReqs, finalIdx := convertMarkdownToRequests(pendingSegments, currentIndex, false)
+					if len(textReqs) > 0 {
+						resp, err := docsSvc.Documents.BatchUpdate(docID, &docs.BatchUpdateDocumentRequest{
+							Requests: textReqs,
+						}).Do()
+						if err != nil {
+							return nil, fmt.Errorf("insert content before table %d: %w", tableIdx, err)
+						}
+						totalReplies += len(resp.Replies)
+						currentIndex = finalIdx
+					}
+					pendingSegments = nil
 				}
 
-				// Create this table structure
-				tableRequests := convertTableToRequests(seg.table, currentIndex)
-				batchUpdateReq := &docs.BatchUpdateDocumentRequest{Requests: tableRequests}
-				resp, err := docsSvc.Documents.BatchUpdate(docID, batchUpdateReq).Do()
+				// Create the empty table structure.
+				tableReqs := convertTableToRequests(seg.table, currentIndex)
+				resp, err := docsSvc.Documents.BatchUpdate(docID, &docs.BatchUpdateDocumentRequest{
+					Requests: tableReqs,
+				}).Do()
 				if err != nil {
 					return nil, fmt.Errorf("create table %d: %w", tableIdx, err)
 				}
 				totalReplies += len(resp.Replies)
 
-				// Query document to get the table we just created
-				doc, err = docsSvc.Documents.Get(docID).Do()
+				// Get the document to find the table and its cell indices.
+				doc, err := docsSvc.Documents.Get(docID).Do()
 				if err != nil {
 					return nil, fmt.Errorf("get document after creating table %d: %w", tableIdx, err)
 				}
@@ -1584,7 +1626,12 @@ func insertMarkdownWithTables(docID string, title string, segments []markdownSeg
 					return nil, fmt.Errorf("document body is nil after creating table %d", tableIdx)
 				}
 
-				// Find the table we just created (it's the last table at or after currentIndex)
+				expectedRows := len(seg.table.rows)
+				expectedCols := seg.table.numColumns
+
+				// Find the first table at or after our insertion point,
+				// then validate its dimensions separately so the error
+				// is descriptive on mismatch rather than "not found".
 				var elem *docs.StructuralElement
 				for _, e := range doc.Body.Content {
 					if e.Table != nil && e.StartIndex >= currentIndex {
@@ -1592,64 +1639,72 @@ func insertMarkdownWithTables(docID string, title string, segments []markdownSeg
 						break
 					}
 				}
-
 				if elem == nil || elem.Table == nil {
 					return nil, fmt.Errorf("table %d not found after creation", tableIdx)
 				}
 
-				// Validate table dimensions match what was requested
-				expectedRows := len(seg.table.rows)
 				actualRows := len(elem.Table.TableRows)
-				if actualRows < expectedRows {
-					return nil, fmt.Errorf("table %d dimension mismatch: requested %d rows, API returned %d", tableIdx, expectedRows, actualRows)
+				actualCols := 0
+				if actualRows > 0 {
+					actualCols = len(elem.Table.TableRows[0].TableCells)
+				}
+				if actualRows != expectedRows || actualCols != expectedCols {
+					return nil, fmt.Errorf("table %d dimension mismatch: requested %dx%d, API returned %dx%d",
+						tableIdx, expectedRows, expectedCols, actualRows, actualCols)
 				}
 
-				// Populate all cells in a single BatchUpdate using reverse
-				// document order. See collectTableCellRequests for the
-				// correctness invariant.
-				cellReqs := collectTableCellRequests(elem.Table.TableRows, seg.table.rows)
-				if len(cellReqs) > 0 {
-					batchUpdateReq := &docs.BatchUpdateDocumentRequest{Requests: cellReqs}
-					cellResp, err := docsSvc.Documents.BatchUpdate(docID, batchUpdateReq).Do()
-					if err != nil {
-						return nil, fmt.Errorf("populate table %d cells: %w", tableIdx, err)
-					}
-					totalReplies += len(cellResp.Replies)
+				if elem.StartIndex != currentIndex {
+					fmt.Fprintf(os.Stderr, "WARNING: table %d predicted index %d != API index %d; using API value\n",
+						tableIdx, currentIndex, elem.StartIndex)
 				}
 
-				// Update currentIndex to after this table for next segment
-				// Re-query one more time to get final table structure
-				doc, err = docsSvc.Documents.Get(docID).Do()
-				if err != nil {
-					return nil, fmt.Errorf("get document after completing table %d: %w", tableIdx, err)
-				}
-				if doc.Body == nil {
-					return nil, fmt.Errorf("document body is nil after completing table %d", tableIdx)
-				}
-
-				// Reset elem to nil before searching to avoid retaining stale value
-				elem = nil
-				for _, e := range doc.Body.Content {
-					if e.Table != nil && e.StartIndex >= currentIndex {
-						elem = e
-						currentIndex = e.EndIndex
-						break
-					}
-				}
-
-				// Validate we found the table
-				if elem == nil {
-					return nil, fmt.Errorf("table %d not found after populating cells", tableIdx)
-				}
-
+				tables = append(tables, tableRecord{
+					apiRows:    elem.Table.TableRows,
+					parsedRows: seg.table.rows,
+					tableIdx:   tableIdx,
+				})
+				currentIndex = elem.EndIndex
 				tableIdx++
 			} else {
 				pendingSegments = append(pendingSegments, seg)
 			}
 		}
 
-		if err := flushPending(); err != nil {
-			return nil, err
+		// Flush any trailing text after the last table.
+		if len(pendingSegments) > 0 {
+			textReqs, _ := convertMarkdownToRequests(pendingSegments, currentIndex, true)
+			if len(textReqs) > 0 {
+				resp, err := docsSvc.Documents.BatchUpdate(docID, &docs.BatchUpdateDocumentRequest{
+					Requests: textReqs,
+				}).Do()
+				if err != nil {
+					return nil, fmt.Errorf("insert trailing content: %w", err)
+				}
+				totalReplies += len(resp.Replies)
+			}
+		}
+
+		// --- Phase 2: populate all table cells (chunked) ---
+		//
+		// Tables are processed in reverse document order so that cell
+		// insertions at later positions don't shift earlier cells'
+		// indices. Within each table, collectTableCellRequests already
+		// produces requests in reverse cell order.
+
+		batches := buildCellBatches(tables, maxCellReqsPerBatch)
+		for bi, batch := range batches {
+			resp, err := docsSvc.Documents.BatchUpdate(docID, &docs.BatchUpdateDocumentRequest{
+				Requests: batch,
+			}).Do()
+			if err != nil {
+				indices := make([]string, len(tables))
+				for ti, tr := range tables {
+					indices[ti] = fmt.Sprintf("%d", tr.tableIdx)
+				}
+				return nil, fmt.Errorf("populate table cells (batch %d/%d failed; %d/%d committed, tables [%s]): %w",
+					bi+1, len(batches), bi, len(batches), strings.Join(indices, ","), err)
+			}
+			totalReplies += len(resp.Replies)
 		}
 
 		return map[string]any{
@@ -1662,8 +1717,8 @@ func insertMarkdownWithTables(docID string, title string, segments []markdownSeg
 		}, nil
 	}
 
-	// No tables - use single-batch insertion via convertMarkdownToRequests
-	requests, _ := convertMarkdownToRequests(segments, insertIndex)
+	// No tables — single-batch insertion.
+	requests, _ := convertMarkdownToRequests(segments, insertIndex, true)
 	batchUpdateReq := &docs.BatchUpdateDocumentRequest{Requests: requests}
 	resp, err := docsSvc.Documents.BatchUpdate(docID, batchUpdateReq).Do()
 	if err != nil {
@@ -1692,8 +1747,8 @@ func insertMarkdownWithTables(docID string, title string, segments []markdownSeg
 // UpdateTextStyle per segment, so each style request sees the text that was
 // just inserted. InsertDate and InsertPerson follow the same index-shifting
 // rules (each consumes 1 character of index space).
-func collectTableCellRequests(apiRows []*docs.TableRow, parsedRows []tableRow) []*docs.Request {
-	var allReqs []*docs.Request
+func collectTableCellRequests(apiRows []*docs.TableRow, parsedRows []tableRow) [][]*docs.Request {
+	var cellGroups [][]*docs.Request
 	for r := len(parsedRows) - 1; r >= 0; r-- {
 		if r >= len(apiRows) {
 			continue
@@ -1710,10 +1765,12 @@ func collectTableCellRequests(apiRows []*docs.TableRow, parsedRows []tableRow) [
 			}
 			cellStartIndex := apiCell.Content[0].StartIndex
 			cellReqs := populateTableCell(&row.cells[c], cellStartIndex)
-			allReqs = append(allReqs, cellReqs...)
+			if len(cellReqs) > 0 {
+				cellGroups = append(cellGroups, cellReqs)
+			}
 		}
 	}
-	return allReqs
+	return cellGroups
 }
 
 // populateTableCell creates requests to populate a single table cell with content.
@@ -1892,7 +1949,10 @@ func populateTableCell(cell *tableCell, cellStartIndex int64) []*docs.Request {
 }
 
 // convertMarkdownToRequests converts markdown segments to Google Docs API requests.
-func convertMarkdownToRequests(segments []markdownSegment, startIndex int64) ([]*docs.Request, int64) {
+// When stripTrailingNewline is true, the trailing \n is removed from the last
+// text segment to avoid an unwanted empty paragraph at the document end.
+// Pass false when flushing mid-document text before a table.
+func convertMarkdownToRequests(segments []markdownSegment, startIndex int64, stripTrailingNewline bool) ([]*docs.Request, int64) {
 	var requests []*docs.Request
 	currentIndex := startIndex
 	var tabsInserted int64
@@ -1900,13 +1960,12 @@ func convertMarkdownToRequests(segments []markdownSegment, startIndex int64) ([]
 	// Merge consecutive segments with identical formatting to reduce API requests
 	segments = mergeSegments(segments)
 
-	// Remove trailing \n from the last text segment.
-	// The document already ends with \n, so our trailing \n
-	// would create an unwanted empty paragraph.
-	for i := len(segments) - 1; i >= 0; i-- {
-		if segments[i].text != "" && !segments[i].isDateField && !segments[i].isPersonField {
-			segments[i].text = strings.TrimSuffix(segments[i].text, "\n")
-			break
+	if stripTrailingNewline {
+		for i := len(segments) - 1; i >= 0; i-- {
+			if segments[i].text != "" && !segments[i].isDateField && !segments[i].isPersonField {
+				segments[i].text = strings.TrimSuffix(segments[i].text, "\n")
+				break
+			}
 		}
 	}
 

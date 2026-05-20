@@ -287,7 +287,7 @@ func TestStrikethroughWithDateChips(t *testing.T) {
 func TestStrikethroughInRequests(t *testing.T) {
 	t.Run("strikethrough creates correct style request", func(t *testing.T) {
 		segments := parseMarkdown("~~strikethrough text~~")
-		requests, _ := convertMarkdownToRequests(segments, 1)
+		requests, _ := convertMarkdownToRequests(segments, 1, true)
 
 		foundStrikethroughStyle := false
 		for _, req := range requests {
@@ -1498,7 +1498,7 @@ func TestHeadingFollowedByNormalText(t *testing.T) {
 
 	t.Run("convertMarkdownToRequests applies heading style but not NORMAL_TEXT", func(t *testing.T) {
 		segments := parseMarkdown("# Heading\nNormal text")
-		requests, _ := convertMarkdownToRequests(segments, 1)
+		requests, _ := convertMarkdownToRequests(segments, 1, true)
 
 		// Look for UpdateParagraphStyle requests
 		foundHeadingStyle := false
@@ -1858,7 +1858,7 @@ func TestParagraphJoining(t *testing.T) {
 func TestNoTrailingEmptyParagraph(t *testing.T) {
 	t.Run("last text segment has no trailing newline", func(t *testing.T) {
 		segments := parseMarkdown("# Heading\n\nText")
-		requests, _ := convertMarkdownToRequests(segments, 1)
+		requests, _ := convertMarkdownToRequests(segments, 1, true)
 
 		// Find the last InsertText request
 		var lastInsertText string
@@ -1875,7 +1875,7 @@ func TestNoTrailingEmptyParagraph(t *testing.T) {
 
 	t.Run("heading only document has no trailing newline", func(t *testing.T) {
 		segments := parseMarkdown("# Only heading")
-		requests, _ := convertMarkdownToRequests(segments, 1)
+		requests, _ := convertMarkdownToRequests(segments, 1, true)
 
 		// Find the InsertText request
 		var insertText string
@@ -1893,7 +1893,7 @@ func TestNoTrailingEmptyParagraph(t *testing.T) {
 
 	t.Run("normal text only document has no trailing newline", func(t *testing.T) {
 		segments := parseMarkdown("Just text")
-		requests, _ := convertMarkdownToRequests(segments, 1)
+		requests, _ := convertMarkdownToRequests(segments, 1, true)
 
 		// Find the InsertText request
 		var insertText string
@@ -1970,7 +1970,7 @@ func TestCRLFNormalization(t *testing.T) {
 func TestHeadingWithFormattedText(t *testing.T) {
 	t.Run("heading with bold text creates single heading", func(t *testing.T) {
 		segments := parseMarkdown("# **Bold** Normal")
-		requests, _ := convertMarkdownToRequests(segments, 1)
+		requests, _ := convertMarkdownToRequests(segments, 1, true)
 
 		// Count InsertText requests - should only insert text that will form ONE heading paragraph
 		var insertTexts []string
@@ -1998,7 +1998,7 @@ func TestHeadingWithFormattedText(t *testing.T) {
 
 	t.Run("heading with formatted text followed by normal text", func(t *testing.T) {
 		segments := parseMarkdown("# **Bold** Normal\n\nText")
-		requests, _ := convertMarkdownToRequests(segments, 1)
+		requests, _ := convertMarkdownToRequests(segments, 1, true)
 
 		// Count heading-styled paragraphs
 		headingStyleCount := 0
@@ -2057,7 +2057,7 @@ func TestHeadingWithFormattedText(t *testing.T) {
 	t.Run("complex formatted text creates correct requests", func(t *testing.T) {
 		markdown := "**This is** some _heavily_ __formatted__ text."
 		segments := parseMarkdown(markdown)
-		requests, _ := convertMarkdownToRequests(segments, 1)
+		requests, _ := convertMarkdownToRequests(segments, 1, true)
 
 		// Verify we have InsertText and UpdateTextStyle requests
 		var insertCount, boldStyleCount, italicStyleCount, underlineStyleCount int
@@ -2100,7 +2100,7 @@ func TestHeadingWithFormattedText(t *testing.T) {
 func TestConsecutiveSameLevelHeadings(t *testing.T) {
 	t.Run("two H1s no blank line", func(t *testing.T) {
 		segments := parseMarkdown("# A\n# B")
-		requests, _ := convertMarkdownToRequests(segments, 1)
+		requests, _ := convertMarkdownToRequests(segments, 1, true)
 
 		// Count heading paragraph style requests
 		headingStyleCount := 0
@@ -2129,7 +2129,7 @@ func TestConsecutiveSameLevelHeadings(t *testing.T) {
 
 	t.Run("two H1s with blank line", func(t *testing.T) {
 		segments := parseMarkdown("# A\n\n# B")
-		requests, _ := convertMarkdownToRequests(segments, 1)
+		requests, _ := convertMarkdownToRequests(segments, 1, true)
 
 		headingStyleCount := 0
 		for _, req := range requests {
@@ -2145,7 +2145,7 @@ func TestConsecutiveSameLevelHeadings(t *testing.T) {
 
 	t.Run("three consecutive H2s", func(t *testing.T) {
 		segments := parseMarkdown("## A\n## B\n## C")
-		requests, _ := convertMarkdownToRequests(segments, 1)
+		requests, _ := convertMarkdownToRequests(segments, 1, true)
 
 		headingStyleCount := 0
 		for _, req := range requests {
@@ -2162,7 +2162,7 @@ func TestConsecutiveSameLevelHeadings(t *testing.T) {
 	t.Run("multi-segment heading stays single paragraph", func(t *testing.T) {
 		// "# **Bold** Normal" should still produce one heading paragraph
 		segments := parseMarkdown("# **Bold** Normal\n# Another")
-		requests, _ := convertMarkdownToRequests(segments, 1)
+		requests, _ := convertMarkdownToRequests(segments, 1, true)
 
 		headingStyleCount := 0
 		for _, req := range requests {
@@ -3901,7 +3901,7 @@ func TestParseSimpleFormatting_InlineCodeBoundaryFullPipeline(t *testing.T) {
 	// Now test convertMarkdownToRequests - check that the UpdateTextStyle for
 	// text after the closing backtick includes weightedFontFamily in its fields
 	// so that the font is explicitly reset to the document default (not Courier New).
-	requests, _ := convertMarkdownToRequests(segments, 1)
+	requests, _ := convertMarkdownToRequests(segments, 1, true)
 
 	// Find the InsertText for ". This" and its corresponding UpdateTextStyle
 	for i, req := range requests {
@@ -4049,7 +4049,31 @@ func TestConvertMarkdownToRequestsFinalIndex(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			segments := parseMarkdown(tt.markdown)
-			_, finalIndex := convertMarkdownToRequests(segments, startIndex)
+			_, finalIndex := convertMarkdownToRequests(segments, startIndex, true)
+			if finalIndex != tt.want {
+				t.Errorf("finalIndex = %d, want %d", finalIndex, tt.want)
+			}
+		})
+	}
+
+	// stripTrailingNewline=false: the production path used when
+	// flushing text before a table (tools.go:1593). The trailing
+	// \n is preserved, so finalIndex is 1 higher for inputs that
+	// end with \n (whose last segment would otherwise be trimmed).
+	noStripTests := []struct {
+		name     string
+		markdown string
+		want     int64
+	}{
+		{"plain text with newline", "hello\n", startIndex + 7},
+		{"heading with body", "# Title\n\nBody text\n", startIndex + 17},
+		{"nested list depth 1", "- top\n    - nested\n", startIndex + 12},
+		{"nested bold", "    - **bold** text\n", startIndex + 11},
+	}
+	for _, tt := range noStripTests {
+		t.Run("no_strip/"+tt.name, func(t *testing.T) {
+			segments := parseMarkdown(tt.markdown)
+			_, finalIndex := convertMarkdownToRequests(segments, startIndex, false)
 			if finalIndex != tt.want {
 				t.Errorf("finalIndex = %d, want %d", finalIndex, tt.want)
 			}
@@ -4059,7 +4083,7 @@ func TestConvertMarkdownToRequestsFinalIndex(t *testing.T) {
 
 func TestFormattedNestedListNoMidTextTabs(t *testing.T) {
 	segments := parseMarkdown("    - **bold** text\n")
-	requests, _ := convertMarkdownToRequests(segments, 1)
+	requests, _ := convertMarkdownToRequests(segments, 1, true)
 
 	tabCount := 0
 	for _, req := range requests {
@@ -4075,7 +4099,7 @@ func TestConvertMarkdownToRequests_CodeBlock(t *testing.T) {
 	t.Run("code block applies Courier New font", func(t *testing.T) {
 		markdown := "```\nfmt.Println(\"hello\")\n```"
 		segments := parseMarkdown(markdown)
-		requests, _ := convertMarkdownToRequests(segments, 1)
+		requests, _ := convertMarkdownToRequests(segments, 1, true)
 
 		// Should have at least one InsertText with the code content
 		foundInsert := false
@@ -4109,7 +4133,7 @@ func TestConvertMarkdownToRequests_CodeBlock(t *testing.T) {
 	t.Run("code block does not apply bold/italic/underline", func(t *testing.T) {
 		markdown := "```\ncode\n```"
 		segments := parseMarkdown(markdown)
-		requests, _ := convertMarkdownToRequests(segments, 1)
+		requests, _ := convertMarkdownToRequests(segments, 1, true)
 
 		for _, req := range requests {
 			if req.UpdateTextStyle != nil &&
@@ -4135,7 +4159,7 @@ func TestConvertMarkdownToRequests_CodeBlock(t *testing.T) {
 	t.Run("code block followed by normal text", func(t *testing.T) {
 		markdown := "```\ncode\n```\nNormal text"
 		segments := parseMarkdown(markdown)
-		requests, _ := convertMarkdownToRequests(segments, 1)
+		requests, _ := convertMarkdownToRequests(segments, 1, true)
 
 		// Verify both code and normal text are inserted
 		var insertTexts []string
@@ -4180,7 +4204,7 @@ func TestConvertMarkdownToRequests_InlineCode(t *testing.T) {
 	t.Run("inline code applies Courier New font", func(t *testing.T) {
 		markdown := "Use `fmt.Println` to print"
 		segments := parseMarkdown(markdown)
-		requests, _ := convertMarkdownToRequests(segments, 1)
+		requests, _ := convertMarkdownToRequests(segments, 1, true)
 
 		// Should have UpdateTextStyle with Courier New for the inline code segment
 		foundCourierNew := false
@@ -4203,7 +4227,7 @@ func TestConvertMarkdownToRequests_InlineCode(t *testing.T) {
 	t.Run("inline code preserves formatting fields", func(t *testing.T) {
 		markdown := "Use `code` here"
 		segments := parseMarkdown(markdown)
-		requests, _ := convertMarkdownToRequests(segments, 1)
+		requests, _ := convertMarkdownToRequests(segments, 1, true)
 
 		for _, req := range requests {
 			if req.UpdateTextStyle != nil &&
@@ -4239,7 +4263,7 @@ func TestConvertMarkdownToRequests_InlineCode(t *testing.T) {
 	t.Run("bold inline code preserves bold formatting", func(t *testing.T) {
 		markdown := "Use **`code`** here"
 		segments := parseMarkdown(markdown)
-		requests, _ := convertMarkdownToRequests(segments, 1)
+		requests, _ := convertMarkdownToRequests(segments, 1, true)
 
 		foundBoldCode := false
 		for _, req := range requests {
@@ -4266,7 +4290,7 @@ func TestConvertMarkdownToRequests_InlineCode(t *testing.T) {
 	t.Run("italic inline code preserves italic formatting", func(t *testing.T) {
 		markdown := "Use *`code`* here"
 		segments := parseMarkdown(markdown)
-		requests, _ := convertMarkdownToRequests(segments, 1)
+		requests, _ := convertMarkdownToRequests(segments, 1, true)
 
 		foundItalicCode := false
 		for _, req := range requests {
@@ -4287,7 +4311,7 @@ func TestConvertMarkdownToRequests_InlineCode(t *testing.T) {
 	t.Run("non-code text does not get Courier New", func(t *testing.T) {
 		markdown := "Regular text without code"
 		segments := parseMarkdown(markdown)
-		requests, _ := convertMarkdownToRequests(segments, 1)
+		requests, _ := convertMarkdownToRequests(segments, 1, true)
 
 		for _, req := range requests {
 			if req.UpdateTextStyle != nil &&
@@ -4301,7 +4325,7 @@ func TestConvertMarkdownToRequests_InlineCode(t *testing.T) {
 	t.Run("inline code in heading applies Courier New", func(t *testing.T) {
 		markdown := "# Heading with `code`"
 		segments := parseMarkdown(markdown)
-		requests, _ := convertMarkdownToRequests(segments, 1)
+		requests, _ := convertMarkdownToRequests(segments, 1, true)
 
 		foundCourierNew := false
 		for _, req := range requests {
@@ -4935,6 +4959,14 @@ func TestPipeEscaping(t *testing.T) {
 	})
 }
 
+func flattenCellRequests(groups [][]*docs.Request) []*docs.Request {
+	var flat []*docs.Request
+	for _, g := range groups {
+		flat = append(flat, g...)
+	}
+	return flat
+}
+
 func TestCollectTableCellRequests(t *testing.T) {
 	mkAPIRows := func(indices ...[]int64) []*docs.TableRow {
 		var rows []*docs.TableRow
@@ -4963,7 +4995,7 @@ func TestCollectTableCellRequests(t *testing.T) {
 			}},
 		}
 
-		reqs := collectTableCellRequests(apiRows, parsedRows)
+		reqs := flattenCellRequests(collectTableCellRequests(apiRows, parsedRows))
 
 		var insertIndices []int64
 		for _, r := range reqs {
@@ -4992,7 +5024,7 @@ func TestCollectTableCellRequests(t *testing.T) {
 			}},
 		}
 
-		reqs := collectTableCellRequests(apiRows, parsedRows)
+		reqs := flattenCellRequests(collectTableCellRequests(apiRows, parsedRows))
 
 		for _, r := range reqs {
 			if r.InsertText != nil && r.InsertText.Location.Index == 10 {
@@ -5018,7 +5050,7 @@ func TestCollectTableCellRequests(t *testing.T) {
 			}},
 		}
 
-		reqs := collectTableCellRequests(apiRows, parsedRows)
+		reqs := flattenCellRequests(collectTableCellRequests(apiRows, parsedRows))
 		if len(reqs) != 0 {
 			t.Errorf("expected 0 requests for all-empty table, got %d", len(reqs))
 		}
@@ -5032,7 +5064,7 @@ func TestCollectTableCellRequests(t *testing.T) {
 			}},
 		}
 
-		reqs := collectTableCellRequests(apiRows, parsedRows)
+		reqs := flattenCellRequests(collectTableCellRequests(apiRows, parsedRows))
 		if len(reqs) == 0 {
 			t.Fatal("expected requests for single-cell table")
 		}
@@ -5050,7 +5082,7 @@ func TestCollectTableCellRequests(t *testing.T) {
 			}},
 		}
 
-		reqs := collectTableCellRequests(apiRows, parsedRows)
+		reqs := flattenCellRequests(collectTableCellRequests(apiRows, parsedRows))
 
 		// Date chip cell (index 15) should come before text cell (index 5)
 		var firstDateIdx, firstTextIdx int
@@ -5087,7 +5119,7 @@ func TestCollectTableCellRequests(t *testing.T) {
 		}
 
 		// Should not panic — row 1 is silently skipped
-		reqs := collectTableCellRequests(apiRows, parsedRows)
+		reqs := flattenCellRequests(collectTableCellRequests(apiRows, parsedRows))
 
 		// Only row 0 should produce requests (2 cells = 2 InsertText)
 		if len(reqs) != 2 {
@@ -5115,7 +5147,7 @@ func TestCollectTableCellRequests(t *testing.T) {
 			}},
 		}
 
-		reqs := collectTableCellRequests(apiRows, parsedRows)
+		reqs := flattenCellRequests(collectTableCellRequests(apiRows, parsedRows))
 
 		// Verify InsertText comes before UpdateTextStyle for each segment
 		for i, r := range reqs {
@@ -5151,7 +5183,7 @@ func TestCollectTableCellRequests(t *testing.T) {
 			}},
 		}
 
-		reqs := collectTableCellRequests(apiRows, parsedRows)
+		reqs := flattenCellRequests(collectTableCellRequests(apiRows, parsedRows))
 
 		for _, r := range reqs {
 			if r.InsertText != nil && r.InsertText.Text == "A" {
@@ -5169,7 +5201,7 @@ func TestCollectTableCellRequests(t *testing.T) {
 			}},
 		}
 
-		reqs := collectTableCellRequests(apiRows, parsedRows)
+		reqs := flattenCellRequests(collectTableCellRequests(apiRows, parsedRows))
 
 		if len(reqs) != 1 {
 			t.Errorf("expected 1 request (cell A only), got %d", len(reqs))
@@ -5194,7 +5226,7 @@ func TestCollectTableCellRequests(t *testing.T) {
 			}},
 		}
 
-		reqs := collectTableCellRequests(apiRows, parsedRows)
+		reqs := flattenCellRequests(collectTableCellRequests(apiRows, parsedRows))
 
 		expected := map[int64]string{25: "D", 20: "C", 10: "B", 5: "A"}
 		for _, r := range reqs {
@@ -5255,6 +5287,124 @@ func TestConvertTableToRequests(t *testing.T) {
 // TestConvertMarkdownToRequestsWithTable was removed because convertMarkdownToRequests
 // no longer handles table segments - all table processing is done by insertMarkdownWithTables.
 // Table segments reaching convertMarkdownToRequests is now a programming error (panic).
+
+func TestBuildCellBatches(t *testing.T) {
+	// Helper to build a tableRecord with a given number of cell requests.
+	makeRecord := func(idx, numReqs int) tableRecord {
+		// Build a minimal table with enough cells to produce numReqs requests.
+		// Each cell with non-empty content produces at least 1 InsertText request.
+		rows := []tableRow{{cells: make([]tableCell, 0, numReqs)}}
+		apiRows := []*docs.TableRow{{TableCells: make([]*docs.TableCell, 0, numReqs)}}
+
+		for i := range numReqs {
+			rows[0].cells = append(rows[0].cells, tableCell{
+				segments: []markdownSegment{{text: fmt.Sprintf("c%d", i)}},
+			})
+			apiRows[0].TableCells = append(apiRows[0].TableCells, &docs.TableCell{
+				Content: []*docs.StructuralElement{
+					{StartIndex: int64(1000*idx + i*10)},
+				},
+			})
+		}
+		return tableRecord{
+			apiRows:    apiRows,
+			parsedRows: rows,
+			tableIdx:   idx,
+		}
+	}
+
+	t.Run("empty tables produce no batches", func(t *testing.T) {
+		tables := []tableRecord{
+			{apiRows: []*docs.TableRow{}, parsedRows: nil, tableIdx: 0},
+		}
+		batches := buildCellBatches(tables, 500)
+		if len(batches) != 0 {
+			t.Errorf("got %d batches, want 0", len(batches))
+		}
+	})
+
+	t.Run("single small table fits in one batch", func(t *testing.T) {
+		tables := []tableRecord{makeRecord(0, 3)}
+		batches := buildCellBatches(tables, 500)
+		if len(batches) != 1 {
+			t.Fatalf("got %d batches, want 1", len(batches))
+		}
+		if len(batches[0]) == 0 {
+			t.Error("batch is empty")
+		}
+	})
+
+	t.Run("multiple small tables in one batch", func(t *testing.T) {
+		tables := []tableRecord{
+			makeRecord(0, 3),
+			makeRecord(1, 3),
+			makeRecord(2, 3),
+		}
+		batches := buildCellBatches(tables, 500)
+		if len(batches) != 1 {
+			t.Errorf("got %d batches, want 1", len(batches))
+		}
+	})
+
+	t.Run("tables split when exceeding maxReqs", func(t *testing.T) {
+		tables := []tableRecord{
+			makeRecord(0, 3),
+			makeRecord(1, 3),
+			makeRecord(2, 3),
+		}
+		// With maxReqs=5, each table produces ~3 requests (1 InsertText per cell).
+		// Two tables fit (6 reqs), third forces a new batch.
+		batches := buildCellBatches(tables, 5)
+		if len(batches) < 2 {
+			t.Errorf("got %d batches, want >=2", len(batches))
+		}
+	})
+
+	t.Run("tables are processed in reverse order", func(t *testing.T) {
+		tables := []tableRecord{
+			makeRecord(0, 1),
+			makeRecord(1, 1),
+			makeRecord(2, 1),
+		}
+		batches := buildCellBatches(tables, 500)
+		if len(batches) != 1 {
+			t.Fatalf("got %d batches, want 1", len(batches))
+		}
+		// The batch should have table 2's requests first (reverse order).
+		// Table 2 cells have StartIndex >= 2000, table 0 cells have StartIndex >= 0.
+		reqs := batches[0]
+		if len(reqs) < 3 {
+			t.Fatalf("got %d requests, want >= 3", len(reqs))
+		}
+		// First request should be from table 2 (highest index)
+		firstIdx := reqs[0].InsertText.Location.Index
+		lastIdx := reqs[len(reqs)-1].InsertText.Location.Index
+		if firstIdx <= lastIdx {
+			t.Errorf("requests not in reverse order: first index %d <= last index %d", firstIdx, lastIdx)
+		}
+	})
+
+	t.Run("single table exceeding maxReqs is split", func(t *testing.T) {
+		tables := []tableRecord{makeRecord(0, 20)}
+		batches := buildCellBatches(tables, 5)
+		if len(batches) < 2 {
+			t.Fatalf("got %d batches, want >= 2", len(batches))
+		}
+		for i, b := range batches {
+			if len(b) > 5 {
+				t.Errorf("batch %d has %d reqs, want <= 5", i, len(b))
+			}
+		}
+	})
+
+	t.Run("maxReqs zero uses default", func(t *testing.T) {
+		tables := []tableRecord{makeRecord(0, 3)}
+		batches := buildCellBatches(tables, 0)
+		if len(batches) != 1 {
+			t.Errorf("got %d batches, want 1", len(batches))
+		}
+	})
+}
 
 func TestTableEdgeCases(t *testing.T) {
 	t.Run("table with leading newline", func(t *testing.T) {
@@ -5714,7 +5864,7 @@ func TestRoundTrip_CodeBlock(t *testing.T) {
 	segments := parseMarkdown(originalMarkdown)
 
 	// Convert segments to requests (simulating write to Google Docs)
-	_, _ = convertMarkdownToRequests(segments, 1)
+	_, _ = convertMarkdownToRequests(segments, 1, true)
 
 	// Create a mock Google Docs document with the expected structure
 	doc := &docs.Document{
