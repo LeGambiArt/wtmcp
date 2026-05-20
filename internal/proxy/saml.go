@@ -4,71 +4,107 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"html"
 	"io"
 	"log"
 	"net/http"
 	"net/url"
-	"regexp"
 	"strings"
+
+	"golang.org/x/net/html"
 
 	"github.com/LeGambiArt/wtmcp/internal/domaincheck"
 	"github.com/LeGambiArt/wtmcp/internal/protocol"
-)
-
-var (
-	metaRefreshRe  = regexp.MustCompile(`(?i)content=['"][^'"]*url=([^'">\s]+)`)
-	dataRedirectRe = regexp.MustCompile(`(?i)data-redirect-url=['"]([^'"]+)`)
-	formActionRe   = regexp.MustCompile(`(?i)<form[^>]*action=['"]([^'"]+)`)
-	inputTagRe     = regexp.MustCompile(`(?i)<input\s([^>]+)`)
-	attrRe         = regexp.MustCompile(`(?i)(\w+)=['"]([^'"]*)['"]\s*`)
 )
 
 func isAuthRedirect(statusCode int, contentType string) bool {
 	return (statusCode == 401 || statusCode == 403) && strings.Contains(contentType, "text/html")
 }
 
-func extractRedirectURL(body []byte, baseURL string) string {
-	text := string(body)
-	match := metaRefreshRe.FindStringSubmatch(text)
-	if match == nil {
-		match = dataRedirectRe.FindStringSubmatch(text)
+// getAttr returns the value of the named attribute on a token, or "".
+func getAttr(t html.Token, name string) string {
+	for _, a := range t.Attr {
+		if strings.EqualFold(a.Key, name) {
+			return a.Val
+		}
 	}
-	if match == nil {
-		return ""
-	}
-	redirect := html.UnescapeString(match[1])
-	if strings.HasPrefix(redirect, "/") {
-		return strings.TrimRight(baseURL, "/") + redirect
-	}
-	return redirect
+	return ""
 }
 
-func parseSAMLForm(body []byte, baseURL string) (action string, formData url.Values, ok bool) {
-	text := string(body)
-	actionMatch := formActionRe.FindStringSubmatch(text)
-	if actionMatch == nil {
-		return "", nil, false
+// extractRedirectURL finds a redirect URL in an HTML document, checking
+// meta-refresh tags and data-redirect-url attributes.
+func extractRedirectURL(body []byte, baseURL string) string {
+	z := html.NewTokenizer(bytes.NewReader(body))
+	for {
+		tt := z.Next()
+		if tt == html.ErrorToken {
+			break
+		}
+		if tt != html.StartTagToken && tt != html.SelfClosingTagToken {
+			continue
+		}
+		t := z.Token()
+
+		switch t.Data {
+		case "meta":
+			content := getAttr(t, "content")
+			if idx := strings.Index(strings.ToLower(content), "url="); idx >= 0 {
+				redirect := strings.TrimSpace(content[idx+4:])
+				if redirect != "" {
+					return resolveRelativeURL(redirect, baseURL)
+				}
+			}
+		default:
+			if redirect := getAttr(t, "data-redirect-url"); redirect != "" {
+				return resolveRelativeURL(redirect, baseURL)
+			}
+		}
 	}
-	action = html.UnescapeString(actionMatch[1])
-	if strings.HasPrefix(action, "/") {
-		action = strings.TrimRight(baseURL, "/") + action
+	return ""
+}
+
+// parseSAMLForm extracts the action URL and hidden input fields from
+// the first <form> in an HTML document. Relative action URLs are
+// resolved against baseURL.
+func parseSAMLForm(body []byte, baseURL string) (action string, formData url.Values, ok bool) {
+	z := html.NewTokenizer(bytes.NewReader(body))
+	formData = url.Values{}
+
+	for {
+		tt := z.Next()
+		if tt == html.ErrorToken {
+			break
+		}
+		if tt != html.StartTagToken && tt != html.SelfClosingTagToken {
+			continue
+		}
+		t := z.Token()
+
+		switch t.Data {
+		case "form":
+			if a := getAttr(t, "action"); a != "" && action == "" {
+				action = resolveRelativeURL(a, baseURL)
+			}
+		case "input":
+			if strings.EqualFold(getAttr(t, "type"), "hidden") {
+				name := getAttr(t, "name")
+				if name != "" {
+					formData.Set(name, getAttr(t, "value"))
+				}
+			}
+		}
 	}
 
-	formData = url.Values{}
-	for _, inputMatch := range inputTagRe.FindAllStringSubmatch(text, -1) {
-		attrs := make(map[string]string)
-		for _, a := range attrRe.FindAllStringSubmatch(inputMatch[1], -1) {
-			attrs[strings.ToLower(a[1])] = html.UnescapeString(a[2])
-		}
-		if attrs["type"] == "hidden" && attrs["name"] != "" {
-			formData.Set(attrs["name"], attrs["value"])
-		}
-	}
-	if len(formData) == 0 {
+	if action == "" || len(formData) == 0 {
 		return "", nil, false
 	}
 	return action, formData, true
+}
+
+func resolveRelativeURL(rawURL, baseURL string) string {
+	if strings.HasPrefix(rawURL, "/") {
+		return strings.TrimRight(baseURL, "/") + rawURL
+	}
+	return rawURL
 }
 
 // isDomainAllowedForSSO validates that a URL targets an allowed domain
@@ -80,8 +116,10 @@ func isDomainAllowedForSSO(rawURL string, baseURL string, allowedDomains []strin
 	}
 	host := parsed.Hostname()
 
-	if baseHost := extractHostname(baseURL); strings.EqualFold(host, baseHost) {
-		return true
+	if baseHost := extractHostname(baseURL); baseHost != "" {
+		if domaincheck.Contains([]string{baseHost}, host) {
+			return true
+		}
 	}
 	return domaincheck.Contains(allowedDomains, host)
 }
@@ -216,7 +254,6 @@ func (p *Proxy) trySAMLSSO(ctx context.Context, pa *PluginAuth, resp *http.Respo
 		return resp
 	}
 
-	// Use pa.BaseURL if configured, otherwise extract from fullURL
 	baseURL := pa.BaseURL
 	if baseURL == "" {
 		if u, err := url.Parse(fullURL); err == nil {
