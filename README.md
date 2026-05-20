@@ -570,6 +570,7 @@ authentication:
 |--------|-------------|
 | google-drive | File metadata, search, and export |
 | google-calendar | Calendar events and management |
+| google-docs | Document retrieval, summarization, and editing |
 | google-gmail | Email reading and sending |
 
 All Google plugins require OAuth2 authentication. See [README-wtmcpctl.md](README-wtmcpctl.md)
