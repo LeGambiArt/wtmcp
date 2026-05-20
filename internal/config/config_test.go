@@ -271,6 +271,91 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Tools.Discovery != "progressive" {
 		t.Errorf("Tools.Discovery = %q, want progressive", cfg.Tools.Discovery)
 	}
+
+	for _, domain := range []string{
+		"docs.googleapis.com", "www.googleapis.com",
+		"gmail.googleapis.com",
+	} {
+		if v := cfg.HTTP.RateLimit.PerDomain[domain]; v != "300/m" {
+			t.Errorf("PerDomain[%q] = %q, want %q", domain, v, "300/m")
+		}
+	}
+}
+
+func TestLoadConfigPerDomainMerge(t *testing.T) {
+	dir := t.TempDir()
+	cfgFile := filepath.Join(dir, "config.yaml")
+	cfgYAML := `
+http:
+  rate_limit:
+    per_domain:
+      custom.api.com: "50/m"
+`
+	if err := os.WriteFile(cfgFile, []byte(cfgYAML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(cfgFile, dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if v := cfg.HTTP.RateLimit.PerDomain["custom.api.com"]; v != "50/m" {
+		t.Errorf("user domain = %q, want %q", v, "50/m")
+	}
+	if v := cfg.HTTP.RateLimit.PerDomain["docs.googleapis.com"]; v != "300/m" {
+		t.Errorf("google default lost: docs.googleapis.com = %q, want %q", v, "300/m")
+	}
+}
+
+func TestLoadConfigPerDomainEmptyMap(t *testing.T) {
+	dir := t.TempDir()
+	cfgFile := filepath.Join(dir, "config.yaml")
+	cfgYAML := "http:\n  rate_limit:\n    per_domain: {}"
+	if err := os.WriteFile(cfgFile, []byte(cfgYAML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(cfgFile, dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	// Verify that per_domain: {} still gets Google API defaults.
+	// This is intentional: the elevated limits protect against
+	// Google API rate rejection.
+	for _, domain := range []string{
+		"docs.googleapis.com",
+		"www.googleapis.com",
+		"gmail.googleapis.com",
+	} {
+		if v := cfg.HTTP.RateLimit.PerDomain[domain]; v != "300/m" {
+			t.Errorf("%s = %q, want %q", domain, v, "300/m")
+		}
+	}
+}
+
+func TestLoadConfigPerDomainUserOverride(t *testing.T) {
+	dir := t.TempDir()
+	cfgFile := filepath.Join(dir, "config.yaml")
+	cfgYAML := `
+http:
+  rate_limit:
+    per_domain:
+      docs.googleapis.com: "50/m"
+`
+	if err := os.WriteFile(cfgFile, []byte(cfgYAML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(cfgFile, dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if v := cfg.HTTP.RateLimit.PerDomain["docs.googleapis.com"]; v != "50/m" {
+		t.Errorf("user override lost: docs.googleapis.com = %q, want %q", v, "50/m")
+	}
+	if v := cfg.HTTP.RateLimit.PerDomain["www.googleapis.com"]; v != "300/m" {
+		t.Errorf("other google default lost: www.googleapis.com = %q, want %q", v, "300/m")
+	}
 }
 
 func TestLoadConfigToolDiscovery(t *testing.T) {

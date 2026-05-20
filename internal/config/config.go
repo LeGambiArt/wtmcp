@@ -63,6 +63,36 @@ type RateLimitConfig struct {
 	PerDomain map[string]string `yaml:"per_domain"`
 }
 
+const (
+	defaultRateLimit = "120/m"
+	globalRateLimit  = "600/m"
+
+	// Google Workspace APIs support higher per-user rate limits than
+	// our conservative default.  Docs allows 300 reads/min and
+	// 60 writes/min; Drive and Gmail use quota-unit accounting that
+	// maps to well over 300 raw requests/min.  Setting 300/m keeps
+	// us within the lowest Google per-user limit (Docs reads) while
+	// avoiding unnecessary self-throttling.
+	googleAPIRateLimit = "300/m"
+)
+
+// googleAPIDomains lists the API domains served by Google Workspace
+// plugins.  Each gets googleAPIRateLimit as its default per-domain
+// rate limit.
+var googleAPIDomains = []string{
+	"docs.googleapis.com",
+	"www.googleapis.com",
+	"gmail.googleapis.com",
+}
+
+func defaultPerDomainRateLimits() map[string]string {
+	m := make(map[string]string, len(googleAPIDomains))
+	for _, d := range googleAPIDomains {
+		m[d] = googleAPIRateLimit
+	}
+	return m
+}
+
 // CacheConfig controls the cache backend.
 type CacheConfig struct {
 	Backend             string        `yaml:"backend"`
@@ -189,8 +219,9 @@ func DefaultConfig() *Config {
 				RetryOn: []int{500, 502, 503, 504},
 			},
 			RateLimit: RateLimitConfig{
-				Default: "120/m",
-				Global:  "600/m",
+				Default:   defaultRateLimit,
+				Global:    globalRateLimit,
+				PerDomain: defaultPerDomainRateLimits(),
 			},
 		},
 		Cache: CacheConfig{
@@ -252,6 +283,20 @@ func Load(configPath, workdir string) (*Config, error) {
 
 	if err := yaml.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("parse config %s: %w", configPath, err)
+	}
+
+	// Backfill Google API rate-limit defaults for domains the user
+	// did not explicitly override.  yaml.Unmarshal replaces maps
+	// wholesale, so user-supplied per_domain entries wipe the defaults.
+	// Users can override individual domains to lower values but cannot
+	// disable the backfill entirely via per_domain: {}.
+	if cfg.HTTP.RateLimit.PerDomain == nil {
+		cfg.HTTP.RateLimit.PerDomain = make(map[string]string)
+	}
+	for _, d := range googleAPIDomains {
+		if _, ok := cfg.HTTP.RateLimit.PerDomain[d]; !ok {
+			cfg.HTTP.RateLimit.PerDomain[d] = googleAPIRateLimit
+		}
 	}
 
 	if cfg.Tools.Discovery != "full" && cfg.Tools.Discovery != "progressive" {

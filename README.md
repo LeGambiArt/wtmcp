@@ -104,7 +104,7 @@ a warning.
 
 Token-bucket rate limiting with configurable per-plugin, per-domain,
 and global limits. Defaults: 120 req/min per plugin, 600 req/min
-global. Google Workspace APIs (Docs, Drive, Gmail, Sheets) default
+global. Google Workspace APIs (Docs, Drive, Gmail) default
 to 300 req/min per domain.
 
 When the proxy's rate limiter would reject a request, it waits for
