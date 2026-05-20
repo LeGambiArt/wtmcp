@@ -1536,7 +1536,7 @@ func insertMarkdownWithTables(docID string, title string, segments []markdownSeg
 			if len(pendingSegments) == 0 {
 				return nil
 			}
-			segRequests := convertMarkdownToRequests(pendingSegments, currentIndex)
+			segRequests, _ := convertMarkdownToRequests(pendingSegments, currentIndex)
 			if len(segRequests) > 0 {
 				batchUpdateReq := &docs.BatchUpdateDocumentRequest{Requests: segRequests}
 				resp, err := docsSvc.Documents.BatchUpdate(docID, batchUpdateReq).Do()
@@ -1663,7 +1663,7 @@ func insertMarkdownWithTables(docID string, title string, segments []markdownSeg
 	}
 
 	// No tables - use single-batch insertion via convertMarkdownToRequests
-	requests := convertMarkdownToRequests(segments, insertIndex)
+	requests, _ := convertMarkdownToRequests(segments, insertIndex)
 	batchUpdateReq := &docs.BatchUpdateDocumentRequest{Requests: requests}
 	resp, err := docsSvc.Documents.BatchUpdate(docID, batchUpdateReq).Do()
 	if err != nil {
@@ -1892,9 +1892,10 @@ func populateTableCell(cell *tableCell, cellStartIndex int64) []*docs.Request {
 }
 
 // convertMarkdownToRequests converts markdown segments to Google Docs API requests.
-func convertMarkdownToRequests(segments []markdownSegment, startIndex int64) []*docs.Request {
+func convertMarkdownToRequests(segments []markdownSegment, startIndex int64) ([]*docs.Request, int64) {
 	var requests []*docs.Request
 	currentIndex := startIndex
+	var tabsInserted int64
 
 	// Merge consecutive segments with identical formatting to reduce API requests
 	segments = mergeSegments(segments)
@@ -2326,6 +2327,7 @@ func convertMarkdownToRequests(segments []markdownSegment, startIndex int64) []*
 			for _, line := range strings.Split(seg.text, "\n") {
 				if line != "" {
 					outLines = append(outLines, tabs+line)
+					tabsInserted += int64(seg.listDepth)
 				} else {
 					outLines = append(outLines, line)
 				}
@@ -2478,15 +2480,15 @@ func convertMarkdownToRequests(segments []markdownSegment, startIndex int64) []*
 		}
 
 		currentIndex = endIndex
+	}
 
-		// Check if this is the last segment and close any open list
-		if i == len(segments)-1 && currentListStart >= 0 {
-			listRanges = append(listRanges, listRange{
-				startIndex: currentListStart,
-				endIndex:   currentIndex,
-				isOrdered:  currentListIsOrdered,
-			})
-		}
+	// Close any remaining open list after all segments are processed.
+	if currentListStart >= 0 {
+		listRanges = append(listRanges, listRange{
+			startIndex: currentListStart,
+			endIndex:   currentIndex,
+			isOrdered:  currentListIsOrdered,
+		})
 	}
 
 	// Apply list formatting to collected ranges (do this after all text insertion)
@@ -2506,7 +2508,10 @@ func convertMarkdownToRequests(segments []markdownSegment, startIndex int64) []*
 		})
 	}
 
-	return requests
+	// CreateParagraphBullets removes the leading tabs that were prepended
+	// for list nesting.  Subtract them so the returned index reflects the
+	// document state after the BatchUpdate executes.
+	return requests, currentIndex - tabsInserted
 }
 
 const maxReadFileSize = 10 << 20 // 10 MB

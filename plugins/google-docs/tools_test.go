@@ -287,7 +287,7 @@ func TestStrikethroughWithDateChips(t *testing.T) {
 func TestStrikethroughInRequests(t *testing.T) {
 	t.Run("strikethrough creates correct style request", func(t *testing.T) {
 		segments := parseMarkdown("~~strikethrough text~~")
-		requests := convertMarkdownToRequests(segments, 1)
+		requests, _ := convertMarkdownToRequests(segments, 1)
 
 		foundStrikethroughStyle := false
 		for _, req := range requests {
@@ -1498,7 +1498,7 @@ func TestHeadingFollowedByNormalText(t *testing.T) {
 
 	t.Run("convertMarkdownToRequests applies heading style but not NORMAL_TEXT", func(t *testing.T) {
 		segments := parseMarkdown("# Heading\nNormal text")
-		requests := convertMarkdownToRequests(segments, 1)
+		requests, _ := convertMarkdownToRequests(segments, 1)
 
 		// Look for UpdateParagraphStyle requests
 		foundHeadingStyle := false
@@ -1858,7 +1858,7 @@ func TestParagraphJoining(t *testing.T) {
 func TestNoTrailingEmptyParagraph(t *testing.T) {
 	t.Run("last text segment has no trailing newline", func(t *testing.T) {
 		segments := parseMarkdown("# Heading\n\nText")
-		requests := convertMarkdownToRequests(segments, 1)
+		requests, _ := convertMarkdownToRequests(segments, 1)
 
 		// Find the last InsertText request
 		var lastInsertText string
@@ -1875,7 +1875,7 @@ func TestNoTrailingEmptyParagraph(t *testing.T) {
 
 	t.Run("heading only document has no trailing newline", func(t *testing.T) {
 		segments := parseMarkdown("# Only heading")
-		requests := convertMarkdownToRequests(segments, 1)
+		requests, _ := convertMarkdownToRequests(segments, 1)
 
 		// Find the InsertText request
 		var insertText string
@@ -1893,7 +1893,7 @@ func TestNoTrailingEmptyParagraph(t *testing.T) {
 
 	t.Run("normal text only document has no trailing newline", func(t *testing.T) {
 		segments := parseMarkdown("Just text")
-		requests := convertMarkdownToRequests(segments, 1)
+		requests, _ := convertMarkdownToRequests(segments, 1)
 
 		// Find the InsertText request
 		var insertText string
@@ -1970,7 +1970,7 @@ func TestCRLFNormalization(t *testing.T) {
 func TestHeadingWithFormattedText(t *testing.T) {
 	t.Run("heading with bold text creates single heading", func(t *testing.T) {
 		segments := parseMarkdown("# **Bold** Normal")
-		requests := convertMarkdownToRequests(segments, 1)
+		requests, _ := convertMarkdownToRequests(segments, 1)
 
 		// Count InsertText requests - should only insert text that will form ONE heading paragraph
 		var insertTexts []string
@@ -1998,7 +1998,7 @@ func TestHeadingWithFormattedText(t *testing.T) {
 
 	t.Run("heading with formatted text followed by normal text", func(t *testing.T) {
 		segments := parseMarkdown("# **Bold** Normal\n\nText")
-		requests := convertMarkdownToRequests(segments, 1)
+		requests, _ := convertMarkdownToRequests(segments, 1)
 
 		// Count heading-styled paragraphs
 		headingStyleCount := 0
@@ -2057,7 +2057,7 @@ func TestHeadingWithFormattedText(t *testing.T) {
 	t.Run("complex formatted text creates correct requests", func(t *testing.T) {
 		markdown := "**This is** some _heavily_ __formatted__ text."
 		segments := parseMarkdown(markdown)
-		requests := convertMarkdownToRequests(segments, 1)
+		requests, _ := convertMarkdownToRequests(segments, 1)
 
 		// Verify we have InsertText and UpdateTextStyle requests
 		var insertCount, boldStyleCount, italicStyleCount, underlineStyleCount int
@@ -2100,7 +2100,7 @@ func TestHeadingWithFormattedText(t *testing.T) {
 func TestConsecutiveSameLevelHeadings(t *testing.T) {
 	t.Run("two H1s no blank line", func(t *testing.T) {
 		segments := parseMarkdown("# A\n# B")
-		requests := convertMarkdownToRequests(segments, 1)
+		requests, _ := convertMarkdownToRequests(segments, 1)
 
 		// Count heading paragraph style requests
 		headingStyleCount := 0
@@ -2129,7 +2129,7 @@ func TestConsecutiveSameLevelHeadings(t *testing.T) {
 
 	t.Run("two H1s with blank line", func(t *testing.T) {
 		segments := parseMarkdown("# A\n\n# B")
-		requests := convertMarkdownToRequests(segments, 1)
+		requests, _ := convertMarkdownToRequests(segments, 1)
 
 		headingStyleCount := 0
 		for _, req := range requests {
@@ -2145,7 +2145,7 @@ func TestConsecutiveSameLevelHeadings(t *testing.T) {
 
 	t.Run("three consecutive H2s", func(t *testing.T) {
 		segments := parseMarkdown("## A\n## B\n## C")
-		requests := convertMarkdownToRequests(segments, 1)
+		requests, _ := convertMarkdownToRequests(segments, 1)
 
 		headingStyleCount := 0
 		for _, req := range requests {
@@ -2162,7 +2162,7 @@ func TestConsecutiveSameLevelHeadings(t *testing.T) {
 	t.Run("multi-segment heading stays single paragraph", func(t *testing.T) {
 		// "# **Bold** Normal" should still produce one heading paragraph
 		segments := parseMarkdown("# **Bold** Normal\n# Another")
-		requests := convertMarkdownToRequests(segments, 1)
+		requests, _ := convertMarkdownToRequests(segments, 1)
 
 		headingStyleCount := 0
 		for _, req := range requests {
@@ -3901,7 +3901,7 @@ func TestParseSimpleFormatting_InlineCodeBoundaryFullPipeline(t *testing.T) {
 	// Now test convertMarkdownToRequests - check that the UpdateTextStyle for
 	// text after the closing backtick includes weightedFontFamily in its fields
 	// so that the font is explicitly reset to the document default (not Courier New).
-	requests := convertMarkdownToRequests(segments, 1)
+	requests, _ := convertMarkdownToRequests(segments, 1)
 
 	// Find the InsertText for ". This" and its corresponding UpdateTextStyle
 	for i, req := range requests {
@@ -3921,11 +3921,147 @@ func TestParseSimpleFormatting_InlineCodeBoundaryFullPipeline(t *testing.T) {
 	}
 }
 
+func TestConvertMarkdownToRequestsFinalIndex(t *testing.T) {
+	const startIndex int64 = 1
+
+	tests := []struct {
+		name     string
+		markdown string
+		want     int64
+	}{
+		{
+			name:     "plain text",
+			markdown: "hello",
+			want:     startIndex + 5, // "hello" = 5 runes, trailing \n trimmed
+		},
+		{
+			name:     "text with trailing newline",
+			markdown: "hello\n",
+			want:     startIndex + 6, // "hello" (5) + paragraph break \n (1)
+		},
+		{
+			name:     "two paragraphs",
+			markdown: "first\n\nsecond\n",
+			want:     startIndex + 14, // "first\n" (6) + paragraph break \n (1) + "second" (6) + trailing break (1)
+		},
+		{
+			name:     "heading",
+			markdown: "# Title\n\nBody text\n",
+			want:     startIndex + 16, // "Title\n" (6) + "Body text" (9) + trailing break (1)
+		},
+		{
+			name:     "date field only",
+			markdown: "@today",
+			want:     startIndex + 1, // InsertText(placeholder) + Delete + InsertDate = net 1
+		},
+		{
+			name:     "text then date",
+			markdown: "Due: @today",
+			want:     startIndex + 5 + 1, // "Due: " (5) + date chip (1)
+		},
+		{
+			name:     "person field only",
+			markdown: "@(user@example.com)",
+			want:     startIndex + 1, // InsertPerson = 1
+		},
+		{
+			name:     "horizontal rule",
+			markdown: "---",
+			want:     startIndex + 1, // InsertText("\n") = 1
+		},
+		{
+			name:     "multi-byte UTF-8",
+			markdown: "概要",
+			want:     startIndex + 2, // 2 runes, not 6 bytes
+		},
+		{
+			name:     "emoji",
+			markdown: "Hello 🌍",
+			want:     startIndex + 7, // 7 runes: H,e,l,l,o,' ',🌍
+		},
+		{
+			name:     "text with date in middle",
+			markdown: "Due: @today end",
+			want:     startIndex + 5 + 1 + 4, // "Due: " (5) + date chip (1) + " end" (4)
+		},
+		{
+			name:     "specific date",
+			markdown: "@date(2026-01-15)",
+			want:     startIndex + 1, // date chip = 1
+		},
+		{
+			name:     "code block",
+			markdown: "```\nfmt.Println()\n```",
+			want:     startIndex + 13, // "fmt.Println()" (13), trailing \n trimmed
+		},
+		{
+			name:     "unordered list",
+			markdown: "- item one\n- item two\n",
+			want:     startIndex + 18, // "item one\n" (9) + "item two" (8), trailing \n trimmed; no tabs at depth 0
+		},
+		{
+			name:     "nested list depth 1",
+			markdown: "- top\n    - nested\n",
+			want:     startIndex + 11, // "top\n"(4) + "\tnested\n"(8) - 1 tab removed by CreateParagraphBullets
+		},
+		{
+			name:     "nested list depth 2",
+			markdown: "- a\n    - b\n        - c\n",
+			want:     startIndex + 6, // 3 tabs subtracted (1 for b at depth 1, 2 for c at depth 2)
+		},
+		{
+			name:     "nested bold at start",
+			markdown: "    - **bold** text\n",
+			want:     startIndex + 10, // "bold"(4) + " text"(5) + 1 tab - 1 tab removed = 10
+		},
+		{
+			name:     "nested bold at end",
+			markdown: "    - text **bold**\n",
+			want:     startIndex + 10, // "text "(5) + "bold"(4) + 1 tab - 1 tab removed = 10
+		},
+		{
+			name:     "nested formatted then plain",
+			markdown: "    - **bold** text\n    - plain\n",
+			want:     startIndex + 16, // two items, 2 tabs inserted, 2 removed
+		},
+		{
+			name:     "nested depth-2 with bold",
+			markdown: "        - **deep** text\n",
+			want:     startIndex + 10, // "deep"(4) + " text"(5) + 2 tabs - 2 removed = 10
+		},
+		{
+			name:     "nested ordered with bold",
+			markdown: "    1. **bold** text\n",
+			want:     startIndex + 10, // same as unordered
+		},
+		{
+			name:     "nested list then blank line",
+			markdown: "- Parent\n    - Child\n\n",
+			want:     startIndex + 14,
+		},
+		{
+			name:     "empty input",
+			markdown: "",
+			want:     startIndex,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			segments := parseMarkdown(tt.markdown)
+			_, finalIndex := convertMarkdownToRequests(segments, startIndex)
+			if finalIndex != tt.want {
+				t.Errorf("finalIndex = %d, want %d", finalIndex, tt.want)
+			}
+		})
+	}
+}
+
 func TestConvertMarkdownToRequests_CodeBlock(t *testing.T) {
 	t.Run("code block applies Courier New font", func(t *testing.T) {
 		markdown := "```\nfmt.Println(\"hello\")\n```"
 		segments := parseMarkdown(markdown)
-		requests := convertMarkdownToRequests(segments, 1)
+		requests, _ := convertMarkdownToRequests(segments, 1)
 
 		// Should have at least one InsertText with the code content
 		foundInsert := false
@@ -3959,7 +4095,7 @@ func TestConvertMarkdownToRequests_CodeBlock(t *testing.T) {
 	t.Run("code block does not apply bold/italic/underline", func(t *testing.T) {
 		markdown := "```\ncode\n```"
 		segments := parseMarkdown(markdown)
-		requests := convertMarkdownToRequests(segments, 1)
+		requests, _ := convertMarkdownToRequests(segments, 1)
 
 		for _, req := range requests {
 			if req.UpdateTextStyle != nil &&
@@ -3985,7 +4121,7 @@ func TestConvertMarkdownToRequests_CodeBlock(t *testing.T) {
 	t.Run("code block followed by normal text", func(t *testing.T) {
 		markdown := "```\ncode\n```\nNormal text"
 		segments := parseMarkdown(markdown)
-		requests := convertMarkdownToRequests(segments, 1)
+		requests, _ := convertMarkdownToRequests(segments, 1)
 
 		// Verify both code and normal text are inserted
 		var insertTexts []string
@@ -4030,7 +4166,7 @@ func TestConvertMarkdownToRequests_InlineCode(t *testing.T) {
 	t.Run("inline code applies Courier New font", func(t *testing.T) {
 		markdown := "Use `fmt.Println` to print"
 		segments := parseMarkdown(markdown)
-		requests := convertMarkdownToRequests(segments, 1)
+		requests, _ := convertMarkdownToRequests(segments, 1)
 
 		// Should have UpdateTextStyle with Courier New for the inline code segment
 		foundCourierNew := false
@@ -4053,7 +4189,7 @@ func TestConvertMarkdownToRequests_InlineCode(t *testing.T) {
 	t.Run("inline code preserves formatting fields", func(t *testing.T) {
 		markdown := "Use `code` here"
 		segments := parseMarkdown(markdown)
-		requests := convertMarkdownToRequests(segments, 1)
+		requests, _ := convertMarkdownToRequests(segments, 1)
 
 		for _, req := range requests {
 			if req.UpdateTextStyle != nil &&
@@ -4089,7 +4225,7 @@ func TestConvertMarkdownToRequests_InlineCode(t *testing.T) {
 	t.Run("bold inline code preserves bold formatting", func(t *testing.T) {
 		markdown := "Use **`code`** here"
 		segments := parseMarkdown(markdown)
-		requests := convertMarkdownToRequests(segments, 1)
+		requests, _ := convertMarkdownToRequests(segments, 1)
 
 		foundBoldCode := false
 		for _, req := range requests {
@@ -4116,7 +4252,7 @@ func TestConvertMarkdownToRequests_InlineCode(t *testing.T) {
 	t.Run("italic inline code preserves italic formatting", func(t *testing.T) {
 		markdown := "Use *`code`* here"
 		segments := parseMarkdown(markdown)
-		requests := convertMarkdownToRequests(segments, 1)
+		requests, _ := convertMarkdownToRequests(segments, 1)
 
 		foundItalicCode := false
 		for _, req := range requests {
@@ -4137,7 +4273,7 @@ func TestConvertMarkdownToRequests_InlineCode(t *testing.T) {
 	t.Run("non-code text does not get Courier New", func(t *testing.T) {
 		markdown := "Regular text without code"
 		segments := parseMarkdown(markdown)
-		requests := convertMarkdownToRequests(segments, 1)
+		requests, _ := convertMarkdownToRequests(segments, 1)
 
 		for _, req := range requests {
 			if req.UpdateTextStyle != nil &&
@@ -4151,7 +4287,7 @@ func TestConvertMarkdownToRequests_InlineCode(t *testing.T) {
 	t.Run("inline code in heading applies Courier New", func(t *testing.T) {
 		markdown := "# Heading with `code`"
 		segments := parseMarkdown(markdown)
-		requests := convertMarkdownToRequests(segments, 1)
+		requests, _ := convertMarkdownToRequests(segments, 1)
 
 		foundCourierNew := false
 		for _, req := range requests {
@@ -5564,7 +5700,7 @@ func TestRoundTrip_CodeBlock(t *testing.T) {
 	segments := parseMarkdown(originalMarkdown)
 
 	// Convert segments to requests (simulating write to Google Docs)
-	_ = convertMarkdownToRequests(segments, 1)
+	_, _ = convertMarkdownToRequests(segments, 1)
 
 	// Create a mock Google Docs document with the expected structure
 	doc := &docs.Document{
