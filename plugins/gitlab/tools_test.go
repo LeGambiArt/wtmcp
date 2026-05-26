@@ -244,7 +244,7 @@ func jsonResponse(w http.ResponseWriter, data string) {
 func TestToolGetCommits(t *testing.T) {
 	setupGitLabTest(t, func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/repository/commits") {
-			jsonResponse(w, `[{"id":"abc123","short_id":"abc","title":"Initial commit","author_name":"Alice","author_email":"alice@example.com","web_url":"https://gitlab.example.com/commit/abc123"}]`)
+			jsonResponse(w, `[{"id":"abc123","short_id":"abc","title":"Initial commit","message":"Initial commit\n\nSigned-off-by: Alice <alice@example.com>","author_name":"Alice","author_email":"alice@example.com","web_url":"https://gitlab.example.com/commit/abc123"}]`)
 			return
 		}
 		http.NotFound(w, r)
@@ -269,6 +269,9 @@ func TestToolGetCommits(t *testing.T) {
 	}
 	if commits[0]["author_name"] != "Alice" {
 		t.Errorf("author_name = %v", commits[0]["author_name"])
+	}
+	if commits[0]["message"] != "Initial commit\n\nSigned-off-by: Alice <alice@example.com>" {
+		t.Errorf("message = %v", commits[0]["message"])
 	}
 }
 

@@ -82,6 +82,7 @@ func toolGetCommits(params, _ json.RawMessage) (any, error) {
 			"id":            c.ID,
 			"short_id":      c.ShortID,
 			"title":         c.Title,
+			"message":       c.Message,
 			"author_name":   c.AuthorName,
 			"author_email":  c.AuthorEmail,
 			"authored_date": timeStr(c.AuthoredDate),
