@@ -132,7 +132,7 @@ func TestPrintCredentialFileStatus_ReadError(t *testing.T) {
 	if err := os.Chmod(credFile, 0o000); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { os.Chmod(credFile, 0o600) })
+	t.Cleanup(func() { _ = os.Chmod(credFile, 0o600) })
 
 	cfg := &config.Config{CredentialsDir: dir}
 	resolver := func(_ string) ([]byte, error) {
