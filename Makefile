@@ -1,7 +1,7 @@
 .PHONY: all build build-sandbox plugins test test-sandbox lint fmt vet tidy clean help
 
-# Go toolchain version — must match CI (prevents go.mod bumps from newer local Go)
-GO_TOOLCHAIN_VERSION := 1.25.5
+# Go toolchain version — derived from go.mod to stay in sync with dependency bumps
+GO_TOOLCHAIN_VERSION := $(shell sed -n 's/^go //p' go.mod)
 
 VERSION ?= $(shell cat VERSION 2>/dev/null || echo "dev")
 BUILD_DATE := $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
