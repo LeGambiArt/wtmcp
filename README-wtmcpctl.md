@@ -22,6 +22,23 @@ This creates `wtmcpctl` in the repository root.
 
 ## Commands
 
+### check
+
+Print diagnostic info about configuration, credentials, and
+discovered plugins. Use this to verify your setup before
+connecting an AI client.
+
+```bash
+wtmcpctl check                         # Check default workdir
+wtmcpctl check --workdir /custom/path  # Check specific workdir
+```
+
+Output includes: version, workdir path, plugin mode, vault
+password status, env groups, plugin search path (with ok/missing
+status), and discovered plugins with tool counts.
+
+---
+
 ### agent
 
 Configure wtmcp as an MCP server for AI agents.
