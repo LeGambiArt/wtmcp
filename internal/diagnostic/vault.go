@@ -1,3 +1,4 @@
+// Package diagnostic provides shared diagnostic output for wtmcp CLI tools.
 package diagnostic
 
 import (
@@ -37,10 +38,10 @@ func VaultPasswordSource(cfg *config.Config, resolver func(string) ([]byte, erro
 func PrintVaultStatus(w io.Writer, result *plugin.DiscoveryResult) {
 	cfg := result.Config
 
-	fmt.Fprintf(w, "vault password: %s\n", VaultPasswordSource(cfg, result.VaultResolver))
+	_, _ = fmt.Fprintf(w, "vault password: %s\n", VaultPasswordSource(cfg, result.VaultResolver))
 
 	if len(cfg.Secrets.VaultIDs) > 0 {
-		fmt.Fprintf(w, "vault IDs: %d configured\n", len(cfg.Secrets.VaultIDs))
+		_, _ = fmt.Fprintf(w, "vault IDs: %d configured\n", len(cfg.Secrets.VaultIDs))
 	}
 
 	if result.EnvDir == "" || result.EnvDirError != "" {
@@ -74,7 +75,7 @@ func PrintVaultStatus(w io.Writer, result *plugin.DiscoveryResult) {
 
 		header, err := vault.ParseHeader(strings.SplitN(string(data), "\n", 2)[0])
 		if err != nil {
-			fmt.Fprintf(w, "  - %s (encrypted, invalid header)\n", group)
+			_, _ = fmt.Fprintf(w, "  - %s (encrypted, invalid header)\n", group)
 			continue
 		}
 
@@ -85,7 +86,7 @@ func PrintVaultStatus(w io.Writer, result *plugin.DiscoveryResult) {
 
 		password, err := resolve(header.VaultID)
 		if err != nil {
-			fmt.Fprintf(w, "  - %s (encrypted, %s, no password)\n", group, vaultInfo)
+			_, _ = fmt.Fprintf(w, "  - %s (encrypted, %s, no password)\n", group, vaultInfo)
 			continue
 		}
 
@@ -93,9 +94,9 @@ func PrintVaultStatus(w io.Writer, result *plugin.DiscoveryResult) {
 		vault.ZeroBytes(password)
 		vault.ZeroBytes(plaintext)
 		if err != nil {
-			fmt.Fprintf(w, "  - %s (encrypted, %s, decryption failed)\n", group, vaultInfo)
+			_, _ = fmt.Fprintf(w, "  - %s (encrypted, %s, decryption failed)\n", group, vaultInfo)
 		} else {
-			fmt.Fprintf(w, "  - %s (encrypted, %s, decryption ok)\n", group, vaultInfo)
+			_, _ = fmt.Fprintf(w, "  - %s (encrypted, %s, decryption ok)\n", group, vaultInfo)
 		}
 	}
 
@@ -136,7 +137,7 @@ func PrintCredentialFileStatus(w io.Writer, cfg *config.Config, resolve func(str
 			n, readErr := f.Read(header)
 			_ = f.Close()
 			if readErr != nil && n == 0 {
-				fmt.Fprintf(w, "  - %s/%s (read error: %v)\n", group.Name(), file.Name(), readErr)
+				_, _ = fmt.Fprintf(w, "  - %s/%s (read error: %v)\n", group.Name(), file.Name(), readErr)
 				continue
 			}
 			if !vault.IsAnsibleVault(header[:n]) {
@@ -144,19 +145,19 @@ func PrintCredentialFileStatus(w io.Writer, cfg *config.Config, resolve func(str
 			}
 
 			if !found {
-				fmt.Fprintf(w, "credential files:\n")
+				_, _ = fmt.Fprintf(w, "credential files:\n")
 				found = true
 			}
 
 			data, err := os.ReadFile(path) //nolint:gosec // credentials dir from config
 			if err != nil {
-				fmt.Fprintf(w, "  - %s/%s (encrypted, read error)\n", group.Name(), file.Name())
+				_, _ = fmt.Fprintf(w, "  - %s/%s (encrypted, read error)\n", group.Name(), file.Name())
 				continue
 			}
 
 			hdr, err := vault.ParseHeader(strings.SplitN(string(data), "\n", 2)[0])
 			if err != nil {
-				fmt.Fprintf(w, "  - %s/%s (encrypted, invalid header)\n", group.Name(), file.Name())
+				_, _ = fmt.Fprintf(w, "  - %s/%s (encrypted, invalid header)\n", group.Name(), file.Name())
 				continue
 			}
 
@@ -167,7 +168,7 @@ func PrintCredentialFileStatus(w io.Writer, cfg *config.Config, resolve func(str
 
 			password, err := resolve(hdr.VaultID)
 			if err != nil {
-				fmt.Fprintf(w, "  - %s/%s (encrypted, %s, no password)\n", group.Name(), file.Name(), vaultInfo)
+				_, _ = fmt.Fprintf(w, "  - %s/%s (encrypted, %s, no password)\n", group.Name(), file.Name(), vaultInfo)
 				continue
 			}
 
@@ -175,9 +176,9 @@ func PrintCredentialFileStatus(w io.Writer, cfg *config.Config, resolve func(str
 			vault.ZeroBytes(password)
 			vault.ZeroBytes(plaintext)
 			if err != nil {
-				fmt.Fprintf(w, "  - %s/%s (encrypted, %s, decryption failed)\n", group.Name(), file.Name(), vaultInfo)
+				_, _ = fmt.Fprintf(w, "  - %s/%s (encrypted, %s, decryption failed)\n", group.Name(), file.Name(), vaultInfo)
 			} else {
-				fmt.Fprintf(w, "  - %s/%s (encrypted, %s, decryption ok)\n", group.Name(), file.Name(), vaultInfo)
+				_, _ = fmt.Fprintf(w, "  - %s/%s (encrypted, %s, decryption ok)\n", group.Name(), file.Name(), vaultInfo)
 			}
 		}
 	}
@@ -185,27 +186,27 @@ func PrintCredentialFileStatus(w io.Writer, cfg *config.Config, resolve func(str
 
 // PrintEnvGroups prints sorted env group names and any errors.
 func PrintEnvGroups(w io.Writer, result *plugin.DiscoveryResult) {
-	fmt.Fprintf(w, "env groups: %d\n", len(result.EnvGroups))
+	_, _ = fmt.Fprintf(w, "env groups: %d\n", len(result.EnvGroups))
 	groups := make([]string, 0, len(result.EnvGroups))
 	for g := range result.EnvGroups {
 		groups = append(groups, g)
 	}
 	slices.Sort(groups)
 	for _, g := range groups {
-		fmt.Fprintf(w, "  - %s\n", g)
+		_, _ = fmt.Fprintf(w, "  - %s\n", g)
 	}
 	if result.EnvDirError != "" {
-		fmt.Fprintf(w, "env.d directory error: %s\n", result.EnvDirError)
+		_, _ = fmt.Fprintf(w, "env.d directory error: %s\n", result.EnvDirError)
 	}
 	if len(result.EnvErrors) > 0 {
-		fmt.Fprintf(w, "env group errors: %d\n", len(result.EnvErrors))
+		_, _ = fmt.Fprintf(w, "env group errors: %d\n", len(result.EnvErrors))
 		errGroups := make([]string, 0, len(result.EnvErrors))
 		for g := range result.EnvErrors {
 			errGroups = append(errGroups, g)
 		}
 		slices.Sort(errGroups)
 		for _, g := range errGroups {
-			fmt.Fprintf(w, "  - %s: %s\n", g, result.EnvErrors[g])
+			_, _ = fmt.Fprintf(w, "  - %s: %s\n", g, result.EnvErrors[g])
 		}
 	}
 }
