@@ -8,8 +8,8 @@ mkdir -p -m 700 ~/.config/wtmcp/env.d
 cp env.d/jira.env.example ~/.config/wtmcp/env.d/jira.env
 # Edit ~/.config/wtmcp/env.d/jira.env with your credentials
 chmod 600 ~/.config/wtmcp/env.d/jira.env
-./wtmcpctl agent enable claude
-./wtmcpctl check
+./bin/wtmcpctl agent enable claude
+./bin/wtmcpctl check
 # Open Claude Code and ask: "Who am I in Jira?"
 ```
 
@@ -43,6 +43,7 @@ plugin — other plugins never see credentials that aren't theirs.
 | `google-gmail` | Email listing, search, send, drafts, and labels |
 | `google-docs` | Retrieve, summarize, and write to Google Documents |
 | `snyk` | Security issues — browse vulnerabilities and manage ignores |
+| `bugzilla` | Bug tracking — search, create, update, and comment on bugs |
 | `testing-farm` | Test execution and system reservation |
 
 <details>
