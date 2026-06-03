@@ -74,13 +74,50 @@ except those in plugins.disabled).`,
 	RunE:              runPluginsOnly,
 }
 
+var userPluginsCmd = &cobra.Command{
+	Use:   "user-plugins",
+	Short: "Manage user plugin support",
+	Long: `Enable or disable loading of user plugins from {workdir}/plugins/.
+
+User plugins are disabled by default for security. When enabled, plugins
+in your workdir/plugins/ directory will be loaded alongside system plugins.
+
+User plugins cannot:
+- Override system plugins
+- Declare authentication providers
+- Claim credential groups owned by system plugins
+- Use symlinks or hardlinks in handler paths`,
+}
+
+var userPluginsEnableCmd = &cobra.Command{
+	Use:   "enable",
+	Short: "Enable user plugin support",
+	Args:  cobra.NoArgs,
+	RunE:  runUserPluginsEnable,
+}
+
+var userPluginsDisableCmd = &cobra.Command{
+	Use:   "disable",
+	Short: "Disable user plugin support",
+	Args:  cobra.NoArgs,
+	RunE:  runUserPluginsDisable,
+}
+
+var userPluginsStatusCmd = &cobra.Command{
+	Use:   "status",
+	Short: "Show user plugin support status",
+	Args:  cobra.NoArgs,
+	RunE:  runUserPluginsStatus,
+}
+
 func init() {
 	pluginsListCmd.Flags().BoolP("plain", "p", false,
 		"Plain text output (no colors or borders)")
 	pluginsOnlyCmd.Flags().Bool("clear", false,
 		"Remove the allowlist, returning to default behavior")
 
-	pluginsCmd.AddCommand(pluginsListCmd, pluginsEnableCmd, pluginsDisableCmd, pluginsOnlyCmd)
+	userPluginsCmd.AddCommand(userPluginsEnableCmd, userPluginsDisableCmd, userPluginsStatusCmd)
+	pluginsCmd.AddCommand(pluginsListCmd, pluginsEnableCmd, pluginsDisableCmd, pluginsOnlyCmd, userPluginsCmd)
 }
 
 // getPluginsDiscoveryResult discovers ALL plugins, ignoring the
@@ -644,4 +681,82 @@ func completeAllPlugins(
 	}
 	sort.Strings(names)
 	return names, cobra.ShellCompDirectiveNoFileComp
+}
+
+func runUserPluginsEnable(_ *cobra.Command, _ []string) error {
+	result, err := getDiscoveryResult()
+	if err != nil {
+		return err
+	}
+
+	val := true
+	if err := updateConfigBool(result.ConfigPath, "plugins", "user_plugins", &val); err != nil {
+		return err
+	}
+
+	fmt.Printf("User plugin support enabled in %s\n", result.ConfigPath)
+	fmt.Printf("User plugins will be loaded from: %s/plugins/\n", result.Workdir)
+	fmt.Println("\nSecurity restrictions for user plugins:")
+	fmt.Println("  - Cannot override system plugins")
+	fmt.Println("  - Cannot declare authentication providers")
+	fmt.Println("  - Cannot claim credential groups owned by system plugins")
+	fmt.Println("  - Cannot use symlinks or hardlinks in handler paths")
+	fmt.Println("\nRestart wtmcp for changes to take effect.")
+	return nil
+}
+
+func runUserPluginsDisable(_ *cobra.Command, _ []string) error {
+	result, err := getDiscoveryResult()
+	if err != nil {
+		return err
+	}
+
+	val := false
+	if err := updateConfigBool(result.ConfigPath, "plugins", "user_plugins", &val); err != nil {
+		return err
+	}
+
+	fmt.Printf("User plugin support disabled in %s\n", result.ConfigPath)
+	fmt.Println("Restart wtmcp for changes to take effect.")
+	return nil
+}
+
+func runUserPluginsStatus(_ *cobra.Command, _ []string) error {
+	result, err := getPluginsDiscoveryResult()
+	if err != nil {
+		return err
+	}
+
+	status := "disabled"
+	statusStyle := disabledStyle
+	if result.Config.Plugins.UserPlugins {
+		status = "enabled"
+		statusStyle = enabledStyle
+	}
+
+	fmt.Printf("User plugin support: %s\n", statusStyle.Render(status))
+	fmt.Printf("Config file: %s\n", result.ConfigPath)
+	fmt.Printf("User plugin directory: %s/plugins/\n", result.Workdir)
+
+	if result.Config.Plugins.UserPlugins {
+		var userPlugins []*plugin.Manifest
+		for _, m := range result.Manager.Manifests() {
+			if m.IsUserPlugin {
+				userPlugins = append(userPlugins, m)
+			}
+		}
+		sort.Slice(userPlugins, func(i, j int) bool {
+			return userPlugins[i].Name < userPlugins[j].Name
+		})
+		if len(userPlugins) > 0 {
+			fmt.Printf("\nUser plugins found: %d\n", len(userPlugins))
+			for _, m := range userPlugins {
+				fmt.Printf("  - %s (v%s)\n", m.Name, m.Version)
+			}
+		} else {
+			fmt.Println("\nNo user plugins found in user plugin directory.")
+		}
+	}
+
+	return nil
 }

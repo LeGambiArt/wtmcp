@@ -141,6 +141,58 @@ func discoverPlugins() (map[string]*plugin.Manifest, error) {
 	return result.Manager.Manifests(), nil
 }
 
+// updateConfigBool sets or removes a boolean value at doc[section][key]
+// in the YAML config file. If val is nil, the key is deleted; if the
+// section becomes empty, it is also deleted.
+func updateConfigBool(configPath, section, key string, val *bool) error {
+	data, err := os.ReadFile(configPath) //nolint:gosec // config file path from user
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+
+	var doc map[string]any
+	if len(data) > 0 {
+		if err := yaml.Unmarshal(data, &doc); err != nil {
+			return fmt.Errorf("parse config: %w", err)
+		}
+	}
+	if doc == nil {
+		doc = make(map[string]any)
+	}
+
+	sectionRaw, ok := doc[section]
+	var sectionMap map[string]any
+	if ok {
+		sectionMap, _ = sectionRaw.(map[string]any)
+	}
+	if sectionMap == nil {
+		sectionMap = make(map[string]any)
+	}
+
+	if val != nil {
+		sectionMap[key] = *val
+	} else {
+		delete(sectionMap, key)
+	}
+
+	if len(sectionMap) > 0 {
+		doc[section] = sectionMap
+	} else {
+		delete(doc, section)
+	}
+
+	out, err := yaml.Marshal(doc)
+	if err != nil {
+		return err
+	}
+
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
+		return fmt.Errorf("create config directory: %w", err)
+	}
+
+	return atomicWriteFile(configPath, out, 0o600)
+}
+
 // getCredentialsDir returns the credentials directory for the current workdir.
 // Respects GOOGLE_CREDENTIALS_DIR env var (from process environment, not scoped
 // env.d), otherwise uses workdir/credentials/google.
