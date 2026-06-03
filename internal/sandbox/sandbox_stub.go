@@ -1,7 +1,7 @@
 //go:build !sandbox
 
 // Package sandbox provides a stub implementation when built without
-// the sandbox tag. All plugins run unsandboxed via exec.CommandContext.
+// the sandbox tag. All plugins run unsandboxed via exec.Command.
 package sandbox
 
 import (

@@ -75,7 +75,7 @@ func NewProcess(manifest *Manifest, handler ServiceHandler, cfg ProcessConfig, g
 
 // SetSandbox configures the sandbox manager for this process.
 // When set and enabled, Start() launches via arapuca instead of
-// exec.CommandContext.
+// exec.Command.
 func (p *Process) SetSandbox(sb *sandbox.Manager) {
 	p.sbMgr = sb
 }
@@ -92,14 +92,14 @@ func (p *Process) Start(ctx context.Context) error {
 	var stdout, stderr io.ReadCloser
 
 	if p.sbMgr != nil && p.sbMgr.Enabled() {
-		if err := p.startSandboxed(ctx, &stdin, &stdout, &stderr); err != nil {
+		if err := p.startSandboxed(&stdin, &stdout, &stderr); err != nil {
 			return err
 		}
 	} else {
 		if p.sbMgr != nil {
 			log.Printf("[%s] WARNING: sandbox disabled — process is not isolated", p.manifest.Name)
 		}
-		if err := p.startUnsandboxed(ctx, &stdin, &stdout, &stderr); err != nil {
+		if err := p.startUnsandboxed(&stdin, &stdout, &stderr); err != nil {
 			return err
 		}
 	}
@@ -125,8 +125,8 @@ func (p *Process) Start(ctx context.Context) error {
 	return nil
 }
 
-func (p *Process) startSandboxed(ctx context.Context, stdin *io.WriteCloser, stdout, stderr *io.ReadCloser) error {
-	launchCtx, cancel := context.WithCancel(ctx)
+func (p *Process) startSandboxed(stdin *io.WriteCloser, stdout, stderr *io.ReadCloser) error {
+	launchCtx, cancel := context.WithCancel(context.Background())
 	p.cancel = cancel
 
 	env := buildPluginEnvMap(p.manifest, p.groupVars)
@@ -151,12 +151,12 @@ func (p *Process) startSandboxed(ctx context.Context, stdin *io.WriteCloser, std
 	return nil
 }
 
-func (p *Process) startUnsandboxed(ctx context.Context, stdin *io.WriteCloser, stdout, stderr *io.ReadCloser) error {
+func (p *Process) startUnsandboxed(stdin *io.WriteCloser, stdout, stderr *io.ReadCloser) error {
 	if err := validateHandlerAtLaunch(p.manifest); err != nil {
 		p.state = StateFailed
 		return err
 	}
-	p.cmd = exec.CommandContext(ctx, p.manifest.HandlerPath()) //nolint:gosec // handler path is validated by Manifest.Validate()
+	p.cmd = exec.Command(p.manifest.HandlerPath()) //nolint:gosec // handler path is validated by Manifest.Validate()
 	p.cmd.Dir = p.manifest.Dir
 	p.cmd.Env = buildPluginEnv(p.manifest, p.groupVars)
 
@@ -258,6 +258,9 @@ func (p *Process) Stop(ctx context.Context) error {
 
 func (p *Process) wait() error {
 	if p.sbProc != nil {
+		if p.cancel != nil {
+			p.cancel()
+		}
 		_, err := p.sbProc.Wait()
 		p.logResourceStats()
 		p.sbProc.Cleanup()

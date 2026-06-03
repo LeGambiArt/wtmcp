@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/LeGambiArt/wtmcp/internal/protocol"
 )
 
 func TestBuildPluginEnv(t *testing.T) {
@@ -159,6 +161,80 @@ done
 	}
 
 	if err := proc.Stop(ctx); err != nil {
+		t.Fatalf("Stop failed: %v", err)
+	}
+}
+
+func TestProcessSurvivesContextCancellation(t *testing.T) {
+	dir := t.TempDir()
+
+	// Handler that responds to init, tool_call, and shutdown
+	script := `#!/bin/bash
+while IFS= read -r line; do
+  type=$(echo "$line" | jq -r '.type')
+  id=$(echo "$line" | jq -r '.id')
+  case "$type" in
+    init)
+      echo "{\"id\":\"$id\",\"type\":\"init_ok\"}"
+      ;;
+    tool_call)
+      echo "{\"id\":\"$id\",\"type\":\"tool_result\",\"result\":{\"alive\":true}}"
+      ;;
+    shutdown)
+      echo "{\"id\":\"$id\",\"type\":\"shutdown_ok\"}"
+      exit 0
+      ;;
+  esac
+done
+`
+	handlerPath := filepath.Join(dir, "handler.sh")
+	if err := os.WriteFile(handlerPath, []byte(script), 0o755); err != nil { //nolint:gosec // test needs executable
+		t.Fatal(err)
+	}
+
+	m := &Manifest{
+		Name:        "test-ctx-cancel",
+		Execution:   "persistent",
+		Handler:     "./handler.sh",
+		Concurrency: 1,
+		Dir:         dir,
+	}
+
+	proc := NewProcess(m, &mockServiceHandler{}, ProcessConfig{
+		InitTimeout:       5 * time.Second,
+		ShutdownTimeout:   5 * time.Second,
+		ShutdownKillAfter: 2 * time.Second,
+		MaxMessageSize:    1024 * 1024,
+	}, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := proc.Start(ctx); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	// Cancel the context (simulates MCP request context being cancelled
+	// after plugin_reload returns).
+	cancel()
+	// Give the runtime time to deliver the cancellation signal; if the
+	// old exec.CommandContext behaviour were still in place, the process
+	// would be killed within this window.
+	time.Sleep(100 * time.Millisecond)
+
+	// Process must still be alive — verify by sending a tool call.
+	id := proc.Transport.GenerateID("test")
+	resp, err := proc.Transport.SendAndWait(context.Background(), id, protocol.Message{
+		Type: protocol.TypeToolCall,
+		Tool: "ping",
+	})
+	if err != nil {
+		t.Fatalf("tool call after context cancel failed: %v", err)
+	}
+	if resp.Type != protocol.TypeToolResult {
+		t.Errorf("response type = %q, want tool_result", resp.Type)
+	}
+
+	// Explicit stop must still work.
+	if err := proc.Stop(context.Background()); err != nil {
 		t.Fatalf("Stop failed: %v", err)
 	}
 }
