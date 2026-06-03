@@ -214,6 +214,9 @@ func (p *Process) doInit(ctx context.Context) error {
 }
 
 func (p *Process) queryResources(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, p.initTimeout)
+	defer cancel()
+
 	id := p.Transport.GenerateID("res")
 	resp, err := p.Transport.SendAndWait(ctx, id, protocol.Message{
 		Type: protocol.TypeListResources,
