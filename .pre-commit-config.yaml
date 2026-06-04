@@ -68,7 +68,7 @@ repos:
 
       - id: govulncheck
         name: govulncheck
-        entry: bash -c 'cd "$(git rev-parse --show-toplevel)" && command -v govulncheck >/dev/null 2>&1 || go install golang.org/x/vuln/cmd/govulncheck@latest && govulncheck ./...'
+        entry: bash -c 'export PATH="$(go env GOPATH)/bin:$PATH" && cd "$(git rev-parse --show-toplevel)" && command -v govulncheck >/dev/null 2>&1 || go install golang.org/x/vuln/cmd/govulncheck@latest && govulncheck ./...'
         language: system
         types: [go]
         pass_filenames: false
