@@ -693,12 +693,16 @@ func TestToolDefLocalWrite(t *testing.T) {
 
 func TestManifestValidateConcurrencyMixedAccess(t *testing.T) {
 	base := func(concurrency int, access1, access2 string) *Manifest {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "handler"), []byte("#!/bin/bash\n"), 0o755); err != nil { //nolint:gosec // test needs executable
+			t.Fatal(err)
+		}
 		return &Manifest{
 			Name:        "test",
 			Handler:     "handler",
 			Execution:   "persistent",
 			Concurrency: concurrency,
-			Dir:         t.TempDir(),
+			Dir:         dir,
 			Tools: []ToolDef{
 				{Name: "tool_a", Description: "d", Access: access1},
 				{Name: "tool_b", Description: "d", Access: access2},
@@ -727,12 +731,16 @@ func TestManifestValidateConcurrencyMixedAccess(t *testing.T) {
 
 func TestManifestValidateConcurrencyMixedLocalWrite(t *testing.T) {
 	base := func(lw1, lw2 bool) *Manifest {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "handler"), []byte("#!/bin/bash\n"), 0o755); err != nil { //nolint:gosec // test needs executable
+			t.Fatal(err)
+		}
 		return &Manifest{
 			Name:        "test",
 			Handler:     "handler",
 			Execution:   "persistent",
 			Concurrency: 2,
-			Dir:         t.TempDir(),
+			Dir:         dir,
 			Tools: []ToolDef{
 				{Name: "tool_a", Description: "d", Access: "read", LocalWrite: lw1},
 				{Name: "tool_b", Description: "d", Access: "read", LocalWrite: lw2},
@@ -757,11 +765,15 @@ func TestManifestValidateConcurrencyMixedLocalWrite(t *testing.T) {
 
 func TestManifestValidateLocalWrite(t *testing.T) {
 	base := func(access string, localWrite bool) *Manifest {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "handler"), []byte("#!/bin/bash\n"), 0o755); err != nil { //nolint:gosec // test needs executable
+			t.Fatal(err)
+		}
 		return &Manifest{
 			Name:      "test",
 			Handler:   "handler",
 			Execution: "oneshot",
-			Dir:       t.TempDir(),
+			Dir:       dir,
 			Tools: []ToolDef{{
 				Name:        "t",
 				Description: "d",
