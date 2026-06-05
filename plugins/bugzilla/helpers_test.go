@@ -357,8 +357,12 @@ func TestConfineRead(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if !strings.HasPrefix(got, dir) {
-			t.Errorf("result %q not under dir %q", got, dir)
+		resolvedDir, err := filepath.EvalSymlinks(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.HasPrefix(got, resolvedDir) {
+			t.Errorf("result %q not under dir %q", got, resolvedDir)
 		}
 	})
 

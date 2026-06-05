@@ -13,8 +13,14 @@ import (
 
 func testConfig(t *testing.T) Config {
 	t.Helper()
-	outputDir := t.TempDir()
-	tmpDir := t.TempDir()
+	outputDir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpDir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	return Config{
 		OutputDir: outputDir,
 		TmpDir:    tmpDir,
@@ -185,7 +191,7 @@ func TestWriteFile_SourcePath(t *testing.T) {
 			setup: func(cfg Config) string {
 				return filepath.Join(cfg.TmpDir, "nonexistent.tmp")
 			},
-			wantErr: true, errMsg: "open",
+			wantErr: true, errMsg: "no such file",
 		},
 		{
 			name: "directory not file",
