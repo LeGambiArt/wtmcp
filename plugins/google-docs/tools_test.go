@@ -4445,6 +4445,7 @@ func TestParseMarkdownTable(t *testing.T) {
 
 			if got == nil {
 				t.Fatal("expected non-nil result")
+				return
 			}
 
 			if got.numColumns != tt.want.numColumns {
@@ -4589,6 +4590,7 @@ func TestTableParsingWithFormatting(t *testing.T) {
 			table := parseMarkdownTable(tt.lines)
 			if table == nil {
 				t.Fatal("expected non-nil table")
+				return
 			}
 
 			if tt.checkCell.row >= len(table.rows) {
@@ -4764,6 +4766,7 @@ func TestTableSizeLimits(t *testing.T) {
 		table := parseMarkdownTable(lines)
 		if table == nil {
 			t.Fatal("parser should parse large tables (limits enforced at tool level)")
+			return
 		}
 		if table.numColumns != maxTableColumns+5 {
 			t.Errorf("expected %d columns, got %d", maxTableColumns+5, table.numColumns)
@@ -4836,6 +4839,7 @@ func TestInlineCodeInTableCells(t *testing.T) {
 		table := parseMarkdownTable(lines)
 		if table == nil {
 			t.Fatal("expected table")
+			return
 		}
 		cell := table.rows[1].cells[0]
 		foundInlineCode := false
@@ -4860,6 +4864,7 @@ func TestPipeEscaping(t *testing.T) {
 		table := parseMarkdownTable(lines)
 		if table == nil {
 			t.Fatal("expected table")
+			return
 		}
 		if table.numColumns != 2 {
 			t.Errorf("expected 2 columns, got %d", table.numColumns)
@@ -4879,6 +4884,7 @@ func TestPipeEscaping(t *testing.T) {
 		table := parseMarkdownTable(lines)
 		if table == nil {
 			t.Fatal("expected table")
+			return
 		}
 		if table.numColumns != 2 {
 			t.Errorf("expected 2 columns, got %d", table.numColumns)
@@ -4898,6 +4904,7 @@ func TestPipeEscaping(t *testing.T) {
 		table := parseMarkdownTable(lines)
 		if table == nil {
 			t.Fatal("expected table")
+			return
 		}
 		cell := table.rows[1].cells[0]
 		if len(cell.segments) == 0 || cell.segments[0].text != `C:\|` {
@@ -4914,6 +4921,7 @@ func TestPipeEscaping(t *testing.T) {
 		table := parseMarkdownTable(lines)
 		if table == nil {
 			t.Fatal("expected table")
+			return
 		}
 		cell := table.rows[1].cells[0]
 		if len(cell.segments) == 0 || cell.segments[0].text != `a | b | c` {
@@ -4930,6 +4938,7 @@ func TestPipeEscaping(t *testing.T) {
 		table := parseMarkdownTable(lines)
 		if table == nil {
 			t.Fatal("expected table")
+			return
 		}
 		cell := table.rows[1].cells[0]
 		foundBold := false
@@ -5069,6 +5078,7 @@ func TestCollectTableCellRequests(t *testing.T) {
 		reqs := flattenCellRequests(collectTableCellRequests(apiRows, parsedRows))
 		if len(reqs) == 0 {
 			t.Fatal("expected requests for single-cell table")
+			return
 		}
 		if reqs[0].InsertText == nil || reqs[0].InsertText.Text != "only" {
 			t.Error("expected InsertText with 'only'")
@@ -5272,6 +5282,7 @@ func TestConvertTableToRequests(t *testing.T) {
 	// First request should be InsertTable
 	if requests[0].InsertTable == nil {
 		t.Fatal("first request should be InsertTable")
+		return
 	}
 
 	insertTable := requests[0].InsertTable
@@ -5443,11 +5454,13 @@ func TestTableEdgeCases(t *testing.T) {
 		segments := parseMarkdown(markdown)
 		if len(segments) == 0 || !segments[0].isTable {
 			t.Fatal("expected table segment")
+			return
 		}
 
 		table := segments[0].table
 		if len(table.rows) < 2 {
 			t.Fatal("expected at least 2 rows")
+			return
 		}
 
 		// Check empty cell
@@ -5554,11 +5567,13 @@ Paragraph`
 		segments := parseMarkdown(markdown)
 		if len(segments) == 0 || !segments[0].isTable {
 			t.Fatal("expected table segment")
+			return
 		}
 
 		table := segments[0].table
 		if len(table.rows) < 2 {
 			t.Fatal("expected at least 2 rows")
+			return
 		}
 
 		// Check for date field in data row

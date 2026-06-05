@@ -126,6 +126,8 @@ func Available() bool {
 // Most servers accept pure Kerberos tokens via HTTP Negotiate authentication.
 //
 // The spn parameter should be in the format "HTTP@hostname" (not "HTTP/hostname").
+//
+//nolint:gocritic // dupSubExpr false positives from CGo GSS-API macros
 func GetSPNEGOToken(spn string) (string, error) {
 	initMutex.Lock()
 	avail := available

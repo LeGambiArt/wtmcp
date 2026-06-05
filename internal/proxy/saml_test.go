@@ -325,7 +325,7 @@ func TestHandleSAMLSSO(t *testing.T) {
 			w.WriteHeader(400)
 			return
 		}
-		http.SetCookie(w, &http.Cookie{Name: "JSESSIONID", Value: "test-session", Path: "/"})
+		http.SetCookie(w, &http.Cookie{Name: "JSESSIONID", Value: "test-session", Path: "/", HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode})
 		w.WriteHeader(200)
 	})
 
@@ -508,7 +508,7 @@ func TestInitSAMLSessionFormFirst(t *testing.T) {
 		if r.Form.Get("SAMLResponse") == "" {
 			t.Error("digest request missing SAMLResponse")
 		}
-		http.SetCookie(w, &http.Cookie{Name: "session", Value: "authenticated"})
+		http.SetCookie(w, &http.Cookie{Name: "session", Value: "authenticated", HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode})
 		w.WriteHeader(200)
 	})
 

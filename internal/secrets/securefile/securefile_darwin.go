@@ -36,13 +36,13 @@ func createSecureFile(name string, cloexec bool) (*SecureFile, error) {
 
 	path := f.Name()
 	if err := os.Remove(path); err != nil {
-		f.Close()
+		f.Close() //nolint:errcheck,gosec // best-effort cleanup on error
 		return nil, fmt.Errorf("unlink temp file: %w", err)
 	}
 
 	fdNum := f.Fd()
 	if err := setFdCloexec(fdNum, cloexec); err != nil {
-		f.Close()
+		f.Close() //nolint:errcheck,gosec // best-effort cleanup on error
 		return nil, fmt.Errorf("set fd flags: %w", err)
 	}
 
