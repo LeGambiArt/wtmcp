@@ -1,6 +1,6 @@
 module github.com/LeGambiArt/wtmcp
 
-go 1.25.11
+go 1.26.4
 
 require gopkg.in/yaml.v3 v3.0.1
 
