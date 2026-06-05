@@ -29,13 +29,17 @@ jobs:
       - uses: pre-commit/action@2c7b3805fd2a0fd8c1884dcaebf91fc102a13ecd # v3.0.1
 
   go:
-    name: Go
-    runs-on: ubuntu-latest
+    name: Go (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
 
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Install system dependencies
+        if: runner.os == 'Linux'
         run: sudo apt-get install -y libkrb5-dev
 
       - name: Set up Go
@@ -53,16 +57,19 @@ jobs:
         run: go test -race ./...
 
       - name: Vulnerability check
+        if: runner.os == 'Linux'
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
           govulncheck ./...
 
       - name: Generate SBOM
+        if: runner.os == 'Linux'
         run: |
           go install github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@v1.8.0
           cyclonedx-gomod mod -json -output wtmcp.sbom.json
 
       - name: Upload SBOM
+        if: runner.os == 'Linux'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sbom
