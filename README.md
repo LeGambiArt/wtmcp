@@ -20,8 +20,8 @@ proxying, caching, and output encoding so plugins stay minimal.
 │  Audit Log ─── Cache Store ─── Auth Providers   │
 │  (JSON)        (memory/fs)     Bearer, Basic,   │
 │                                Kerberos, OAuth2 │
-│  Sandbox (optional)                             │
-│  Landlock + cgroups + netns                     │
+│  Sandbox                                        │
+│  Landlock + cgroups + netns + Seatbelt          │
 └────────┬──────────────────────────┬─────────────┘
          │ stdio (MCP/JSON-RPC)     │ stdin/stdout (JSON-lines)
     ┌────┴────┐               ┌─────┴──────────┐
@@ -74,31 +74,38 @@ direct network connections.
   with certificate chain verification
 - **Userinfo URL rejection** — `user:pass@host` URLs are blocked
 
-### Sandboxing (optional)
+### Sandboxing
 
-Build with `-tags sandbox` to enable OS-level plugin isolation via
-[arapuca](https://github.com/sergio-correia/arapuca):
+OS-level plugin isolation via
+[arapuca](https://github.com/sergio-correia/arapuca) is built by
+default:
 
-- **Landlock LSM** filesystem confinement — plugins can only
-  read/write declared paths
+- **Landlock LSM** filesystem confinement (Linux) — plugins can
+  only read/write declared paths
+- **Seatbelt** sandboxing (macOS) — equivalent confinement
 - **cgroup v2** resource limits — memory, CPU, PIDs, file size
   (configurable per-plugin)
 - **Network namespace isolation** — plugins cannot make direct
   connections; all traffic routes through the core proxy
 - **OOM detection** and resource usage reporting after process exit
 
-```bash
-# Build with sandbox support (requires libarapuca)
-make build-sandbox
+Building requires libarapuca — either from a system package
+(Fedora) or built from the bundled submodule (requires a
+Rust toolchain). The Makefile auto-detects which path to use:
 
-# Default build works without libarapuca
-make build
+```bash
+make build    # auto-detects system libarapuca or builds from submodule
 ```
 
-When sandbox is enabled in config but the binary lacks the tag,
-the server refuses to start with a clear error. When config uses
-the default (sandbox enabled implicitly), the server starts with
-a warning.
+To build **without** sandbox (debug/development only):
+
+```bash
+go build -tags nosandbox ./cmd/wtmcp
+WTMCP_UNSANDBOXED=1 ./wtmcp   # required at runtime
+```
+
+Binaries built without sandbox loudly warn at startup, in logs,
+and in the MCP server description visible to the LLM.
 
 ### Rate Limiting
 
@@ -619,14 +626,11 @@ Plugin authors mark key tools with `visibility: primary` in
 ## Testing
 
 ```bash
-# Go core tests
-go test ./...
+# Go tests (requires libarapuca — use make to auto-detect)
+make test
 
-# Go core tests with race detector
-go test -race ./...
-
-# Sandbox tests (requires libarapuca)
-make test-sandbox
+# Nosandbox stub tests (no libarapuca needed)
+make test-nosandbox
 
 # Python plugin tests
 .venv/bin/pytest tests/ -v
@@ -653,7 +657,7 @@ internal/
   protocol/             Wire protocol message types
   proxy/                HTTP proxy with SSRF prevention
   ratelimit/            Token-bucket rate limiting
-  sandbox/              OS-level plugin isolation (optional)
+  sandbox/              OS-level plugin isolation
   secrets/              Vault decryption, secure file descriptors
   server/               MCP server, output framing, tool index
   stats/                Per-tool call statistics
