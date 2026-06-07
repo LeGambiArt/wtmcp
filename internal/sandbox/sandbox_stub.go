@@ -46,7 +46,7 @@ func NewManager(cfg config.SandboxConfig, credDir, dataDir string) (*Manager, er
 					"  3. Rebuild with libarapuca installed (recommended)")
 		}
 		fmt.Fprintln(os.Stderr,
-			"WARNING: UNSANDBOXED MODE — binary built without libarapuca, plugins run without OS-level isolation")
+			"WARNING: UNSANDBOXED MODE — binary built without libarapuca, plugins run without OS-level isolation. This mode is intended for development and debugging only.")
 	}
 
 	return &Manager{base: base{cfg: cfg, credDir: credDir, dataDir: dataDir}}, nil

@@ -23,7 +23,7 @@ func TestReloadDisabledPlugin_StubToolsRemoved(t *testing.T) {
 
 	cfg := config.DefaultConfig()
 	index := NewToolIndex(mgr, false)
-	srv, _ := New("test", mgr, cfg, index, nil, nil, nil, nil)
+	srv, _ := New("test", mgr, cfg, index, nil, nil, nil, nil, true)
 
 	// Verify disabled tools are registered with [DISABLED] descriptions.
 	tools := srv.ListTools()
@@ -81,7 +81,7 @@ func TestReloadDisabledPlugin_ManifestsPathStillWorks(t *testing.T) {
 
 	cfg := config.DefaultConfig()
 	index := NewToolIndex(mgr, false)
-	srv, _ := New("test", mgr, cfg, index, nil, nil, nil, nil)
+	srv, _ := New("test", mgr, cfg, index, nil, nil, nil, nil, true)
 
 	// Verify the tool is registered normally.
 	tools := srv.ListTools()
@@ -129,7 +129,7 @@ func TestReservedToolNamesBlocked(t *testing.T) {
 
 	cfg := config.DefaultConfig()
 	index := NewToolIndex(mgr, false)
-	srv, _ := New("test", mgr, cfg, index, nil, nil, nil, nil)
+	srv, _ := New("test", mgr, cfg, index, nil, nil, nil, nil, true)
 
 	tools := srv.ListTools()
 
@@ -161,7 +161,7 @@ func TestReservedToolNamesBlockedForDisabledPlugins(t *testing.T) {
 
 	cfg := config.DefaultConfig()
 	index := NewToolIndex(mgr, false)
-	srv, _ := New("test", mgr, cfg, index, nil, nil, nil, nil)
+	srv, _ := New("test", mgr, cfg, index, nil, nil, nil, nil, true)
 
 	tools := srv.ListTools()
 
@@ -193,7 +193,7 @@ func TestSwapStartFailedTools(t *testing.T) {
 	index := NewToolIndex(mgr, false)
 
 	// New() registers tools normally (as if plugin was pending start).
-	srv, _ := New("test", mgr, cfg, index, nil, nil, nil, nil)
+	srv, _ := New("test", mgr, cfg, index, nil, nil, nil, nil, true)
 
 	// Verify tools are registered as normal (no [DISABLED]).
 	tools := srv.ListTools()
@@ -241,7 +241,7 @@ func TestSwapStartFailedTools_SkipsAlreadyDisabled(t *testing.T) {
 
 	cfg := config.DefaultConfig()
 	index := NewToolIndex(mgr, false)
-	srv, _ := New("test", mgr, cfg, index, nil, nil, nil, nil)
+	srv, _ := New("test", mgr, cfg, index, nil, nil, nil, nil, true)
 
 	// Verify it's already a [DISABLED] stub.
 	tools := srv.ListTools()
@@ -274,7 +274,7 @@ func TestReloadPlugin_StillDisabledReRegistersStubs(t *testing.T) {
 
 	cfg := config.DefaultConfig()
 	index := NewToolIndex(mgr, false)
-	srv, _ := New("test", mgr, cfg, index, nil, nil, nil, nil)
+	srv, _ := New("test", mgr, cfg, index, nil, nil, nil, nil, true)
 
 	// Verify stub is registered.
 	tools := srv.ListTools()
@@ -328,7 +328,7 @@ func TestBadSchema_ToolDisabledInServer(t *testing.T) {
 
 	cfg := config.DefaultConfig()
 	index := NewToolIndex(mgr, false)
-	srv, _ := New("test", mgr, cfg, index, nil, nil, nil, nil)
+	srv, _ := New("test", mgr, cfg, index, nil, nil, nil, nil, true)
 
 	tools := srv.ListTools()
 	if _, ok := tools["good_tool"]; !ok {
@@ -359,7 +359,7 @@ func TestToolCollision_SecondPluginSkipped(t *testing.T) {
 
 	cfg := config.DefaultConfig()
 	index := NewToolIndex(mgr, false)
-	srv, _ := New("test", mgr, cfg, index, nil, nil, nil, nil)
+	srv, _ := New("test", mgr, cfg, index, nil, nil, nil, nil, true)
 
 	tools := srv.ListTools()
 
@@ -397,7 +397,7 @@ func TestToolCollision_ReloadPurgesStaleEntries(t *testing.T) {
 
 	cfg := config.DefaultConfig()
 	index := NewToolIndex(mgr, false)
-	srv, toolOwners := New("test", mgr, cfg, index, nil, nil, nil, nil)
+	srv, toolOwners := New("test", mgr, cfg, index, nil, nil, nil, nil, true)
 
 	tools := srv.ListTools()
 	if _, ok := tools["alpha_tool"]; !ok {

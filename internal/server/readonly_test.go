@@ -14,7 +14,7 @@ func TestReadOnly_OnlyReadToolsRegistered(t *testing.T) {
 	cfg.ReadOnly = true
 
 	index := NewToolIndex(mgr, true)
-	srv, _ := New("test", mgr, cfg, index, nil, nil, nil, nil)
+	srv, _ := New("test", mgr, cfg, index, nil, nil, nil, nil, true)
 	tools := srv.ListTools()
 
 	// Read tools should be registered
@@ -45,7 +45,7 @@ func TestReadOnly_PluginReloadNotRegistered(t *testing.T) {
 	cfg.ReadOnly = true
 
 	index := NewToolIndex(mgr, true)
-	srv, _ := New("test", mgr, cfg, index, nil, nil, nil, nil)
+	srv, _ := New("test", mgr, cfg, index, nil, nil, nil, nil, true)
 	tools := srv.ListTools()
 
 	if _, ok := tools["plugin_reload"]; ok {
@@ -114,7 +114,7 @@ func TestReadOnly_DisabledPluginWriteToolsExcluded(t *testing.T) {
 	cfg.ReadOnly = true
 
 	index := NewToolIndex(mgr, true)
-	srv, _ := New("test", mgr, cfg, index, nil, nil, nil, nil)
+	srv, _ := New("test", mgr, cfg, index, nil, nil, nil, nil, true)
 	tools := srv.ListTools()
 
 	// Disabled read tool should have [DISABLED] stub
@@ -176,7 +176,7 @@ func TestReadOnly_NormalModeUnaffected(t *testing.T) {
 	cfg := config.DefaultConfig()
 
 	index := NewToolIndex(mgr, false)
-	srv, _ := New("test", mgr, cfg, index, nil, nil, nil, nil)
+	srv, _ := New("test", mgr, cfg, index, nil, nil, nil, nil, true)
 	tools := srv.ListTools()
 
 	// All tools should be registered in normal mode

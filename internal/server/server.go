@@ -84,13 +84,22 @@ func (m *ToolOwnerMap) removePlugin(pluginName string) {
 }
 
 // New creates an MCP server with tools from all loaded plugins.
-func New(version string, manager *plugin.Manager, cfg *config.Config, index *ToolIndex, collector *stats.Collector, auditor *audit.Logger, rateLimiter *ratelimit.Registry, framer *OutputFramer) (*mcpserver.MCPServer, *ToolOwnerMap) {
+// When sandboxBuilt is false, the server's MCP instructions warn
+// the LLM that plugins run without OS-level isolation.
+func New(version string, manager *plugin.Manager, cfg *config.Config, index *ToolIndex, collector *stats.Collector, auditor *audit.Logger, rateLimiter *ratelimit.Registry, framer *OutputFramer, sandboxBuilt bool) (*mcpserver.MCPServer, *ToolOwnerMap) {
 	opts := []mcpserver.ServerOption{
 		mcpserver.WithToolCapabilities(true),
 		mcpserver.WithResourceCapabilities(true, true),
 	}
 	if cfg.Security.ElicitationEnabled() {
 		opts = append(opts, mcpserver.WithElicitation())
+	}
+	if !sandboxBuilt {
+		opts = append(opts, mcpserver.WithInstructions(
+			"WARNING: This server is running WITHOUT sandbox isolation. "+
+				"Plugin processes have unrestricted access to the filesystem and network. "+
+				"This configuration is unsafe for production use. "+
+				"Exercise caution with tools that write files or make network requests."))
 	}
 	srv := mcpserver.NewMCPServer("wtmcp", version, opts...)
 

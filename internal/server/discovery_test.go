@@ -1,8 +1,12 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
+	"strings"
 	"testing"
+
+	"github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/LeGambiArt/wtmcp/internal/config"
 	"github.com/LeGambiArt/wtmcp/internal/plugin"
@@ -23,7 +27,7 @@ func TestDiscoveryFullMode(t *testing.T) {
 	cfg.Tools.Discovery = "full"
 
 	index := NewToolIndex(mgr, false)
-	srv, _ := New("test", mgr, cfg, index, nil, nil, nil, nil)
+	srv, _ := New("test", mgr, cfg, index, nil, nil, nil, nil, true)
 	tools := srv.ListTools()
 
 	// All tools should be registered (no DeferLoading)
@@ -60,7 +64,7 @@ func TestDiscoveryProgressiveMode(t *testing.T) {
 	cfg.Tools.Discovery = "progressive"
 
 	index := NewToolIndex(mgr, false)
-	srv, _ := New("test", mgr, cfg, index, nil, nil, nil, nil)
+	srv, _ := New("test", mgr, cfg, index, nil, nil, nil, nil, true)
 	tools := srv.ListTools()
 
 	// All tools should still be registered
@@ -99,7 +103,7 @@ func TestDiscoveryToolSearchRegistered(t *testing.T) {
 
 	cfg := config.DefaultConfig()
 	index := NewToolIndex(mgr, false)
-	srv, _ := New("test", mgr, cfg, index, nil, nil, nil, nil)
+	srv, _ := New("test", mgr, cfg, index, nil, nil, nil, nil, true)
 
 	tools := srv.ListTools()
 	ts, ok := tools["tool_search"]
@@ -162,6 +166,29 @@ func TestDiscoveryToolSearchSafeResponse(t *testing.T) {
 	}
 }
 
+func TestNewSandboxInactiveInjectsWarning(t *testing.T) {
+	mgr := plugin.NewManagerForTest()
+	cfg := config.DefaultConfig()
+	index := NewToolIndex(mgr, false)
+
+	srv, _ := New("test", mgr, cfg, index, nil, nil, nil, nil, false)
+
+	resp := srv.HandleMessage(context.Background(), json.RawMessage(`{
+		"jsonrpc": "2.0", "id": 1, "method": "initialize",
+		"params": {"protocolVersion": "2025-03-26",
+		           "clientInfo": {"name": "test", "version": "1"},
+		           "capabilities": {}}
+	}`))
+	r, ok := resp.(mcp.JSONRPCResponse)
+	if !ok {
+		t.Fatalf("expected JSONRPCResponse, got %T", resp)
+	}
+	b, _ := json.Marshal(r.Result)
+	if !strings.Contains(string(b), "WITHOUT sandbox isolation") {
+		t.Errorf("initialize response should contain sandbox warning, got: %s", b)
+	}
+}
+
 func TestDiscoveryFullModeBackwardCompatible(t *testing.T) {
 	mgr := plugin.NewManagerForTest()
 	mgr.SetManifest("alpha", &plugin.Manifest{
@@ -177,7 +204,7 @@ func TestDiscoveryFullModeBackwardCompatible(t *testing.T) {
 	cfg.Tools.Discovery = "full"
 
 	index := NewToolIndex(mgr, false)
-	srv, _ := New("test", mgr, cfg, index, nil, nil, nil, nil)
+	srv, _ := New("test", mgr, cfg, index, nil, nil, nil, nil, true)
 	tools := srv.ListTools()
 
 	// Expected: alpha_one, alpha_two, tool_search, plugin_list, plugin_reload

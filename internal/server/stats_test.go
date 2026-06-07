@@ -24,7 +24,7 @@ func TestStats_SchemaRecording(t *testing.T) {
 
 	cfg := config.DefaultConfig()
 	index := NewToolIndex(mgr, false)
-	_, _ = New("test", mgr, cfg, index, collector, nil, nil, nil)
+	_, _ = New("test", mgr, cfg, index, collector, nil, nil, nil, true)
 
 	cost := collector.SchemaCost()
 	if cost.TotalTools != 2 {
@@ -63,7 +63,7 @@ func TestStats_SchemaRecordingMultiplePlugins(t *testing.T) {
 
 	cfg := config.DefaultConfig()
 	index := NewToolIndex(mgr, false)
-	_, _ = New("test", mgr, cfg, index, collector, nil, nil, nil)
+	_, _ = New("test", mgr, cfg, index, collector, nil, nil, nil, true)
 
 	cost := collector.SchemaCost()
 	if cost.TotalTools != 3 {
@@ -88,7 +88,7 @@ func TestStats_NilCollector(t *testing.T) {
 	index := NewToolIndex(mgr, false)
 
 	// Should not panic with nil collector.
-	srv, _ := New("test", mgr, cfg, index, nil, nil, nil, nil)
+	srv, _ := New("test", mgr, cfg, index, nil, nil, nil, nil, true)
 	tools := srv.ListTools()
 	if _, ok := tools["tool1"]; !ok {
 		t.Error("tool1 should be registered even with nil collector")
@@ -109,7 +109,7 @@ func TestStats_ToolStatsRegistered(t *testing.T) {
 
 	cfg := config.DefaultConfig()
 	index := NewToolIndex(mgr, false)
-	srv, _ := New("test", mgr, cfg, index, collector, nil, nil, nil)
+	srv, _ := New("test", mgr, cfg, index, collector, nil, nil, nil, true)
 
 	tools := srv.ListTools()
 	if _, ok := tools["tool_stats"]; !ok {
@@ -121,7 +121,7 @@ func TestStats_ToolStatsNotRegisteredWithNilCollector(t *testing.T) {
 	mgr := plugin.NewManagerForTest()
 	cfg := config.DefaultConfig()
 	index := NewToolIndex(mgr, false)
-	srv, _ := New("test", mgr, cfg, index, nil, nil, nil, nil)
+	srv, _ := New("test", mgr, cfg, index, nil, nil, nil, nil, true)
 
 	tools := srv.ListTools()
 	if _, ok := tools["tool_stats"]; ok {
