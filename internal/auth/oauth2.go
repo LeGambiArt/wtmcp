@@ -192,6 +192,12 @@ func loadToken(path string) (*oauth2.Token, error) {
 }
 
 func saveToken(path string, tok *oauth2.Token) error {
+	if _, err := os.Lstat(path); err == nil {
+		if err := config.RejectSymlink(path); err != nil {
+			return fmt.Errorf("token save: %w", err)
+		}
+	}
+
 	tj := tokenJSON{
 		AccessToken:  tok.AccessToken,
 		TokenType:    tok.TokenType,
@@ -251,7 +257,17 @@ type credentialsData struct {
 }
 
 func loadOAuth2Config(path string, scopes []string) (*oauth2.Config, error) {
-	data, err := os.ReadFile(path) //nolint:gosec // credential file path from config
+	if err := config.RejectSymlink(path); err != nil {
+		return nil, fmt.Errorf("credentials file: %w", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if err := config.CheckPermissions(path, info); err != nil {
+		return nil, fmt.Errorf("credentials file: %w", err)
+	}
+	data, err := os.ReadFile(path) //nolint:gosec // validated above
 	if err != nil {
 		return nil, err
 	}
