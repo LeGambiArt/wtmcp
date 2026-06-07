@@ -37,7 +37,7 @@ description: "Test plugin"
 execution: persistent
 handler: ./handler.sh
 tools:
-  - name: ` + name + `_test
+  - name: ` + strings.ReplaceAll(name, "-", "_") + `_test
     description: "A test tool"
     params: {}
 `
@@ -197,7 +197,7 @@ execution: persistent
 handler: ./handler.sh
 enabled: false
 tools:
-  - name: both-disabled_test
+  - name: both_disabled_test
     description: "A test tool"
     params: {}
 `
@@ -270,7 +270,7 @@ execution: persistent
 handler: ./handler.sh
 enabled: false
 tools:
-  - name: off-plugin_test
+  - name: off_plugin_test
     description: "A test tool"
     params: {}
 `
@@ -746,7 +746,7 @@ description: "Test plugin"
 execution: persistent
 handler: ./handler.sh
 tools:
-  - name: ` + name + `_test
+  - name: ` + strings.ReplaceAll(name, "-", "_") + `_test
     description: "A test tool"
     params: {}
 `
@@ -1026,7 +1026,7 @@ tools:
 
 func TestCheckDisabledProvider_NoAuth(t *testing.T) {
 	dir := t.TempDir()
-	createPluginInDir(t, dir, "no-auth", echoScript)
+	createPluginInDir(t, dir, "no_auth", echoScript)
 
 	cfg := config.DefaultConfig()
 	cfg.Providers.Disabled = []string{"kerberos/spnego"}
@@ -1039,7 +1039,7 @@ func TestCheckDisabledProvider_NoAuth(t *testing.T) {
 		t.Fatalf("Discover: %v", err)
 	}
 
-	manifest := m.manifests["no-auth"]
+	manifest := m.manifests["no_auth"]
 	reason := m.checkDisabledProvider(manifest)
 	if reason != "" {
 		t.Errorf("plugin without auth should not be affected, got: %s", reason)

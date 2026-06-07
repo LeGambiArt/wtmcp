@@ -26,6 +26,7 @@ const (
 // pluginNamePattern defines valid plugin names:
 // lowercase alphanumeric, hyphens, underscores, 2-64 chars.
 var pluginNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,62}[a-z0-9]$`)
+var toolNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,126}$`)
 
 // ValidatePluginName checks whether name matches the plugin name
 // pattern. Returns an error if the name is invalid.
@@ -365,6 +366,14 @@ const maxManifestSize = 256 * 1024 // 256KB
 
 // LoadManifest reads and validates a plugin.yaml file.
 func LoadManifest(path string) (*Manifest, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, fmt.Errorf("stat manifest: %w", err)
+	}
+	if info.Size() > maxManifestSize {
+		return nil, fmt.Errorf("manifest %s exceeds %d byte limit (%d bytes)", path, maxManifestSize, info.Size())
+	}
+
 	data, err := os.ReadFile(path) //nolint:gosec // plugin loading requires reading from variable paths
 	if err != nil {
 		return nil, fmt.Errorf("read manifest: %w", err)
@@ -516,6 +525,10 @@ func (m *Manifest) Validate() error {
 		if tool.Name == "" {
 			return fmt.Errorf("tool name is required")
 		}
+		if !toolNamePattern.MatchString(tool.Name) {
+			return fmt.Errorf("tool %s: name must match %s (ASCII lowercase, digits, underscores)",
+				tool.Name, toolNamePattern.String())
+		}
 		if len(tool.Description) > maxToolDescriptionLen {
 			return fmt.Errorf("tool %s: description exceeds %d bytes", tool.Name, maxToolDescriptionLen)
 		}
@@ -586,16 +599,14 @@ func (t *ToolDef) ParamsSchema() map[string]any {
 	return schema
 }
 
-// extractVariantOrder parses the YAML to get auth variant keys in
-// declaration order, since Go maps don't preserve insertion order.
-// validateDomain rejects domain entries that are IP addresses,
-// localhost, or private/link-local ranges.
 // validateDomain validates a domain using the shared domaincheck package.
 // This ensures consistent validation across init-time and per-request paths.
 func validateDomain(domain string) error {
 	return domaincheck.Validate(domain)
 }
 
+// extractVariantOrder parses the YAML to get auth variant keys in
+// declaration order, since Go maps don't preserve insertion order.
 func extractVariantOrder(data []byte) ([]string, error) {
 	var raw struct {
 		Services struct {

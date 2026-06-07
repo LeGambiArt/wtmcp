@@ -187,6 +187,9 @@ func registerPluginTools(deps *serverDeps, manifest *plugin.Manifest) {
 		}
 
 		tool, schemaJSON := buildMCPTool(toolDef, progressive)
+		if manifest.IsUserPlugin {
+			tool.Description = "[user plugin] " + tool.Description
+		}
 		format := outputFormat
 		fallback := deps.cfg.Output.ToonFallback
 		isRead := toolDef.IsReadOnly()
