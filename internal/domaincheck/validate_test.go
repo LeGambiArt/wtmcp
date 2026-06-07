@@ -1,8 +1,10 @@
 package domaincheck
 
 import (
+	"net"
 	"strings"
 	"testing"
+	"unicode"
 )
 
 func TestNormalize(t *testing.T) {
@@ -190,4 +192,110 @@ func TestIsSubdomain(t *testing.T) {
 			}
 		})
 	}
+}
+
+// ─── Fuzz Tests ──────────────────────────────────────────────────
+
+func FuzzNormalize(f *testing.F) {
+	f.Add("example.com")
+	f.Add("Example.COM")
+	f.Add("example.com.")
+	f.Add("münchen.de")
+	f.Add("日本.jp")
+	f.Add("localhost")
+	f.Add("127.0.0.1")
+	f.Add("::1")
+	f.Add("")
+	f.Add("   ")
+	f.Add("*.example.com")
+	f.Add(strings.Repeat("a", 1000))
+
+	f.Fuzz(func(t *testing.T, domain string) {
+		result, err := Normalize(domain)
+		if err != nil {
+			return
+		}
+		if strings.TrimSpace(domain) != "" && result != strings.ToLower(result) {
+			t.Errorf("Normalize(%q) = %q is not lowercase", domain, result)
+		}
+		if strings.HasSuffix(result, ".") {
+			t.Errorf("Normalize(%q) = %q has trailing dot", domain, result)
+		}
+		for _, r := range result {
+			if r > unicode.MaxASCII {
+				t.Errorf("Normalize(%q) = %q contains non-ASCII rune %U", domain, result, r)
+			}
+		}
+	})
+}
+
+func FuzzValidate(f *testing.F) {
+	f.Add("example.com")
+	f.Add("sub.example.com")
+	f.Add("Example.COM")
+	f.Add("münchen.de")
+	f.Add("")
+	f.Add("localhost")
+	f.Add("LOCALHOST")
+	f.Add("*.example.com")
+	f.Add("*")
+	f.Add("127.0.0.1")
+	f.Add("192.168.1.1")
+	f.Add("10.0.0.1")
+	f.Add("::1")
+	f.Add("[::1]")
+	f.Add("169.254.169.254")
+	f.Add("2001:db8::1")
+
+	f.Fuzz(func(t *testing.T, domain string) {
+		err := Validate(domain)
+		if err != nil {
+			return
+		}
+		normalized, nerr := Normalize(domain)
+		if nerr != nil {
+			t.Fatalf("Validate(%q) passed but Normalize failed: %v", domain, nerr)
+		}
+		if normalized == "" {
+			t.Fatalf("Validate(%q) passed but normalizes to empty", domain)
+		}
+		if normalized == "localhost" {
+			t.Fatalf("Validate(%q) passed but normalizes to localhost", domain)
+		}
+		if strings.HasPrefix(normalized, "*") {
+			t.Fatalf("Validate(%q) passed but normalizes to wildcard %q", domain, normalized)
+		}
+		if ip := net.ParseIP(normalized); ip != nil {
+			t.Fatalf("Validate(%q) passed but normalizes to IP %v", domain, ip)
+		}
+	})
+}
+
+func FuzzIsSubdomain(f *testing.F) {
+	f.Add("api.jenkins.com", "jenkins.com")
+	f.Add("jenkins.com", "jenkins.com")
+	f.Add("eviljenkins.com", "jenkins.com")
+	f.Add("jenkins.com.evil.com", "jenkins.com")
+	f.Add("evil.com", "jenkins.com")
+	f.Add("api.jenkins.com.", "jenkins.com.")
+	f.Add("API.JENKINS.COM", "jenkins.com")
+
+	f.Fuzz(func(t *testing.T, domain, base string) {
+		result := IsSubdomain(domain, []string{base})
+		if !result {
+			return
+		}
+		nd, err := Normalize(domain)
+		if err != nil {
+			t.Fatalf("IsSubdomain(%q, [%q]) = true but Normalize(domain) failed", domain, base)
+		}
+		nb, err := Normalize(base)
+		if err != nil {
+			t.Fatalf("IsSubdomain(%q, [%q]) = true but Normalize(base) failed", domain, base)
+		}
+		if nd != nb && !strings.HasSuffix(nd, "."+nb) {
+			t.Fatalf("IsSubdomain(%q, [%q]) = true but %q is not %q and does not end with .%q",
+				domain, base, nd, nb, nb)
+		}
+	})
 }

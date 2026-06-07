@@ -24,7 +24,7 @@ import (
 func Normalize(domain string) (string, error) {
 	domain = strings.TrimSpace(domain)
 	domain = strings.ToLower(domain)
-	domain = strings.TrimSuffix(domain, ".")
+	domain = strings.TrimRight(domain, ".")
 
 	// Convert Unicode domains to ASCII using IDNA (Internationalized
 	// Domain Names in Applications). This handles punycode (xn--) and
