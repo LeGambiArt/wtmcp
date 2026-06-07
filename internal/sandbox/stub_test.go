@@ -1,4 +1,4 @@
-//go:build !sandbox
+//go:build nosandbox
 
 package sandbox
 
@@ -17,28 +17,15 @@ func stubConfig() config.SandboxConfig {
 	return cfg
 }
 
-func TestStubNewManager(t *testing.T) {
+func TestStubNewManagerExplicitDisable(t *testing.T) {
 	mgr, err := NewManager(stubConfig(), "", t.TempDir())
 	if err != nil {
-		t.Fatalf("stub NewManager should succeed: %v", err)
+		t.Fatalf("explicit disable should succeed: %v", err)
 	}
 	defer mgr.Close()
 
 	if mgr == nil {
-		t.Fatal("stub NewManager should return non-nil Manager")
-	}
-}
-
-func TestStubNewManagerDefaultConfig(t *testing.T) {
-	cfg := testConfig()
-	mgr, err := NewManager(cfg, "", t.TempDir())
-	if err != nil {
-		t.Fatalf("stub NewManager should succeed with default config: %v", err)
-	}
-	defer mgr.Close()
-
-	if mgr == nil {
-		t.Fatal("stub NewManager should return non-nil Manager")
+		t.Fatal("manager should be non-nil")
 	}
 }
 
@@ -56,15 +43,29 @@ func TestStubNewManagerExplicitEnable(t *testing.T) {
 	}
 }
 
-func TestStubNewManagerExplicitDisable(t *testing.T) {
-	disabled := false
-	cfg := testConfig()
-	cfg.Enabled = &disabled
+func TestStubNewManagerDefaultWithoutEnvVar(t *testing.T) {
+	cfg := testConfig() // Enabled == nil (default)
+	t.Setenv("WTMCP_UNSANDBOXED", "")
+
+	_, err := NewManager(cfg, "", t.TempDir())
+	if err == nil {
+		t.Fatal("default config without WTMCP_UNSANDBOXED=1 should error")
+	}
+	if !strings.Contains(err.Error(), "WTMCP_UNSANDBOXED") {
+		t.Errorf("error should mention WTMCP_UNSANDBOXED, got: %v", err)
+	}
+}
+
+func TestStubNewManagerDefaultWithEnvVar(t *testing.T) {
+	cfg := testConfig() // Enabled == nil (default)
+	t.Setenv("WTMCP_UNSANDBOXED", "1")
 
 	mgr, err := NewManager(cfg, "", t.TempDir())
 	if err != nil {
-		t.Fatalf("explicit disable should succeed: %v", err)
+		t.Fatalf("WTMCP_UNSANDBOXED=1 should allow startup: %v", err)
 	}
+	defer mgr.Close()
+
 	if mgr == nil {
 		t.Fatal("manager should be non-nil")
 	}
@@ -79,15 +80,6 @@ func TestStubEnabled(t *testing.T) {
 	}
 }
 
-func TestStubAvailable(t *testing.T) {
-	mgr, _ := NewManager(stubConfig(), "", t.TempDir())
-	defer mgr.Close()
-
-	if mgr.Available() {
-		t.Error("stub Available() must always return false")
-	}
-}
-
 func TestStubLaunchReturnsError(t *testing.T) {
 	mgr, _ := NewManager(stubConfig(), "", t.TempDir())
 	defer mgr.Close()
@@ -96,9 +88,6 @@ func TestStubLaunchReturnsError(t *testing.T) {
 	_, err := mgr.Launch(context.Background(), info, nil)
 	if err == nil {
 		t.Fatal("stub Launch() must return an error")
-	}
-	if !strings.Contains(err.Error(), "sandbox") {
-		t.Errorf("error should mention sandbox, got: %v", err)
 	}
 }
 

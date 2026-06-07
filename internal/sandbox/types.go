@@ -32,7 +32,7 @@ type ResourceUsage struct {
 }
 
 // base holds shared fields and methods for the sandbox Manager,
-// embedded by both the real (arapuca) and stub implementations.
+// embedded by both the arapuca and nosandbox implementations.
 type base struct {
 	cfg     config.SandboxConfig
 	credDir string

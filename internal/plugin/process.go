@@ -97,7 +97,9 @@ func (p *Process) Start(ctx context.Context) error {
 		}
 	} else {
 		if p.sbMgr != nil {
-			log.Printf("[%s] WARNING: sandbox disabled — process is not isolated", p.manifest.Name)
+			warnUnsandboxedOnce.Do(func() {
+				log.Println("WARNING: sandbox not available (binary built without libarapuca) — plugin processes are not isolated")
+			})
 		}
 		if err := p.startUnsandboxed(&stdin, &stdout, &stderr); err != nil {
 			return err

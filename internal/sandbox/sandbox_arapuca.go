@@ -1,4 +1,4 @@
-//go:build sandbox
+//go:build !nosandbox
 
 // Package sandbox wraps go-arapuca to provide OS-level isolation
 // for plugin handler processes.

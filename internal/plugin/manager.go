@@ -448,7 +448,7 @@ func (m *Manager) registerPluginDirs(name string, handle *Handle) {
 		resolvedOutput = handle.outputDir
 	}
 	var resolvedTmp string
-	if m.sbMgr != nil {
+	if m.sbMgr != nil && m.sbMgr.Enabled() {
 		resolvedTmp, err = filepath.EvalSymlinks(m.sbMgr.TmpDir(name))
 		if err != nil {
 			resolvedTmp = m.sbMgr.TmpDir(name)

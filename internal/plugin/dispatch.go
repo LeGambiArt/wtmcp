@@ -26,6 +26,8 @@ const (
 	restartWindow        = time.Minute
 )
 
+var warnUnsandboxedOnce sync.Once
+
 // Handle wraps a plugin process and serializes tool calls based on
 // the plugin's concurrency setting.
 type Handle struct {
@@ -243,7 +245,9 @@ func (h *Handle) callOneshot(ctx context.Context, toolName string, params json.R
 		}
 	} else {
 		if h.sbMgr != nil {
-			log.Printf("[%s] WARNING: sandbox disabled — oneshot process is not isolated", h.manifest.Name)
+			warnUnsandboxedOnce.Do(func() {
+				log.Println("WARNING: sandbox not available (binary built without libarapuca) — plugin processes are not isolated")
+			})
 		}
 		if err := validateHandlerAtLaunch(h.manifest); err != nil {
 			return nil, err

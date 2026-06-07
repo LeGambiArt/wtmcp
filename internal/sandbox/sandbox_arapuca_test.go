@@ -1,4 +1,4 @@
-//go:build sandbox
+//go:build !nosandbox
 
 package sandbox
 
