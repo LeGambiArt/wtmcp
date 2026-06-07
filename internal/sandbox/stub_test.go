@@ -6,58 +6,23 @@ import (
 	"context"
 	"strings"
 	"testing"
-
-	"github.com/LeGambiArt/wtmcp/internal/config"
 )
 
-func stubConfig() config.SandboxConfig {
-	disabled := false
+func TestStubNewManagerWithoutEnvVar(t *testing.T) {
 	cfg := testConfig()
-	cfg.Enabled = &disabled
-	return cfg
-}
-
-func TestStubNewManagerExplicitDisable(t *testing.T) {
-	mgr, err := NewManager(stubConfig(), "", t.TempDir())
-	if err != nil {
-		t.Fatalf("explicit disable should succeed: %v", err)
-	}
-	defer mgr.Close()
-
-	if mgr == nil {
-		t.Fatal("manager should be non-nil")
-	}
-}
-
-func TestStubNewManagerExplicitEnable(t *testing.T) {
-	enabled := true
-	cfg := testConfig()
-	cfg.Enabled = &enabled
-
-	_, err := NewManager(cfg, "", t.TempDir())
-	if err == nil {
-		t.Fatal("expected error when sandbox explicitly enabled but not compiled in")
-	}
-	if !strings.Contains(err.Error(), "sandbox") {
-		t.Errorf("error should mention sandbox, got: %v", err)
-	}
-}
-
-func TestStubNewManagerDefaultWithoutEnvVar(t *testing.T) {
-	cfg := testConfig() // Enabled == nil (default)
 	t.Setenv("WTMCP_UNSANDBOXED", "")
 
 	_, err := NewManager(cfg, "", t.TempDir())
 	if err == nil {
-		t.Fatal("default config without WTMCP_UNSANDBOXED=1 should error")
+		t.Fatal("NewManager without WTMCP_UNSANDBOXED=1 should error")
 	}
 	if !strings.Contains(err.Error(), "WTMCP_UNSANDBOXED") {
 		t.Errorf("error should mention WTMCP_UNSANDBOXED, got: %v", err)
 	}
 }
 
-func TestStubNewManagerDefaultWithEnvVar(t *testing.T) {
-	cfg := testConfig() // Enabled == nil (default)
+func TestStubNewManagerWithEnvVar(t *testing.T) {
+	cfg := testConfig()
 	t.Setenv("WTMCP_UNSANDBOXED", "1")
 
 	mgr, err := NewManager(cfg, "", t.TempDir())
@@ -72,7 +37,8 @@ func TestStubNewManagerDefaultWithEnvVar(t *testing.T) {
 }
 
 func TestStubEnabled(t *testing.T) {
-	mgr, _ := NewManager(stubConfig(), "", t.TempDir())
+	t.Setenv("WTMCP_UNSANDBOXED", "1")
+	mgr, _ := NewManager(testConfig(), "", t.TempDir())
 	defer mgr.Close()
 
 	if mgr.Enabled() {
@@ -81,7 +47,8 @@ func TestStubEnabled(t *testing.T) {
 }
 
 func TestStubLaunchReturnsError(t *testing.T) {
-	mgr, _ := NewManager(stubConfig(), "", t.TempDir())
+	t.Setenv("WTMCP_UNSANDBOXED", "1")
+	mgr, _ := NewManager(testConfig(), "", t.TempDir())
 	defer mgr.Close()
 
 	info := PluginInfo{Name: "test", Dir: "/tmp", Handler: "./handler"}
@@ -92,7 +59,8 @@ func TestStubLaunchReturnsError(t *testing.T) {
 }
 
 func TestStubCloseIdempotent(t *testing.T) {
-	mgr, _ := NewManager(stubConfig(), "", t.TempDir())
+	t.Setenv("WTMCP_UNSANDBOXED", "1")
+	mgr, _ := NewManager(testConfig(), "", t.TempDir())
 	mgr.Close()
 	mgr.Close()
 }

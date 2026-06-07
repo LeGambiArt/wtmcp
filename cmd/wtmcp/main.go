@@ -266,15 +266,10 @@ func run() error {
 	}
 
 	index := server.NewToolIndex(mgr, cfg.ReadOnly)
-	sandboxActive := sandbox.Built() && sbMgr.Enabled()
-	if !sandboxActive {
-		if !sandbox.Built() {
-			log.Println("WARNING: binary built without sandbox support — plugins run without OS-level isolation. This mode is intended for development and debugging only.")
-		} else {
-			log.Println("WARNING: sandbox disabled via config — plugins run without OS-level isolation. This mode is intended for development and debugging only.")
-		}
+	if !sandbox.Built() {
+		log.Println("WARNING: binary built without sandbox support — plugins run without OS-level isolation. This mode is intended for development and debugging only.")
 	}
-	srv, toolOwners := server.New(Version, mgr, cfg, index, collector, auditor, pluginRL, framer, sandboxActive)
+	srv, toolOwners := server.New(Version, mgr, cfg, index, collector, auditor, pluginRL, framer, sandbox.Built())
 
 	// Phase 2 (background): start plugin processes. The MCP server
 	// accepts requests immediately; tools for still-loading plugins

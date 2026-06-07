@@ -27,9 +27,7 @@ type Manager struct {
 	sb *arapuca.Sandbox
 }
 
-// NewManager creates a sandbox manager. credDir is the base
-// credentials directory; dataDir is the base persistent data
-// directory (e.g., ~/.local/share/wtmcp/data).
+// NewManager creates a sandbox manager.
 func NewManager(cfg config.SandboxConfig, credDir, dataDir string) (*Manager, error) {
 	sb, err := arapuca.New()
 	if err != nil {
@@ -48,13 +46,8 @@ func (m *Manager) Close() {
 	}
 }
 
-// Enabled returns whether sandboxing is active per configuration.
-func (m *Manager) Enabled() bool {
-	return m.cfg.SandboxEnabled()
-}
-
-// Available returns whether the binary was built with sandbox support.
-func (m *Manager) Available() bool { return true }
+// Enabled returns whether sandboxing is active.
+func (m *Manager) Enabled() bool { return true }
 
 // buildProfile constructs an arapuca Profile from plugin metadata
 // and server configuration.

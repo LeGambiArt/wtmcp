@@ -86,25 +86,6 @@ func TestCleanupTmpDir(t *testing.T) {
 	}
 }
 
-func TestSandboxConfigDefaults(t *testing.T) {
-	cfg := config.SandboxConfig{}
-	if !cfg.SandboxEnabled() {
-		t.Error("sandbox should be enabled by default (nil Enabled)")
-	}
-
-	enabled := true
-	cfg.Enabled = &enabled
-	if !cfg.SandboxEnabled() {
-		t.Error("sandbox should be enabled when Enabled=true")
-	}
-
-	disabled := false
-	cfg.Enabled = &disabled
-	if cfg.SandboxEnabled() {
-		t.Error("sandbox should be disabled when Enabled=false")
-	}
-}
-
 func TestIsPython(t *testing.T) {
 	if !isPython("./handler.py") {
 		t.Error("handler.py should be Python")

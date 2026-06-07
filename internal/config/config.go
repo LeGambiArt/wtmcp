@@ -180,18 +180,11 @@ type AuditConfig struct {
 }
 
 // SandboxConfig controls plugin process sandboxing via arapuca.
+// Sandbox is always active when the binary is built with libarapuca
+// (the default). Resource limits can be tuned globally or per-plugin.
 type SandboxConfig struct {
-	Enabled  *bool                            `yaml:"enabled"`
 	Defaults SandboxResourceLimits            `yaml:"defaults"`
 	Plugins  map[string]SandboxResourceLimits `yaml:"plugins"`
-}
-
-// SandboxEnabled returns whether sandboxing is enabled (default: true).
-func (s SandboxConfig) SandboxEnabled() bool {
-	if s.Enabled == nil {
-		return true
-	}
-	return *s.Enabled
 }
 
 // SandboxResourceLimits defines resource caps for sandboxed plugins.
@@ -283,6 +276,17 @@ func Load(configPath, workdir string) (*Config, error) {
 
 	if err := yaml.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("parse config %s: %w", configPath, err)
+	}
+
+	var raw map[string]any
+	if err := yaml.Unmarshal(data, &raw); err == nil {
+		if sb, ok := raw["sandbox"].(map[string]any); ok {
+			if _, hasEnabled := sb["enabled"]; hasEnabled {
+				log.Printf("WARNING: sandbox.enabled was removed — sandbox is now always active "+
+					"when built with libarapuca; to build without sandbox use -tags nosandbox. "+
+					"Remove the field from %s to silence this warning.", configPath)
+			}
+		}
 	}
 
 	// Backfill Google API rate-limit defaults for domains the user

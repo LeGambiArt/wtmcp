@@ -23,31 +23,19 @@ type Manager struct {
 	base
 }
 
-// NewManager creates a degraded-mode sandbox manager. The behavior
-// depends on the config and the WTMCP_UNSANDBOXED env var:
-//
-//   - enabled: false  → allow (sandbox not expected)
-//   - enabled: true   → error (explicit enable can't be satisfied)
-//   - enabled: nil    → error unless WTMCP_UNSANDBOXED=1
+// NewManager creates a degraded-mode sandbox manager. Requires
+// WTMCP_UNSANDBOXED=1 in the environment to start, and loudly
+// warns about the lack of isolation.
 func NewManager(cfg config.SandboxConfig, credDir, dataDir string) (*Manager, error) {
-	if cfg.Enabled != nil && *cfg.Enabled {
+	if os.Getenv("WTMCP_UNSANDBOXED") != "1" {
 		return nil, fmt.Errorf(
-			"sandbox explicitly enabled in config but binary built without libarapuca; " +
-				"rebuild with libarapuca or set sandbox.enabled: false in config")
+			"binary built without sandbox support (libarapuca not linked)\n" +
+				"To continue without sandbox isolation:\n" +
+				"  1. Set WTMCP_UNSANDBOXED=1 in your environment, or\n" +
+				"  2. Rebuild with libarapuca installed (recommended)")
 	}
-
-	if cfg.Enabled == nil {
-		if os.Getenv("WTMCP_UNSANDBOXED") != "1" {
-			return nil, fmt.Errorf(
-				"binary built without sandbox support (libarapuca not linked)\n" +
-					"To continue without sandbox isolation:\n" +
-					"  1. Set WTMCP_UNSANDBOXED=1 in your environment, or\n" +
-					"  2. Set sandbox.enabled: false in your config, or\n" +
-					"  3. Rebuild with libarapuca installed (recommended)")
-		}
-		fmt.Fprintln(os.Stderr,
-			"WARNING: UNSANDBOXED MODE — binary built without libarapuca, plugins run without OS-level isolation. This mode is intended for development and debugging only.")
-	}
+	fmt.Fprintln(os.Stderr,
+		"WARNING: UNSANDBOXED MODE — binary built without libarapuca, plugins run without OS-level isolation. This mode is intended for development and debugging only.")
 
 	return &Manager{base: base{cfg: cfg, credDir: credDir, dataDir: dataDir}}, nil
 }
@@ -57,9 +45,6 @@ func (m *Manager) Close() {}
 
 // Enabled always returns false in builds without libarapuca.
 func (m *Manager) Enabled() bool { return false }
-
-// Available returns whether the binary was built with sandbox support.
-func (m *Manager) Available() bool { return false }
 
 // Launch is not supported without libarapuca.
 func (m *Manager) Launch(_ context.Context, _ PluginInfo, _ map[string]string) (*Process, error) {
