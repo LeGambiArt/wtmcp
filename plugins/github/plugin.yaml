@@ -12,6 +12,15 @@ context_files:
   - context.md
 
 env:
+  # Minimum scopes:
+  #   Read-only tools (get_issue, get_pr, search, my_work, etc.):
+  #     Classic PAT: repo:read (or public_repo for public repos only)
+  #     Fine-grained: Contents (read), Issues (read), Pull requests (read)
+  #   Write tools (add_comment, create_review, add_pr_comment):
+  #     Classic PAT: repo
+  #     Fine-grained: Issues (write), Pull requests (write)
+  #   Notifications (my_notifications):
+  #     Classic PAT: notifications (not supported by fine-grained PATs)
   - GITHUB_TOKEN
   - GITHUB_URL
 
