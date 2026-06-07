@@ -531,3 +531,68 @@ func TestScrubErrorText(t *testing.T) {
 		}
 	})
 }
+
+// ─── Fuzz Tests ──────────────────────────────────────────────────
+
+func FuzzScrubString(f *testing.F) {
+	s := NewScrubber(DefaultScrubFields)
+
+	f.Add("normal text without secrets")
+	f.Add("eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.payload.sig")
+	f.Add("auth failed for token eyJhbGciOiJIUzI1NiJ9.data.sig")
+	f.Add("ghp_ABCDEFghijklmnopqrstuvwxyz1234567890") //nolint:gosec
+	f.Add("glpat-xxxxxxxxxxxxxxxxxxxx")
+	f.Add("AKIAIOSFODNN7EXAMPLE") //nolint:gosec
+	f.Add("sk-abcdefghijklmnopqrstuvwxyz123456")
+	f.Add("abcdefghijklmnopqrstuvwxyz0123456789ABCDEF")
+	f.Add("https://api.example.com?token=secret123&page=5")
+	f.Add("https://api.example.com?api_key=secret123")
+	f.Add("")
+	f.Add(strings.Repeat("A", 10000))
+
+	f.Fuzz(func(t *testing.T, input string) {
+		result := s.ScrubString(input)
+		_ = result
+
+		// Invariant: JWT prefixes longer than 32 chars must be redacted
+		// (the scrubber's threshold is len > 32).
+		for _, word := range strings.Fields(result) {
+			if strings.HasPrefix(word, "eyJ") && len(word) > 32 {
+				t.Fatalf("ScrubString left JWT-like token (len %d) in output: %s",
+					len(word), truncateStr(word, 50))
+			}
+		}
+	})
+}
+
+func FuzzScrubJSON(f *testing.F) {
+	s := NewScrubber(DefaultScrubFields)
+
+	f.Add([]byte(`{"password":"secret123"}`))
+	f.Add([]byte(`{"token":"abc","data":"normal"}`))
+	f.Add([]byte(`{"nested":{"secret":"hidden"}}`))
+	f.Add([]byte(`[{"api_key":"key1"},{"api_key":"key2"}]`))
+	f.Add([]byte(`{}`))
+	f.Add([]byte(`"just a string"`))
+	f.Add([]byte(`null`))
+	f.Add([]byte(`not json at all`))
+	f.Add([]byte(``))
+	f.Add([]byte(strings.Repeat(`{"a":`, 100) + `"deep"` + strings.Repeat("}", 100)))
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		result := s.ScrubJSON(data)
+
+		// Invariant: if input was valid JSON, output must be valid JSON
+		if json.Valid(data) && len(result) > 0 && !json.Valid(result) {
+			t.Fatalf("ScrubJSON produced invalid JSON from valid input.\nInput:  %s\nOutput: %s",
+				truncateStr(string(data), 200), truncateStr(string(result), 200))
+		}
+	})
+}
+
+func truncateStr(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
+}
