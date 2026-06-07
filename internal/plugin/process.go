@@ -265,6 +265,9 @@ func (p *Process) wait() error {
 			p.cancel()
 		}
 		_, err := p.sbProc.Wait()
+		p.sbProc.Stdin().Close()  //nolint:errcheck,gosec // best effort
+		p.sbProc.Stdout().Close() //nolint:errcheck,gosec // best effort
+		p.sbProc.Stderr().Close() //nolint:errcheck,gosec // best effort
 		p.logResourceStats()
 		p.sbProc.Cleanup()
 		p.sbMgr.CleanupTmpDir(p.manifest.Name)
@@ -310,8 +313,13 @@ func (p *Process) kill() {
 		if p.cancel != nil {
 			p.cancel()
 		}
-		p.sbProc.Wait() //nolint:errcheck,gosec // reap process
+		p.sbProc.Wait()           //nolint:errcheck,gosec // reap process
+		p.sbProc.Stdin().Close()  //nolint:errcheck,gosec // best effort
+		p.sbProc.Stdout().Close() //nolint:errcheck,gosec // best effort
+		p.sbProc.Stderr().Close() //nolint:errcheck,gosec // best effort
+		p.logResourceStats()
 		p.sbProc.Cleanup()
+		p.sbMgr.CleanupTmpDir(p.manifest.Name)
 		return
 	}
 	if p.cmd != nil && p.cmd.Process != nil {

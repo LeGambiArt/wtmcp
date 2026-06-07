@@ -1,4 +1,4 @@
-.PHONY: all build build-sandbox plugins test test-sandbox lint fmt vet tidy clean help
+.PHONY: all build plugins test test-nosandbox lint fmt vet tidy clean help govulncheck
 
 # Go toolchain version — derived from go.mod to stay in sync with dependency bumps
 GO_TOOLCHAIN_VERSION := $(shell sed -n 's/^go //p' go.mod)
@@ -7,7 +7,17 @@ VERSION ?= $(shell cat VERSION 2>/dev/null || echo "dev")
 BUILD_DATE := $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
 LDFLAGS := -s -w -X main.Version=$(VERSION) -X main.BuildDate=$(BUILD_DATE)
 GOFLAGS ?= -trimpath -buildmode=pie
-export PKG_CONFIG_PATH := /usr/local/lib/pkgconfig:$(PKG_CONFIG_PATH)
+
+# Arapuca: prefer system package (pkg-config), fall back to submodule build.
+ARAPUCA_SYSTEM := $(strip $(shell \
+    PKG_CONFIG_PATH="/usr/local/lib/pkgconfig:$$PKG_CONFIG_PATH" \
+    pkg-config --atleast-version=0.2.0 arapuca 2>/dev/null && echo yes))
+ARAPUCA_BUILD_DIR := $(CURDIR)/build/arapuca
+ifneq ($(ARAPUCA_SYSTEM),yes)
+  export PKG_CONFIG_PATH := $(ARAPUCA_BUILD_DIR)/lib/pkgconfig:$(PKG_CONFIG_PATH)
+else
+  export PKG_CONFIG_PATH := /usr/local/lib/pkgconfig:$(PKG_CONFIG_PATH)
+endif
 
 # Default target
 all: build
@@ -16,19 +26,14 @@ all: build
 build: wtmcp wtmcpctl plugins
 
 # Build wtmcp binary
-wtmcp: $(shell find cmd/wtmcp -name '*.go') $(shell find internal -name '*.go')
+wtmcp: arapuca $(shell find cmd/wtmcp -name '*.go') $(shell find internal -name '*.go')
 	@echo "Building wtmcp..."
 	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o wtmcp ./cmd/wtmcp
 
 # Build wtmcpctl binary
-wtmcpctl: $(shell find cmd/wtmcpctl -name '*.go') $(shell find internal -name '*.go')
+wtmcpctl: arapuca $(shell find cmd/wtmcpctl -name '*.go') $(shell find internal -name '*.go')
 	@echo "Building wtmcpctl..."
 	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o wtmcpctl ./cmd/wtmcpctl
-
-# Build with sandbox support (requires libarapuca via pkg-config)
-build-sandbox: wtmcpctl plugins
-	@echo "Building wtmcp (sandbox)..."
-	go build $(GOFLAGS) -tags sandbox -ldflags "$(LDFLAGS)" -o wtmcp ./cmd/wtmcp
 
 # Build all plugins that have a Makefile
 plugins:
@@ -39,24 +44,42 @@ plugins:
 		fi; \
 	done
 
+# Build libarapuca from submodule when system package is not available.
+# The submodule path uses a stamp file so Make skips rebuilds when
+# the library is already installed. The system-package path is a
+# .PHONY no-op (just an echo).
+ARAPUCA_STAMP := $(ARAPUCA_BUILD_DIR)/.stamp
+
+ifeq ($(ARAPUCA_SYSTEM),yes)
+.PHONY: arapuca
+arapuca:
+	@echo "Using system libarapuca (pkg-config)"
+else
+arapuca: $(ARAPUCA_STAMP)
+
+$(ARAPUCA_STAMP): third_party/arapuca/Cargo.toml $(wildcard third_party/arapuca/src/*.rs)
+	@command -v cargo >/dev/null 2>&1 || \
+	    { echo "ERROR: Rust toolchain required to build libarapuca. Install from https://rustup.rs/"; exit 1; }
+	@test -f third_party/arapuca/Cargo.toml || \
+	    git submodule update --init third_party/arapuca
+	$(MAKE) -C third_party/arapuca package
+	$(MAKE) -C third_party/arapuca install PREFIX=$(ARAPUCA_BUILD_DIR)
+	@touch $@
+endif
+
 # Run tests
-test:
+test: arapuca
 	@echo "Running tests..."
 	go test -v -race ./...
 
-# Run tests with sandbox tag (requires libarapuca)
-test-sandbox:
-	@echo "Running tests (sandbox)..."
-	go test -v -race -tags sandbox ./...
-
 # Run tests with coverage
-test-cover:
+test-cover: arapuca
 	@echo "Running tests with coverage..."
 	go test -v -race -coverprofile=coverage.out ./...
 	go tool cover -func=coverage.out
 
 # Run linter
-lint:
+lint: arapuca
 	@echo "Running linter..."
 	golangci-lint run ./...
 
@@ -66,7 +89,7 @@ fmt:
 	gofmt -l -w .
 
 # Run go vet
-vet:
+vet: arapuca
 	@echo "Running go vet..."
 	go vet ./...
 
@@ -87,6 +110,7 @@ pre-commit:
 clean:
 	@echo "Cleaning..."
 	rm -f wtmcp wtmcpctl coverage.out
+	rm -rf build/
 	rm -f plugins/*/handler
 	@for dir in plugins/*/; do \
 		if [ -f "$${dir}Makefile" ]; then \
@@ -101,12 +125,11 @@ help:
 	@echo "Available targets:"
 	@echo "  all            - Build everything (default)"
 	@echo "  build          - Build all binaries and plugins"
-	@echo "  build-sandbox  - Build with sandbox support (requires libarapuca)"
+	@echo "  arapuca        - Build libarapuca (auto-detected: system or submodule)"
 	@echo "  wtmcp          - Build wtmcp binary"
 	@echo "  wtmcpctl       - Build wtmcpctl binary"
 	@echo "  plugins        - Build all plugins with Makefiles"
 	@echo "  test           - Run tests"
-	@echo "  test-sandbox   - Run tests with sandbox tag (requires libarapuca)"
 	@echo "  test-cover     - Run tests with coverage report"
 	@echo "  lint           - Run golangci-lint"
 	@echo "  fmt            - Format code with gofmt"
