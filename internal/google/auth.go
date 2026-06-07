@@ -5,11 +5,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"time"
 
+	"github.com/LeGambiArt/wtmcp/internal/config"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 )
@@ -48,8 +52,36 @@ func NewHTTPClientFromDir(ctx context.Context, credDir, tokenFile string, scopes
 	clientCredsPath := filepath.Join(credDir, "client-credentials.json")
 	tokenPath := filepath.Join(credDir, tokenFile)
 
-	// Load client credentials
-	clientData, err := os.ReadFile(clientCredsPath) //nolint:gosec // known credential path
+	// Verify tokenPath stays within credDir after symlink resolution.
+	resolvedDir := filepath.Clean(credDir)
+	if rd, err := filepath.EvalSymlinks(resolvedDir); err == nil {
+		resolvedDir = rd
+	}
+	resolvedToken := filepath.Clean(tokenPath)
+	if rt, err := filepath.EvalSymlinks(resolvedToken); err == nil {
+		resolvedToken = rt
+	} else if dir := filepath.Dir(resolvedToken); dir != resolvedToken {
+		if rd, err := filepath.EvalSymlinks(dir); err == nil {
+			resolvedToken = filepath.Join(rd, filepath.Base(resolvedToken))
+		}
+	}
+	if !strings.HasPrefix(resolvedToken, resolvedDir+string(filepath.Separator)) {
+		return nil, fmt.Errorf("token path escapes credentials directory: %s", tokenFile)
+	}
+	tokenPath = resolvedToken
+
+	// Validate client credentials file before reading.
+	if err := config.RejectSymlink(clientCredsPath); err != nil {
+		return nil, fmt.Errorf("client credentials: %w", err)
+	}
+	info, err := os.Stat(clientCredsPath)
+	if err != nil {
+		return nil, fmt.Errorf("stat client credentials: %w", err)
+	}
+	if err := config.CheckPermissions(clientCredsPath, info); err != nil {
+		return nil, fmt.Errorf("client credentials: %w", err)
+	}
+	clientData, err := os.ReadFile(clientCredsPath) //nolint:gosec // validated above
 	if err != nil {
 		return nil, fmt.Errorf("read client credentials: %w", err)
 	}
@@ -82,21 +114,26 @@ func NewHTTPClient(ctx context.Context, tokenFile string, scopes []string) (*htt
 
 // savingTokenSource wraps a TokenSource and persists refreshed tokens to disk.
 type savingTokenSource struct {
+	mu        sync.Mutex
 	base      oauth2.TokenSource
 	tokenPath string
 	lastToken *oauth2.Token
 }
 
 func (s *savingTokenSource) Token() (*oauth2.Token, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	tok, err := s.base.Token()
 	if err != nil {
 		return nil, err
 	}
 
-	// Save if the token changed (was refreshed)
 	if s.lastToken == nil || tok.AccessToken != s.lastToken.AccessToken {
 		s.lastToken = tok
-		_ = saveToken(s.tokenPath, tok) // best-effort save
+		if err := saveToken(s.tokenPath, tok); err != nil {
+			log.Printf("google: failed to persist refreshed token: %v", err)
+		}
 	}
 
 	return tok, nil
@@ -104,7 +141,17 @@ func (s *savingTokenSource) Token() (*oauth2.Token, error) {
 
 // LoadToken reads an OAuth2 token from the given JSON file path.
 func LoadToken(path string) (*oauth2.Token, error) {
-	data, err := os.ReadFile(path) //nolint:gosec // known token path
+	if err := config.RejectSymlink(path); err != nil {
+		return nil, fmt.Errorf("token file: %w", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if err := config.CheckPermissions(path, info); err != nil {
+		return nil, fmt.Errorf("token file: %w", err)
+	}
+	data, err := os.ReadFile(path) //nolint:gosec // validated above
 	if err != nil {
 		return nil, err
 	}
@@ -132,6 +179,14 @@ func LoadToken(path string) (*oauth2.Token, error) {
 }
 
 func saveToken(path string, tok *oauth2.Token) error {
+	// Reject symlinks to prevent writing credentials to an
+	// attacker-controlled location on every token refresh.
+	if _, err := os.Lstat(path); err == nil {
+		if err := config.RejectSymlink(path); err != nil {
+			return fmt.Errorf("token save: %w", err)
+		}
+	}
+
 	tj := TokenJSON{
 		AccessToken:  tok.AccessToken,
 		TokenType:    tok.TokenType,
@@ -141,10 +196,37 @@ func saveToken(path string, tok *oauth2.Token) error {
 		tj.Expiry = tok.Expiry.Format(time.RFC3339)
 	}
 
-	data, err := json.MarshalIndent(tj, "", "  ") //nolint:gosec // token file has 0600 permissions (owner-only)
+	data, err := json.MarshalIndent(tj, "", "  ") //nolint:gosec // G117: intentional token serialization for on-disk storage
 	if err != nil {
 		return err
 	}
 
-	return os.WriteFile(path, data, 0o600)
+	// Atomic write: temp file + fsync + rename.
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".token-*.tmp")
+	if err != nil {
+		return fmt.Errorf("create temp file: %w", err)
+	}
+	tmpName := tmp.Name()
+
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()        //nolint:errcheck,gosec // best-effort cleanup
+		os.Remove(tmpName) //nolint:errcheck,gosec // best-effort cleanup
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()        //nolint:errcheck,gosec // best-effort cleanup
+		os.Remove(tmpName) //nolint:errcheck,gosec // best-effort cleanup
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()        //nolint:errcheck,gosec // best-effort cleanup
+		os.Remove(tmpName) //nolint:errcheck,gosec // best-effort cleanup
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName) //nolint:errcheck,gosec // best-effort cleanup
+		return err
+	}
+	return os.Rename(tmpName, path)
 }
