@@ -29,6 +29,7 @@ type Manager struct {
 
 // NewManager creates a sandbox manager.
 func NewManager(cfg config.SandboxConfig, credDir, dataDir string) (*Manager, error) {
+	arapuca.EnableSelfExecMode()
 	sb, err := arapuca.New()
 	if err != nil {
 		return nil, fmt.Errorf("create sandbox: %w", err)
