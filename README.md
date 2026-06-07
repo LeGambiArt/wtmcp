@@ -89,6 +89,14 @@ default:
   connections; all traffic routes through the core proxy
 - **OOM detection** and resource usage reporting after process exit
 
+**Platform note**: Linux provides the strongest sandbox protection.
+The file I/O path on Linux uses `O_NOFOLLOW` + `/proc/self/fd`
+readlink to close TOCTOU gaps in source_path validation. On macOS,
+the Seatbelt sandbox provides equivalent filesystem confinement but
+the file I/O path uses a stat-then-open fallback with a narrower
+(but non-zero) TOCTOU window. Production deployments should use
+Linux.
+
 Building requires libarapuca — either from a system package
 (Fedora) or built from the bundled submodule (requires a
 Rust toolchain). The Makefile auto-detects which path to use:

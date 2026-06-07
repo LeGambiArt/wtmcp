@@ -16,8 +16,10 @@ import (
 // non-Linux platforms where /proc/self/fd is unavailable.
 //
 // This is weaker than the Linux implementation (Lstat-then-Open has
-// a TOCTOU gap) but usable for unsandboxed development builds.
-// Production deployments should use Linux with the sandbox enabled.
+// a TOCTOU gap where the file could be swapped between stat and open).
+// The Linux implementation at source_linux.go uses O_NOFOLLOW + Fstat +
+// /proc/self/fd readlink to close this gap. Production deployments
+// should use Linux with the sandbox enabled for full protection.
 //
 // Returns the data and the verified cleanup path (for the caller to
 // delete after a successful write). Does NOT delete the source.
