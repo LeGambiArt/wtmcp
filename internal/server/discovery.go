@@ -10,7 +10,7 @@ import (
 
 // registerToolSearch adds the tool_search meta-tool for discovering
 // tools by keyword. Useful in both full and progressive modes.
-func registerToolSearch(srv *mcpserver.MCPServer, index *ToolIndex) {
+func registerToolSearch(srv *mcpserver.MCPServer, index *ToolIndex, excludeWrite bool) {
 	categorySummary := index.CategorySummary()
 
 	tool := mcp.NewTool("tool_search",
@@ -47,7 +47,7 @@ func registerToolSearch(srv *mcpserver.MCPServer, index *ToolIndex) {
 				limit = int(mr)
 			}
 
-			results := index.Search(query, pluginFilter, limit)
+			results := index.Search(query, pluginFilter, limit, excludeWrite)
 
 			out := make([]searchResult, len(results))
 			for i, r := range results {

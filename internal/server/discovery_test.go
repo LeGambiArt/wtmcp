@@ -138,7 +138,7 @@ func TestDiscoveryToolSearchSafeResponse(t *testing.T) {
 	mgr.SetHandle("alpha")
 
 	index := NewToolIndex(mgr, false)
-	results := index.Search("search", "", 10)
+	results := index.Search("search", "", 10, false)
 	if len(results) == 0 {
 		t.Fatal("expected search results")
 	}

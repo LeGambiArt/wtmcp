@@ -40,7 +40,7 @@ func testManager() *plugin.Manager {
 
 func TestToolIndexSearch_ExactName(t *testing.T) {
 	idx := NewToolIndex(testManager(), false)
-	results := idx.Search("jira_search", "", 10)
+	results := idx.Search("jira_search", "", 10, false)
 	if len(results) == 0 {
 		t.Fatal("expected results")
 	}
@@ -51,7 +51,7 @@ func TestToolIndexSearch_ExactName(t *testing.T) {
 
 func TestToolIndexSearch_PartialName(t *testing.T) {
 	idx := NewToolIndex(testManager(), false)
-	results := idx.Search("export", "", 10)
+	results := idx.Search("export", "", 10, false)
 	if len(results) == 0 {
 		t.Fatal("expected results")
 	}
@@ -69,7 +69,7 @@ func TestToolIndexSearch_PartialName(t *testing.T) {
 
 func TestToolIndexSearch_ByDescription(t *testing.T) {
 	idx := NewToolIndex(testManager(), false)
-	results := idx.Search("custom fields", "", 10)
+	results := idx.Search("custom fields", "", 10, false)
 	if len(results) == 0 {
 		t.Fatal("expected results for description match")
 	}
@@ -87,7 +87,7 @@ func TestToolIndexSearch_ByDescription(t *testing.T) {
 
 func TestToolIndexSearch_PluginFilter(t *testing.T) {
 	idx := NewToolIndex(testManager(), false)
-	results := idx.Search("", "gmail", 50)
+	results := idx.Search("", "gmail", 50, false)
 	if len(results) != 3 {
 		t.Fatalf("got %d results, want 3 (all gmail tools)", len(results))
 	}
@@ -100,7 +100,7 @@ func TestToolIndexSearch_PluginFilter(t *testing.T) {
 
 func TestToolIndexSearch_CombinedQueryAndFilter(t *testing.T) {
 	idx := NewToolIndex(testManager(), false)
-	results := idx.Search("send", "gmail", 10)
+	results := idx.Search("send", "gmail", 10, false)
 	if len(results) == 0 {
 		t.Fatal("expected results")
 	}
@@ -111,7 +111,7 @@ func TestToolIndexSearch_CombinedQueryAndFilter(t *testing.T) {
 
 func TestToolIndexSearch_MaxResults(t *testing.T) {
 	idx := NewToolIndex(testManager(), false)
-	results := idx.Search("jira", "", 2)
+	results := idx.Search("jira", "", 2, false)
 	if len(results) != 2 {
 		t.Errorf("got %d results, want 2", len(results))
 	}
@@ -119,7 +119,7 @@ func TestToolIndexSearch_MaxResults(t *testing.T) {
 
 func TestToolIndexSearch_MaxResultsClamped(t *testing.T) {
 	idx := NewToolIndex(testManager(), false)
-	results := idx.Search("jira", "", 1000)
+	results := idx.Search("jira", "", 1000, false)
 	if len(results) > maxResultsCap {
 		t.Errorf("got %d results, want at most %d", len(results), maxResultsCap)
 	}
@@ -128,7 +128,7 @@ func TestToolIndexSearch_MaxResultsClamped(t *testing.T) {
 func TestToolIndexSearch_QueryTruncated(t *testing.T) {
 	idx := NewToolIndex(testManager(), false)
 	longQuery := strings.Repeat("jira ", 200) // way over 500 chars
-	results := idx.Search(longQuery, "", 10)
+	results := idx.Search(longQuery, "", 10, false)
 	// Should not panic and should still return results
 	if len(results) == 0 {
 		t.Error("expected results even with long query")
@@ -137,7 +137,7 @@ func TestToolIndexSearch_QueryTruncated(t *testing.T) {
 
 func TestToolIndexSearch_NoResults(t *testing.T) {
 	idx := NewToolIndex(testManager(), false)
-	results := idx.Search("nonexistent_xyz", "", 10)
+	results := idx.Search("nonexistent_xyz", "", 10, false)
 	if len(results) != 0 {
 		t.Errorf("expected empty results, got %d", len(results))
 	}
@@ -145,7 +145,7 @@ func TestToolIndexSearch_NoResults(t *testing.T) {
 
 func TestToolIndexSearch_EmptyQuery(t *testing.T) {
 	idx := NewToolIndex(testManager(), false)
-	results := idx.Search("", "", 10)
+	results := idx.Search("", "", 10, false)
 	if len(results) != 0 {
 		t.Errorf("expected empty results for empty query, got %d", len(results))
 	}

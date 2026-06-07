@@ -143,10 +143,20 @@ type StatsConfig struct {
 
 // SecurityConfig controls prompt injection defense features.
 type SecurityConfig struct {
-	TagToolOutput     *bool `yaml:"tag_tool_output"`
-	Elicitation       *bool `yaml:"elicitation"`
-	ElicitationStrict *bool `yaml:"elicitation_strict"`
-	SanitizeContent   *bool `yaml:"sanitize_content"`
+	TagToolOutput          *bool `yaml:"tag_tool_output"`
+	Elicitation            *bool `yaml:"elicitation"`
+	ElicitationStrict      *bool `yaml:"elicitation_strict"`
+	SanitizeContent        *bool `yaml:"sanitize_content"`
+	ToolSearchExcludeWrite *bool `yaml:"tool_search_exclude_write"`
+}
+
+// ToolSearchExcludeWriteEnabled returns whether tool_search should
+// exclude write tools from results (default: false).
+func (s SecurityConfig) ToolSearchExcludeWriteEnabled() bool {
+	if s.ToolSearchExcludeWrite == nil {
+		return false
+	}
+	return *s.ToolSearchExcludeWrite
 }
 
 // TagToolOutputEnabled returns whether tool output tagging is enabled

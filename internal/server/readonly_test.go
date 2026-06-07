@@ -84,7 +84,7 @@ func TestReadOnly_ToolSearchExcludesWriteTools(t *testing.T) {
 	idx := NewToolIndex(mgr, true)
 
 	// Search for "create" — should find nothing (only write tools match)
-	results := idx.Search("create", "", 10)
+	results := idx.Search("create", "", 10, false)
 	for _, r := range results {
 		if r.Access == "write" {
 			t.Errorf("search returned write tool %q in read-only mode", r.Name)
@@ -92,7 +92,7 @@ func TestReadOnly_ToolSearchExcludesWriteTools(t *testing.T) {
 	}
 
 	// Search for "search" — should find read tools
-	results = idx.Search("search", "", 10)
+	results = idx.Search("search", "", 10, false)
 	if len(results) == 0 {
 		t.Error("expected read tools in search results")
 	}

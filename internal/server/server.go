@@ -146,7 +146,7 @@ func New(version string, manager *plugin.Manager, cfg *config.Config, index *Too
 	registerManagementTools(deps)
 
 	// tool_search — useful in both modes
-	registerToolSearch(srv, index)
+	registerToolSearch(srv, index, deps.cfg.Security.ToolSearchExcludeWriteEnabled())
 
 	return srv, toolOwners
 }
@@ -741,7 +741,7 @@ func ReloadPlugin(ctx context.Context, srv *mcpserver.MCPServer, mgr *plugin.Man
 	// CategorySummary reflects the reloaded manifest.
 	index.Rebuild(mgr)
 	srv.DeleteTools("tool_search")
-	registerToolSearch(srv, index)
+	registerToolSearch(srv, index, deps.cfg.Security.ToolSearchExcludeWriteEnabled())
 
 	return nil
 }

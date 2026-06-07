@@ -79,9 +79,9 @@ func (idx *ToolIndex) Rebuild(mgr *plugin.Manager) {
 // Search finds tools matching query terms. Supports optional plugin
 // filter. Query is capped at maxQueryLen characters and maxQueryTerms
 // terms. maxResults is clamped to [1, maxResultsCap].
-func (idx *ToolIndex) Search(query, pluginFilter string, limit int) []ToolEntry {
+func (idx *ToolIndex) Search(query, pluginFilter string, limit int, excludeWrite bool) []ToolEntry {
 	if len(query) > maxQueryLen {
-		query = query[:maxQueryLen]
+		query = truncateUTF8(query, maxQueryLen)
 	}
 
 	terms := strings.Fields(strings.ToLower(query))
@@ -111,6 +111,9 @@ func (idx *ToolIndex) Search(query, pluginFilter string, limit int) []ToolEntry 
 	var results []scored
 	for _, entry := range idx.entries {
 		if pluginFilter != "" && entry.Plugin != pluginFilter {
+			continue
+		}
+		if excludeWrite && entry.Access != "read" {
 			continue
 		}
 
@@ -253,10 +256,14 @@ func buildEntries(mgr *plugin.Manager, readOnly bool) []ToolEntry {
 			}
 			sort.Strings(paramNames)
 
+			desc := tool.Description
+			if manifest.IsUserPlugin {
+				desc = "[user plugin] " + desc
+			}
 			entry := ToolEntry{
 				Name:        tool.Name,
 				Plugin:      manifest.Name,
-				Description: tool.Description,
+				Description: desc,
 				Access:      tool.Access,
 				Visibility:  tool.Visibility,
 				ParamNames:  paramNames,
