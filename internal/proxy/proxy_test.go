@@ -2575,3 +2575,101 @@ func TestRateLimitWaitPlusFiveXXRetry(t *testing.T) {
 		t.Errorf("expected 2 sleeps (rate-limit + retry backoff), got %d", sleepCount.Load())
 	}
 }
+
+// ─── Fuzz Tests ──────────────────────────────────────────────────
+
+func FuzzCheckIP(f *testing.F) {
+	f.Add("127.0.0.1")
+	f.Add("10.0.0.1")
+	f.Add("172.16.0.1")
+	f.Add("192.168.1.1")
+	f.Add("100.64.0.1")
+	f.Add("198.18.0.1")
+	f.Add("169.254.1.1")
+	f.Add("224.0.0.1")
+	f.Add("8.8.8.8")
+	f.Add("1.1.1.1")
+	f.Add("::1")
+	f.Add("::ffff:10.0.0.1")
+	f.Add("::ffff:127.0.0.1")
+	f.Add("2001::1")
+	f.Add("2002::1")
+	f.Add("fe80::1")
+	f.Add("ff02::1")
+	f.Add("")
+	f.Add("not-an-ip")
+	f.Add("999.999.999.999")
+
+	f.Fuzz(func(t *testing.T, ipStr string) {
+		err := checkIP(ipStr)
+		ip := net.ParseIP(ipStr)
+		if ip == nil {
+			if err == nil {
+				t.Fatalf("checkIP(%q) passed for unparseable IP", ipStr)
+			}
+			return
+		}
+		if err != nil {
+			return
+		}
+		// If checkIP passed, verify the IP is actually public.
+		ipv4 := ip.To4()
+		check := ip
+		if ipv4 != nil {
+			check = ipv4
+		}
+		if check.IsLoopback() {
+			t.Fatalf("checkIP(%q) passed for loopback", ipStr)
+		}
+		if check.IsPrivate() {
+			t.Fatalf("checkIP(%q) passed for private", ipStr)
+		}
+		if check.IsLinkLocalUnicast() {
+			t.Fatalf("checkIP(%q) passed for link-local", ipStr)
+		}
+		if check.IsMulticast() {
+			t.Fatalf("checkIP(%q) passed for multicast", ipStr)
+		}
+		if check.IsUnspecified() {
+			t.Fatalf("checkIP(%q) passed for unspecified", ipStr)
+		}
+	})
+}
+
+func FuzzCheckMetadataIP(f *testing.F) {
+	f.Add("169.254.169.254")
+	f.Add("fd00:ec2::254")
+	f.Add("fe80::1")
+	f.Add("::ffff:169.254.169.254")
+	f.Add("100.100.100.200")
+	f.Add("8.8.8.8")
+	f.Add("1.1.1.1")
+	f.Add("")
+	f.Add("not-an-ip")
+
+	f.Fuzz(func(t *testing.T, ipStr string) {
+		err := checkMetadataIP(ipStr)
+		ip := net.ParseIP(ipStr)
+		if ip == nil {
+			if err == nil {
+				t.Fatalf("checkMetadataIP(%q) passed for unparseable IP", ipStr)
+			}
+			return
+		}
+		// If it passed, verify it's not a known metadata IP.
+		if err == nil {
+			for _, entry := range cloudMetadataNets {
+				if entry.net.Contains(ip) {
+					t.Fatalf("checkMetadataIP(%q) passed but matches metadata net %s",
+						ipStr, entry.desc)
+				}
+				if ipv4 := ip.To4(); ipv4 != nil && len(ip) == net.IPv6len {
+					if entry.net.Contains(ipv4) {
+						t.Fatalf("checkMetadataIP(%q) passed but IPv4-mapped form matches %s",
+							ipStr, entry.desc)
+					}
+				}
+			}
+		}
+	})
+}
