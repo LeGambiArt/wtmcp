@@ -389,6 +389,17 @@ def add_issue_link(params):
 def delete_issue_link(params):
     """Delete an issue link."""
     link_id = params.get("link_id", "")
+    dry_run = params.get("dry_run", True)
+
+    if not str(link_id).isdigit():
+        raise ValueError(f"link_id must be numeric, got: {link_id!r}")
+
+    if dry_run:
+        return {
+            "dry_run": True,
+            "action": "jira_delete_issue_link",
+            "link_id": link_id,
+        }
 
     status, body, _ = handler.http("DELETE", f"/rest/api/2/issueLink/{link_id}")
     if status < 200 or status >= 300:

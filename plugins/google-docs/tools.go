@@ -2640,6 +2640,7 @@ func readFileForWrite(filePath string) ([]byte, error) {
 }
 
 type writeParams struct {
+	DryRun          bool   `json:"dry_run"`
 	DocumentIDOrURL string `json:"document_id_or_url"`
 	FilePath        string `json:"file_path"`
 	Content         string `json:"content"`
@@ -2650,6 +2651,7 @@ type writeParams struct {
 
 func toolWrite(params, _ json.RawMessage) (any, error) {
 	p := writeParams{
+		DryRun:      true,
 		IsMarkdown:  true,
 		AppendToEnd: true,
 		InsertIndex: 1,
@@ -2673,6 +2675,20 @@ func toolWrite(params, _ json.RawMessage) (any, error) {
 	}
 	if text == "" {
 		return nil, fmt.Errorf("either 'content' or 'file_path' must be provided")
+	}
+
+	if p.DryRun {
+		result := map[string]any{
+			"dry_run":            true,
+			"action":             "gdocs_write",
+			"document_id_or_url": p.DocumentIDOrURL,
+			"is_markdown":        p.IsMarkdown,
+			"content_characters": len(text),
+		}
+		if usedFilePath {
+			result["source_file"] = p.FilePath
+		}
+		return result, nil
 	}
 
 	docID := extractDocumentID(p.DocumentIDOrURL)
@@ -2752,11 +2768,12 @@ func toolWrite(params, _ json.RawMessage) (any, error) {
 }
 
 type createDocumentParams struct {
-	Title string `json:"title"`
+	DryRun bool   `json:"dry_run"`
+	Title  string `json:"title"`
 }
 
 func toolCreateDocument(params, _ json.RawMessage) (any, error) {
-	var p createDocumentParams
+	p := createDocumentParams{DryRun: true}
 	if err := json.Unmarshal(params, &p); err != nil {
 		return nil, fmt.Errorf("parse params: %w", err)
 	}
@@ -2764,7 +2781,14 @@ func toolCreateDocument(params, _ json.RawMessage) (any, error) {
 		return nil, fmt.Errorf("title is required")
 	}
 
-	// Create a new document with the specified title
+	if p.DryRun {
+		return map[string]any{
+			"dry_run": true,
+			"action":  "gdocs_create_document",
+			"title":   p.Title,
+		}, nil
+	}
+
 	doc := &docs.Document{
 		Title: p.Title,
 	}

@@ -576,9 +576,14 @@ class TestIssueLinks:
         )
         assert result["payload"]["type"] == {"name": "Blocks"}
 
+    def test_delete_link_dry_run(self):
+        result = tools_write.delete_issue_link({"link_id": "12345"})
+        assert result["dry_run"] is True
+        assert result["link_id"] == "12345"
+
     def test_delete_link_success(self):
         with _mock_http(204, {}):
-            result = tools_write.delete_issue_link({"link_id": "12345"})
+            result = tools_write.delete_issue_link({"link_id": "12345", "dry_run": False})
             assert result["success"] is True
 
 
@@ -846,7 +851,7 @@ class TestCacheInvalidation:
 
     def test_delete_issue_link_invalidates(self, _mock_invalidate):
         with _mock_http(204, {}):
-            tools_write.delete_issue_link({"link_id": "123"})
+            tools_write.delete_issue_link({"link_id": "123", "dry_run": False})
             _mock_invalidate.assert_called_once_with()
 
     def test_sprint_invalidates_all_keys(self, _mock_invalidate):

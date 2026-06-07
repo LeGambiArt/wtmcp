@@ -671,9 +671,16 @@ class TestSubmitTest:
 
 
 class TestCancel:
+    def test_dry_run(self):
+        with _mock_http(200, {"state": "running"}):
+            result = handler.testing_farm_cancel({"request_id": REQ_ID})
+            assert result["dry_run"] is True
+            assert result["request_id"] == REQ_ID
+            assert result["current_state"] == "running"
+
     def test_success_invalidates_cache(self):
         with _mock_http(200, {}), _mock_cache_del() as mock_del:
-            result = handler.testing_farm_cancel({"request_id": REQ_ID})
+            result = handler.testing_farm_cancel({"request_id": REQ_ID, "dry_run": False})
             assert result["request_id"] == REQ_ID
             assert "cancelled" in result["message"]
             # Should invalidate all cached data for this request.
@@ -685,7 +692,7 @@ class TestCancel:
 
     def test_204_success(self):
         with _mock_http(204, {}), _mock_cache_del():
-            result = handler.testing_farm_cancel({"request_id": REQ_ID})
+            result = handler.testing_farm_cancel({"request_id": REQ_ID, "dry_run": False})
             assert result["request_id"] == REQ_ID
 
     def test_invalid_request_id(self):

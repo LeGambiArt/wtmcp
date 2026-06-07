@@ -218,6 +218,10 @@ tools:
       Cancel a test request or release a reserved system. This
       deletes the request from Testing Farm.
     params:
+      dry_run:
+        type: boolean
+        default: true
+        description: "Preview without cancelling"
       request_id:
         type: string
         required: true

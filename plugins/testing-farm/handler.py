@@ -843,6 +843,19 @@ def testing_farm_cancel(params):
     """Cancel a test request or release a reservation."""
     request_id = params["request_id"]
     _validate_request_id(request_id)
+    dry_run = params.get("dry_run", True)
+
+    if dry_run:
+        status, body, _ = http("GET", f"/{API_VERSION}/requests/{request_id}")
+        if status != 200:
+            raise Exception(f"Cannot fetch request {request_id} (HTTP {status}): {body}")
+        state = body.get("state", "unknown") if isinstance(body, dict) else "unknown"
+        return {
+            "dry_run": True,
+            "action": "testing_farm_cancel",
+            "request_id": request_id,
+            "current_state": state,
+        }
 
     status, body, _ = http("DELETE", f"/{API_VERSION}/requests/{request_id}")
     if status not in (200, 204):

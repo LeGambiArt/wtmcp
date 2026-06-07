@@ -477,6 +477,10 @@ tools:
     description: >
       Delete an issue link by its ID.
     params:
+      dry_run:
+        type: boolean
+        default: true
+        description: "Preview without deleting"
       link_id:
         type: string
         required: true

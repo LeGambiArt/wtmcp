@@ -101,6 +101,10 @@ tools:
       to read from). For large documents, prefer file_path to avoid token
       generation overhead.
     params:
+      dry_run:
+        type: boolean
+        default: true
+        description: "Preview without writing"
       document_id_or_url:
         type: string
         required: true
@@ -129,6 +133,10 @@ tools:
     visibility: primary
     description: "Create a new Google Doc with a specified title"
     params:
+      dry_run:
+        type: boolean
+        default: true
+        description: "Preview without creating"
       title:
         type: string
         required: true
