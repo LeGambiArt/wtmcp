@@ -208,24 +208,21 @@ func saveToken(path string, tok *oauth2.Token) error {
 		return fmt.Errorf("create temp file: %w", err)
 	}
 	tmpName := tmp.Name()
+	defer os.Remove(tmpName) //nolint:errcheck,gosec // cleanup on failure; harmless ENOENT after rename
 
 	if err := tmp.Chmod(0o600); err != nil {
-		tmp.Close()        //nolint:errcheck,gosec // best-effort cleanup
-		os.Remove(tmpName) //nolint:errcheck,gosec // best-effort cleanup
+		tmp.Close() //nolint:errcheck,gosec // best-effort cleanup
 		return err
 	}
 	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()        //nolint:errcheck,gosec // best-effort cleanup
-		os.Remove(tmpName) //nolint:errcheck,gosec // best-effort cleanup
+		tmp.Close() //nolint:errcheck,gosec // best-effort cleanup
 		return err
 	}
 	if err := tmp.Sync(); err != nil {
-		tmp.Close()        //nolint:errcheck,gosec // best-effort cleanup
-		os.Remove(tmpName) //nolint:errcheck,gosec // best-effort cleanup
+		tmp.Close() //nolint:errcheck,gosec // best-effort cleanup
 		return err
 	}
 	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName) //nolint:errcheck,gosec // best-effort cleanup
 		return err
 	}
 	return os.Rename(tmpName, path)
