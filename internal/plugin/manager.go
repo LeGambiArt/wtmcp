@@ -1159,17 +1159,55 @@ func discoverSSHPublicKeys() string {
 	if err != nil {
 		return ""
 	}
+
+	const maxSSHKeys = 20
+
 	var keys []string
 	for _, m := range matches {
-		data, err := os.ReadFile(m) //nolint:gosec // reading public keys only
+		// Skip symlinks — a symlink named id_evil.pub could point
+		// to an arbitrary file, exfiltrating its contents to
+		// Testing Farm. Note: Lstat-then-ReadFile TOCTOU gap exists
+		// but is acceptable (same as source_other.go).
+		info, err := os.Lstat(m)
+		if err != nil || info.Mode().Type()&os.ModeSymlink != 0 {
+			continue
+		}
+		if info.Size() > 4096 {
+			continue
+		}
+		data, err := os.ReadFile(m) //nolint:gosec // reading public keys only, validated above
 		if err != nil {
 			continue
 		}
-		if k := strings.TrimSpace(string(data)); k != "" {
-			keys = append(keys, k)
+		k := strings.TrimSpace(string(data))
+		if k == "" {
+			continue
+		}
+		if !hasSSHKeyPrefix(k) {
+			continue
+		}
+		keys = append(keys, k)
+		if len(keys) >= maxSSHKeys {
+			log.Printf("WARNING: SSH key discovery capped at %d keys", maxSSHKeys)
+			break
 		}
 	}
+	if len(matches) > 0 && len(keys) == 0 {
+		log.Printf("WARNING: found %d SSH .pub files but none passed validation", len(matches))
+	}
 	return strings.Join(keys, "\n")
+}
+
+func hasSSHKeyPrefix(s string) bool {
+	for _, prefix := range []string{
+		"ssh-rsa ", "ssh-ed25519 ", "ecdsa-sha2-", "ssh-dss ",
+		"sk-ssh-ed25519 ", "sk-ecdsa-sha2-",
+	} {
+		if strings.HasPrefix(s, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // hasVaultFiles reports whether any files in a directory start with

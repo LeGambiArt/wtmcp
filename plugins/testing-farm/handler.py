@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import sys
 import xml.etree.ElementTree as ET
 
@@ -141,22 +142,36 @@ def _discover_ssh_keys():
     # Fallback: read from filesystem (unsandboxed mode)
     keys = []
     key_path = config.get("ssh_key_path", "")
+    ssh_prefixes = ("ssh-rsa ", "ssh-ed25519 ", "ecdsa-sha2-", "ssh-dss ", "sk-ssh-ed25519 ", "sk-ecdsa-sha2-")
 
     if key_path:
         try:
-            with open(key_path, "r") as f:
-                content = f.read().strip()
-                if content:
-                    keys.append(content)
+            info = os.lstat(key_path)
+            if stat.S_ISLNK(info.st_mode):
+                log(f"ssh_key_path {key_path} is a symlink, skipping")
+            elif info.st_size > 4096:
+                log(f"ssh_key_path {key_path} exceeds 4KB, skipping")
+            else:
+                with open(key_path, "r") as f:
+                    content = f.read().strip()
+                    if content and content.startswith(ssh_prefixes):
+                        keys.append(content)
+                    elif content:
+                        log(f"ssh_key_path {key_path} does not look like an SSH public key")
         except OSError as e:
             log(f"failed to read SSH key from {key_path}: {e}")
     else:
         home = os.path.expanduser("~")
         for path in sorted(globmod.glob(os.path.join(home, ".ssh", "id_*.pub"))):
             try:
+                info = os.lstat(path)
+                if stat.S_ISLNK(info.st_mode):
+                    continue
+                if info.st_size > 4096:
+                    continue
                 with open(path, "r") as f:
                     content = f.read().strip()
-                    if content:
+                    if content and content.startswith(ssh_prefixes):
                         keys.append(content)
             except OSError:
                 continue
