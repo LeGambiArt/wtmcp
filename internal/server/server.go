@@ -31,8 +31,8 @@ import (
 )
 
 // NewOutputFramer creates an output framer for prompt injection defense.
-func NewOutputFramer(tagText bool) (*OutputFramer, error) {
-	return newOutputFramer(tagText)
+func NewOutputFramer(tagText, sanitize bool) (*OutputFramer, error) {
+	return newOutputFramer(tagText, sanitize)
 }
 
 // serverDeps bundles the shared dependencies used by tool registration,
@@ -429,7 +429,7 @@ func registerDisabledPluginTools(srv *mcpserver.MCPServer, disabled map[string]p
 			tool, _ := buildMCPTool(toolDef, progressive)
 			tool.Description = fmt.Sprintf(
 				"[DISABLED] %s — after fixing, run plugin_reload(name=\"%s\") to enable.\n\n---\n\n%s",
-				dp.Reason, pluginName, toolDef.Description,
+				sanitizeContent(dp.Reason), pluginName, sanitizeContent(toolDef.Description),
 			)
 
 			reason := dp.Reason
@@ -490,7 +490,7 @@ func registerManagementTools(deps *serverDeps) {
 				})
 			}
 			data, _ := json.Marshal(plugins)
-			return mcp.NewToolResultText(string(data)), nil
+			return sanitizedTextResult(string(data)), nil
 		},
 	)
 

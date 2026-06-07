@@ -142,6 +142,7 @@ type SecurityConfig struct {
 	TagToolOutput     *bool `yaml:"tag_tool_output"`
 	Elicitation       *bool `yaml:"elicitation"`
 	ElicitationStrict *bool `yaml:"elicitation_strict"`
+	SanitizeContent   *bool `yaml:"sanitize_content"`
 }
 
 // TagToolOutputEnabled returns whether tool output tagging is enabled
@@ -151,6 +152,15 @@ func (s SecurityConfig) TagToolOutputEnabled() bool {
 		return true
 	}
 	return *s.TagToolOutput
+}
+
+// SanitizeContentEnabled returns whether tool output content
+// sanitization is enabled (default: true when not explicitly set).
+func (s SecurityConfig) SanitizeContentEnabled() bool {
+	if s.SanitizeContent == nil {
+		return true
+	}
+	return *s.SanitizeContent
 }
 
 // ElicitationEnabled returns whether write tool confirmation prompts

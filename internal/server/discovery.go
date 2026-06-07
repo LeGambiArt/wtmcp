@@ -55,7 +55,7 @@ func registerToolSearch(srv *mcpserver.MCPServer, index *ToolIndex) {
 			}
 
 			data, _ := json.Marshal(out)
-			return mcp.NewToolResultText(string(data)), nil
+			return sanitizedTextResult(string(data)), nil
 		},
 	)
 }

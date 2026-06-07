@@ -15,12 +15,13 @@ type OutputFramer struct {
 	nonce    string
 	tagRegex *regexp.Regexp
 	tagText  bool
+	sanitize bool
 }
 
 // newOutputFramer creates a framer with a per-session nonce.
 // tagText controls whether nonce-based text tags are added
 // (secondary defense layer, opt-in).
-func newOutputFramer(tagText bool) (*OutputFramer, error) {
+func newOutputFramer(tagText, sanitize bool) (*OutputFramer, error) {
 	nonceBytes := make([]byte, 8) // 16 hex chars = 64 bits
 	if _, err := rand.Read(nonceBytes); err != nil {
 		return nil, fmt.Errorf("generate nonce: %w", err)
@@ -35,6 +36,7 @@ func newOutputFramer(tagText bool) (*OutputFramer, error) {
 		nonce:    nonce,
 		tagRegex: tagRegex,
 		tagText:  tagText,
+		sanitize: sanitize,
 	}, nil
 }
 
@@ -44,7 +46,10 @@ func newOutputFramer(tagText bool) (*OutputFramer, error) {
 // result when framer is nil.
 func (f *OutputFramer) frameToolResult(toolName, text string) *mcp.CallToolResult {
 	if f == nil {
-		return mcp.NewToolResultText(text)
+		return mcp.NewToolResultText(sanitizeContent(text))
+	}
+	if f.sanitize {
+		text = sanitizeContent(text)
 	}
 	if f.tagText {
 		text = f.wrapToolOutput(toolName, text)
@@ -71,8 +76,29 @@ func (f *OutputFramer) frameToolResult(toolName, text string) *mcp.CallToolResul
 // audience annotation ensures clients treat them as model-consumption
 // data rather than user-facing output.
 func frameErrorResult(text string) *mcp.CallToolResult {
+	text = sanitizeContent(text)
 	return &mcp.CallToolResult{
 		IsError: true,
+		Content: []mcp.Content{
+			mcp.TextContent{
+				Annotated: mcp.Annotated{
+					Annotations: &mcp.Annotations{
+						Audience: []mcp.Role{mcp.RoleAssistant},
+					},
+				},
+				Type: "text",
+				Text: text,
+			},
+		},
+	}
+}
+
+// sanitizedTextResult creates a CallToolResult with sanitized text
+// and Audience=[RoleAssistant]. Used for management tool output that
+// may contain externally-sourced strings (e.g. plugin error reasons).
+func sanitizedTextResult(text string) *mcp.CallToolResult {
+	text = sanitizeContent(text)
+	return &mcp.CallToolResult{
 		Content: []mcp.Content{
 			mcp.TextContent{
 				Annotated: mcp.Annotated{

@@ -8,7 +8,7 @@ import (
 )
 
 func TestFrameToolResult_Annotations(t *testing.T) {
-	f, err := newOutputFramer(false)
+	f, err := newOutputFramer(false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,7 +38,7 @@ func TestFrameToolResult_Annotations(t *testing.T) {
 }
 
 func TestFrameToolResult_NoTags(t *testing.T) {
-	f, err := newOutputFramer(false)
+	f, err := newOutputFramer(false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +52,7 @@ func TestFrameToolResult_NoTags(t *testing.T) {
 }
 
 func TestFrameToolResult_WithTags(t *testing.T) {
-	f, err := newOutputFramer(true)
+	f, err := newOutputFramer(true, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +73,7 @@ func TestFrameToolResult_WithTags(t *testing.T) {
 }
 
 func TestFrameToolResult_TagEscaping(t *testing.T) {
-	f, err := newOutputFramer(true)
+	f, err := newOutputFramer(true, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +107,7 @@ func TestFrameToolResult_TagEscaping(t *testing.T) {
 }
 
 func TestFrameToolResult_NoGoStructDumps(t *testing.T) {
-	f, err := newOutputFramer(true)
+	f, err := newOutputFramer(true, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +120,7 @@ func TestFrameToolResult_NoGoStructDumps(t *testing.T) {
 }
 
 func TestFrameToolResult_NonceConsistent(t *testing.T) {
-	f, err := newOutputFramer(true)
+	f, err := newOutputFramer(true, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +165,7 @@ func TestFrameErrorResult_HasAnnotations(t *testing.T) {
 // ─── Fuzz Tests ──────────────────────────────────────────────────
 
 func FuzzWrapToolOutput(f *testing.F) {
-	framer, err := newOutputFramer(true)
+	framer, err := newOutputFramer(true, false)
 	if err != nil {
 		f.Fatal(err)
 	}
