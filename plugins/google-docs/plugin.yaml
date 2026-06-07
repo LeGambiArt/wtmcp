@@ -12,6 +12,9 @@ services:
     token_file: token-docs.json
     credentials_file: client-credentials.json
     scopes:
+      # Read-only alternative: https://www.googleapis.com/auth/documents.readonly
+      # Covers 5/7 tools. Write tools (gdocs_create_document,
+      # gdocs_write) require the full auth/documents scope.
       - https://www.googleapis.com/auth/documents
   http:
     base_url: https://docs.googleapis.com

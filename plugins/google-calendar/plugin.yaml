@@ -12,6 +12,9 @@ services:
     token_file: token-calendar.json
     credentials_file: client-credentials.json
     scopes:
+      # Read-only alternative: https://www.googleapis.com/auth/calendar.events.readonly
+      # Covers 5/8 tools. Write tools (create_event, update_event,
+      # delete_event) require the full auth/calendar scope.
       - https://www.googleapis.com/auth/calendar
   http:
     base_url: https://www.googleapis.com

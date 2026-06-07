@@ -12,6 +12,10 @@ services:
     token_file: token-drive.json
     credentials_file: client-credentials.json
     scopes:
+      # Read-only alternative: https://www.googleapis.com/auth/drive.readonly
+      # Covers 8/14 tools. Write tools (upload, copy, delete, rename,
+      # create_folder, drive_export_google_doc_markdown with save_to_file)
+      # require the full auth/drive scope.
       - https://www.googleapis.com/auth/drive
   http:
     base_url: https://www.googleapis.com
