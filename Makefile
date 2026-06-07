@@ -72,11 +72,23 @@ test: arapuca
 	@echo "Running tests..."
 	go test -v -race ./...
 
+# Run nosandbox stub tests (no libarapuca needed)
+test-nosandbox:
+	@echo "Verifying nosandbox binary compiles..."
+	go build -tags nosandbox -o /dev/null ./cmd/wtmcp
+	@echo "Running nosandbox stub tests..."
+	go test -v -race -tags nosandbox ./internal/sandbox/... ./internal/server/...
+
 # Run tests with coverage
 test-cover: arapuca
 	@echo "Running tests with coverage..."
 	go test -v -race -coverprofile=coverage.out ./...
 	go tool cover -func=coverage.out
+
+# Run govulncheck (handles PKG_CONFIG_PATH for cgo)
+govulncheck: arapuca
+	@echo "Running govulncheck..."
+	govulncheck ./...
 
 # Run linter
 lint: arapuca
@@ -129,7 +141,8 @@ help:
 	@echo "  wtmcp          - Build wtmcp binary"
 	@echo "  wtmcpctl       - Build wtmcpctl binary"
 	@echo "  plugins        - Build all plugins with Makefiles"
-	@echo "  test           - Run tests"
+	@echo "  test           - Run tests (sandbox built by default)"
+	@echo "  test-nosandbox - Run nosandbox stub tests"
 	@echo "  test-cover     - Run tests with coverage report"
 	@echo "  lint           - Run golangci-lint"
 	@echo "  fmt            - Format code with gofmt"

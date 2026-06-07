@@ -9,11 +9,6 @@ repos:
         args: [--maxkb=500]
       - id: check-merge-conflict
 
-  - repo: https://github.com/golangci/golangci-lint
-    rev: v2.12.2
-    hooks:
-      - id: golangci-lint-full
-
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.11.13
     hooks:
@@ -52,23 +47,30 @@ repos:
         language: system
         types: [go]
 
+      - id: golangci-lint-full
+        name: golangci-lint-full
+        entry: bash -c 'cd "$(git rev-parse --show-toplevel)" && make lint'
+        language: system
+        types: [go]
+        pass_filenames: false
+
       - id: go-vet
         name: go vet
-        entry: bash -c 'cd "$(git rev-parse --show-toplevel)" && go vet ./...'
+        entry: bash -c 'cd "$(git rev-parse --show-toplevel)" && make vet'
         language: system
         types: [go]
         pass_filenames: false
 
       - id: go-test
         name: go test
-        entry: bash -c 'cd "$(git rev-parse --show-toplevel)" && go test ./...'
+        entry: bash -c 'cd "$(git rev-parse --show-toplevel)" && make test'
         language: system
         types: [go]
         pass_filenames: false
 
       - id: govulncheck
         name: govulncheck
-        entry: bash -c 'export PATH="$(go env GOPATH)/bin:$PATH" && cd "$(git rev-parse --show-toplevel)" && command -v govulncheck >/dev/null 2>&1 || go install golang.org/x/vuln/cmd/govulncheck@latest && govulncheck ./...'
+        entry: bash -c 'export PATH="$(go env GOPATH)/bin:$PATH" && cd "$(git rev-parse --show-toplevel)" && command -v govulncheck >/dev/null 2>&1 || go install golang.org/x/vuln/cmd/govulncheck@latest && make govulncheck'
         language: system
         types: [go]
         pass_filenames: false
