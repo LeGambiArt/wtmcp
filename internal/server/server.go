@@ -373,6 +373,10 @@ func registerPluginTools(deps *serverDeps, manifest *plugin.Manifest) {
 
 			// Apply output encoding (JSON passthrough or TOON)
 			outputText = encoding.FormatResult(callResult.Result, format, fallback)
+			if maxOutput := deps.cfg.Tools.MaxOutputSize; maxOutput > 0 && len(outputText) > maxOutput {
+				omitted := len(outputText) - maxOutput
+				outputText = truncateUTF8(outputText, maxOutput) + fmt.Sprintf("\n\n[truncated: %d bytes omitted]", omitted)
+			}
 			return framer.frameToolResult(toolName, outputText), nil
 		})
 
@@ -955,6 +959,9 @@ func truncateJSON(data json.RawMessage, maxLen int) string {
 	return s
 }
 
+// truncateUTF8 truncates s to at most maxLen bytes on a valid
+// UTF-8 boundary. May return "" if maxLen is smaller than the
+// first rune's byte length (cannot split a multi-byte rune).
 func truncateUTF8(s string, maxLen int) string {
 	if maxLen <= 0 {
 		return ""

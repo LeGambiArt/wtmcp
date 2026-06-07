@@ -126,6 +126,10 @@ type ToolsConfig struct {
 	// Discovery mode: "full" registers all tools normally;
 	// "progressive" marks non-primary tools with defer_loading.
 	Discovery string `yaml:"discovery"`
+	// MaxOutputSize truncates tool output text before framing.
+	// Protects LLM context windows from oversized responses.
+	// Default: 524288 (512KB). Set to 0 to disable.
+	MaxOutputSize int `yaml:"max_output_size"`
 }
 
 // StatsConfig controls tool usage stats collection.
@@ -246,7 +250,8 @@ func DefaultConfig() *Config {
 			ToonFallback: true,
 		},
 		Tools: ToolsConfig{
-			Discovery: "progressive",
+			Discovery:     "progressive",
+			MaxOutputSize: 512 * 1024, // 512KB
 		},
 		Stats: StatsConfig{
 			Enabled:       true,
