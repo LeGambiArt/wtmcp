@@ -136,11 +136,12 @@ func TestFrameToolResult_NonceConsistent(t *testing.T) {
 	}
 }
 
-func TestFrameToolResult_ErrorNotFramed(t *testing.T) {
-	// Error results should use mcp.NewToolResultError, not frameToolResult.
-	// This test verifies that NewToolResultError does NOT set annotations.
-	result := mcp.NewToolResultError("something failed")
+func TestFrameErrorResult_HasAnnotations(t *testing.T) {
+	result := frameErrorResult("something failed")
 
+	if !result.IsError {
+		t.Error("expected IsError=true")
+	}
 	if len(result.Content) != 1 {
 		t.Fatalf("expected 1 content, got %d", len(result.Content))
 	}
@@ -150,8 +151,14 @@ func TestFrameToolResult_ErrorNotFramed(t *testing.T) {
 		t.Fatalf("expected TextContent, got %T", result.Content[0])
 	}
 
-	if tc.Annotations != nil {
-		t.Error("error results should not have annotations")
+	if tc.Annotations == nil {
+		t.Fatal("error results should have annotations")
+	}
+	if len(tc.Annotations.Audience) != 1 || tc.Annotations.Audience[0] != mcp.RoleAssistant {
+		t.Errorf("audience = %v, want [assistant]", tc.Annotations.Audience)
+	}
+	if tc.Text != "something failed" {
+		t.Errorf("text = %q, want %q", tc.Text, "something failed")
 	}
 }
 

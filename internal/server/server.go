@@ -216,7 +216,7 @@ func registerPluginTools(deps *serverDeps, manifest *plugin.Manifest) {
 
 		srv.AddTool(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			if readOnly && !isRead {
-				return mcp.NewToolResultError("tool not available"), nil
+				return frameErrorResult("tool not available"), nil
 			}
 
 			ctx = audit.WithCorrelationID(ctx)
@@ -247,7 +247,7 @@ func registerPluginTools(deps *serverDeps, manifest *plugin.Manifest) {
 				outputText = fmt.Sprintf("rate limited — retry after %s", d.Truncate(time.Millisecond))
 				isErr = true
 				errMsg = outputText
-				return mcp.NewToolResultError(outputText), nil
+				return frameErrorResult(outputText), nil
 			}
 
 			_, handle := mgr.CallTool(ctx, toolName)
@@ -259,7 +259,7 @@ func registerPluginTools(deps *serverDeps, manifest *plugin.Manifest) {
 				}
 				isErr = true
 				errMsg = outputText
-				return mcp.NewToolResultError(outputText), nil
+				return frameErrorResult(outputText), nil
 			}
 
 			params, err := json.Marshal(req.GetArguments())
@@ -267,7 +267,7 @@ func registerPluginTools(deps *serverDeps, manifest *plugin.Manifest) {
 				outputText = "invalid parameters: " + err.Error()
 				isErr = true
 				errMsg = outputText
-				return mcp.NewToolResultError(outputText), nil //nolint:nilerr // MCP convention: tool errors returned as result, not Go error
+				return frameErrorResult(outputText), nil //nolint:nilerr // MCP convention: tool errors returned as result, not Go error
 			}
 			inputRaw = params
 
@@ -275,7 +275,7 @@ func registerPluginTools(deps *serverDeps, manifest *plugin.Manifest) {
 				outputText = err.Error()
 				isErr = true
 				errMsg = outputText
-				return mcp.NewToolResultError(outputText), nil
+				return frameErrorResult(outputText), nil
 			}
 
 			if !isRead && elicitation {
@@ -335,7 +335,7 @@ func registerPluginTools(deps *serverDeps, manifest *plugin.Manifest) {
 					}
 					isErr = true
 					errMsg = outputText
-					return mcp.NewToolResultError(outputText), nil
+					return frameErrorResult(outputText), nil
 				}
 			}
 
@@ -343,13 +343,20 @@ func registerPluginTools(deps *serverDeps, manifest *plugin.Manifest) {
 			if err != nil {
 				var pluginErr *protocol.Error
 				if isPluginError(err, &pluginErr) {
-					outputText = fmt.Sprintf("[%s] %s", pluginErr.Code, auditor.ScrubErrorText(pluginErr.Message))
+					msg := pluginErr.Message
+					if auditor != nil {
+						msg = auditor.ScrubErrorText(msg)
+					}
+					outputText = fmt.Sprintf("[%s] %s", pluginErr.Code, msg)
 				} else {
-					outputText = auditor.ScrubErrorText(err.Error())
+					outputText = err.Error()
+					if auditor != nil {
+						outputText = auditor.ScrubErrorText(outputText)
+					}
 				}
 				isErr = true
 				errMsg = outputText
-				return mcp.NewToolResultError(outputText), nil
+				return frameErrorResult(outputText), nil
 			}
 
 			// Process post-tool actions in background with a bounded
@@ -428,7 +435,7 @@ func registerDisabledPluginTools(srv *mcpserver.MCPServer, disabled map[string]p
 			reason := dp.Reason
 			name := pluginName
 			srv.AddTool(tool, func(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-				return mcp.NewToolResultError(fmt.Sprintf(
+				return frameErrorResult(fmt.Sprintf(
 					"[DISABLED] %s\n\nAfter fixing, run: plugin_reload(name=\"%s\")",
 					reason, name,
 				)), nil
@@ -497,15 +504,19 @@ func registerManagementTools(deps *serverDeps) {
 			func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 				name, ok := req.GetArguments()["name"].(string)
 				if !ok || name == "" {
-					return mcp.NewToolResultError("name is required"), nil
+					return frameErrorResult("name is required"), nil
 				}
 				if err := plugin.ValidatePluginName(name); err != nil {
-					return mcp.NewToolResultError(fmt.Sprintf("invalid plugin name: %v", err)), nil
+					return frameErrorResult(fmt.Sprintf("invalid plugin name: %v", err)), nil
 				}
 				if err := ReloadPlugin(ctx, srv, mgr, cfg, name, index, collector, auditor, rateLimiter, framer, toolOwners); err != nil {
-					return mcp.NewToolResultError(auditor.ScrubErrorText(err.Error())), nil
+					errText := err.Error()
+					if auditor != nil {
+						errText = auditor.ScrubErrorText(errText)
+					}
+					return frameErrorResult(errText), nil
 				}
-				return mcp.NewToolResultText(fmt.Sprintf("plugin %s reloaded", name)), nil
+				return sanitizedTextResult(fmt.Sprintf("plugin %s reloaded", name)), nil
 			},
 		)
 	}
@@ -604,7 +615,7 @@ func registerToolStats(srv *mcpserver.MCPServer, collector *stats.Collector) {
 			result["totals"] = totals
 
 			data, _ := json.Marshal(result)
-			return mcp.NewToolResultText(string(data)), nil
+			return sanitizedTextResult(string(data)), nil
 		},
 	)
 }

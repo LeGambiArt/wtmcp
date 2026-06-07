@@ -65,6 +65,28 @@ func (f *OutputFramer) frameToolResult(toolName, text string) *mcp.CallToolResul
 	}
 }
 
+// frameErrorResult creates a CallToolResult with IsError=true and
+// Annotations.Audience=[RoleAssistant]. Error messages may contain
+// attacker-controlled content from external API responses, so the
+// audience annotation ensures clients treat them as model-consumption
+// data rather than user-facing output.
+func frameErrorResult(text string) *mcp.CallToolResult {
+	return &mcp.CallToolResult{
+		IsError: true,
+		Content: []mcp.Content{
+			mcp.TextContent{
+				Annotated: mcp.Annotated{
+					Annotations: &mcp.Annotations{
+						Audience: []mcp.Role{mcp.RoleAssistant},
+					},
+				},
+				Type: "text",
+				Text: text,
+			},
+		},
+	}
+}
+
 func (f *OutputFramer) wrapToolOutput(toolName, text string) string {
 	safe := f.tagRegex.ReplaceAllString(text, "[escaped]")
 	return fmt.Sprintf("<tool-result-%s source=%q type=\"data\">\n%s\n</tool-result-%s>",
