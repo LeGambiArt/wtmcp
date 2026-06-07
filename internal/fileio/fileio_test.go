@@ -1203,3 +1203,43 @@ func TestReadFile_NonexistentOutputDir(t *testing.T) {
 		t.Errorf("error = %q, want 'file not found'", err.Error())
 	}
 }
+
+// ─── Fuzz Tests ──────────────────────────────────────────────────
+
+func FuzzResolvePath(f *testing.F) {
+	f.Add("normal.txt")
+	f.Add("subdir/file.txt")
+	f.Add("../escape.txt")
+	f.Add("../../etc/passwd")
+	f.Add("/etc/passwd")
+	f.Add("./valid.txt")
+	f.Add("")
+	f.Add("a\x00b")
+	f.Add(strings.Repeat("a", 300))
+	f.Add("...hidden")
+	f.Add("CON")
+	f.Add("file\nwith\nnewlines")
+	f.Add("file\twith\ttabs")
+	f.Add("\u200bzer\u00f8-width")
+	f.Add("a/b/c/d/e/f/g/h.txt")
+
+	f.Fuzz(func(t *testing.T, path string) {
+		outputDir := t.TempDir()
+
+		resolved, err := resolvePath(outputDir, path, nil)
+		if err != nil {
+			return
+		}
+
+		absOutput, _ := filepath.Abs(outputDir)
+		realOutput, symErr := filepath.EvalSymlinks(absOutput)
+		if symErr != nil {
+			realOutput = absOutput
+		}
+
+		if !strings.HasPrefix(resolved, realOutput+string(filepath.Separator)) {
+			t.Fatalf("resolvePath(%q, %q) = %q escapes output dir %q",
+				outputDir, path, resolved, realOutput)
+		}
+	})
+}
