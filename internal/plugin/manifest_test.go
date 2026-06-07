@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -1161,4 +1162,35 @@ func TestValidateUserHandlerAllowsSingleLinkFile(t *testing.T) {
 	if err := ValidateUserHandler(m); err != nil {
 		t.Errorf("single-link file should be allowed, got %v", err)
 	}
+}
+
+// ─── Fuzz Tests ──────────────────────────────────────────────────
+
+var pluginNameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,62}[a-z0-9]$`)
+
+func FuzzValidatePluginName(f *testing.F) {
+	f.Add("jira")
+	f.Add("google-drive")
+	f.Add("my_plugin")
+	f.Add("a")
+	f.Add("")
+	f.Add("A")
+	f.Add("-bad")
+	f.Add("bad-")
+	f.Add("has space")
+	f.Add("has.dot")
+	f.Add(strings.Repeat("a", 100))
+	f.Add("münchen")
+	f.Add("a\x00b")
+
+	f.Fuzz(func(t *testing.T, name string) {
+		err := ValidatePluginName(name)
+		if err != nil {
+			return
+		}
+		if !pluginNameRE.MatchString(name) {
+			t.Fatalf("ValidatePluginName(%q) passed but does not match pattern %s",
+				name, pluginNameRE.String())
+		}
+	})
 }

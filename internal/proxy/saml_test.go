@@ -1320,3 +1320,32 @@ func TestIsSAMLChallengeNegative(t *testing.T) {
 		})
 	}
 }
+
+// ─── Fuzz Tests ──────────────────────────────────────────────────
+
+func FuzzIsDomainAllowedForSSO(f *testing.F) {
+	f.Add("https://idp.example.com/sso", "https://jira.example.com", "idp.example.com")
+	f.Add("http://idp.example.com/sso", "https://jira.example.com", "idp.example.com")
+	f.Add("https://evil.com/steal", "https://jira.example.com", "idp.example.com")
+	f.Add("https://user:pass@idp.example.com", "https://jira.example.com", "idp.example.com")
+	f.Add("", "https://jira.example.com", "idp.example.com")
+	f.Add("https://jira.example.com/callback", "https://jira.example.com", "")
+	f.Add("javascript:alert(1)", "https://jira.example.com", "")
+
+	f.Fuzz(func(t *testing.T, rawURL, baseURL, domain string) {
+		result := isDomainAllowedForSSO(rawURL, baseURL, []string{domain})
+		if !result {
+			return
+		}
+		parsed, err := url.Parse(rawURL)
+		if err != nil {
+			t.Fatalf("allowed unparseable URL: %q", rawURL)
+		}
+		if parsed.Scheme != "https" {
+			t.Fatalf("allowed non-HTTPS URL: %q (scheme=%s)", rawURL, parsed.Scheme)
+		}
+		if parsed.User != nil {
+			t.Fatalf("allowed URL with userinfo: %q", rawURL)
+		}
+	})
+}
