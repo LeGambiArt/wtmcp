@@ -74,6 +74,28 @@ func (b *base) CleanupTmpDir(pluginName string) {
 	}
 }
 
+// SanitizeTaskID converts a plugin name to a valid arapuca task ID.
+// Arapuca allows [a-zA-Z0-9-] only; underscores become hyphens,
+// all other disallowed characters are stripped.
+func SanitizeTaskID(name string) (string, error) {
+	var b strings.Builder
+	b.Grow(len(name))
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z',
+			r >= '0' && r <= '9', r == '-':
+			b.WriteRune(r)
+		case r == '_':
+			b.WriteRune('-')
+		}
+	}
+	id := b.String()
+	if id == "" {
+		return "", fmt.Errorf("sanitized task ID is empty for plugin %q", name)
+	}
+	return id, nil
+}
+
 func isPython(handler string) bool {
 	return strings.HasSuffix(handler, ".py")
 }

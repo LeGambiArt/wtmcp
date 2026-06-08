@@ -86,6 +86,61 @@ func TestCleanupTmpDir(t *testing.T) {
 	}
 }
 
+func TestSanitizeTaskID(t *testing.T) {
+	tests := []struct {
+		name    string
+		in      string
+		want    string
+		wantErr bool
+	}{
+		{"simple", "my-plugin", "my-plugin", false},
+		{"underscore", "my_plugin", "my-plugin", false},
+		{"dots stripped", "my.plugin", "myplugin", false},
+		{"mixed", "my_plugin.v2", "my-pluginv2", false},
+		{"all valid", "abc-123", "abc-123", false},
+		{"uppercase preserved", "MyPlugin", "MyPlugin", false},
+		{"single valid char", "a", "a", false},
+		{"empty", "", "", true},
+		{"all dots stripped", "...", "", true},
+		{"unicode stripped", "日本語", "", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := SanitizeTaskID(tt.in)
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("SanitizeTaskID(%q) = %q, want error", tt.in, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Errorf("SanitizeTaskID(%q) unexpected error: %v", tt.in, err)
+				return
+			}
+			if got != tt.want {
+				t.Errorf("SanitizeTaskID(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSanitizeTaskIDCollision(t *testing.T) {
+	a, err := SanitizeTaskID("data_export")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := SanitizeTaskID("data-export")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a != b {
+		t.Fatalf("expected collision: %q vs %q", a, b)
+	}
+	if a != "data-export" {
+		t.Errorf("expected data-export, got %q", a)
+	}
+}
+
 func TestIsPython(t *testing.T) {
 	if !isPython("./handler.py") {
 		t.Error("handler.py should be Python")

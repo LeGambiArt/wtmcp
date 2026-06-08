@@ -12,7 +12,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strings"
 
 	"github.com/LeGambiArt/wtmcp/internal/config"
 	arapuca "github.com/sergio-correia/go-arapuca"
@@ -110,9 +109,14 @@ func (m *Manager) Launch(ctx context.Context, info PluginInfo, env map[string]st
 	}
 	env["TMPDIR"] = tmpDir
 
+	taskID, err := SanitizeTaskID(info.Name)
+	if err != nil {
+		return nil, err
+	}
+
 	cfg := arapuca.Config{
 		Profile: profile,
-		TaskID:  sanitizeTaskID(info.Name),
+		TaskID:  taskID,
 		WorkDir: info.Dir,
 		Stdin:   pipes.stdinR,
 		Stdout:  pipes.stdoutW,
@@ -205,12 +209,6 @@ func (m *Manager) limitsFor(pluginName string) config.SandboxResourceLimits {
 		}
 	}
 	return limits
-}
-
-// sanitizeTaskID converts a plugin name to a valid arapuca task ID.
-// Arapuca allows [a-zA-Z0-9-] only; underscores become hyphens.
-func sanitizeTaskID(name string) string {
-	return strings.ReplaceAll(name, "_", "-")
 }
 
 func systemReadPaths() []string {

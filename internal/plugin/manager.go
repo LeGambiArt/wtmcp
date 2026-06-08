@@ -117,7 +117,8 @@ func (m *Manager) SetSandbox(sb *sandbox.Manager) {
 func (m *Manager) Discover(dirs []string, userDir string) error {
 	// Track credential groups claimed by system plugins so user
 	// plugins cannot steal credentials by declaring the same group.
-	systemGroups := make(map[string]string) // group → plugin name
+	systemGroups := make(map[string]string)     // group → plugin name
+	sanitizedTaskIDs := make(map[string]string) // sanitized → original name
 
 	// Track all plugin names seen during discovery (including
 	// manifest-disabled) for post-loop validation of plugins.disabled.
@@ -168,6 +169,17 @@ func (m *Manager) Discover(dirs []string, userDir string) error {
 					manifest.Name, manifest.Dir, existing.Dir)
 				continue
 			}
+			taskID, err := sandbox.SanitizeTaskID(manifest.Name)
+			if err != nil {
+				log.Printf("WARNING: plugin %q: %v — skipped", manifest.Name, err)
+				continue
+			}
+			if owner, ok := sanitizedTaskIDs[taskID]; ok && owner != manifest.Name {
+				log.Printf("WARNING: plugin %q skipped — sandbox task ID %q collides with %q",
+					manifest.Name, taskID, owner)
+				continue
+			}
+			sanitizedTaskIDs[taskID] = manifest.Name
 			if isUserDir {
 				manifest.IsUserPlugin = true
 				if err := ValidateUserHandler(manifest); err != nil {
