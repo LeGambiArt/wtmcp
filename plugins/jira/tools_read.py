@@ -297,8 +297,7 @@ def get_issue_types(params):
 
     result = {
         "issue_types": [
-            {"id": t.get("id"), "name": t.get("name"), "subtask": t.get("subtask", False)}
-            for t in raw_types
+            {"id": t.get("id"), "name": t.get("name"), "subtask": t.get("subtask", False)} for t in raw_types
         ],
     }
     if project_key:
