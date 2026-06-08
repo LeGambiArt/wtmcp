@@ -158,6 +158,13 @@ This feature requires `tools.discovery: progressive` in the server
 config. In `full` mode (the default), all tools are loaded into
 context regardless of visibility.
 
+> **Security note:** Progressive discovery is a UX optimization, not
+> a security boundary. Deferred tools are fully registered with the
+> MCP server and callable by any client request. To restrict write
+> tool access, use `tool_search_exclude_write: true` (hides write
+> tools from search results) and `security.elicitation: true` (user
+> confirmation before mutations).
+
 ### Auth Variants
 
 For plugins that support multiple auth methods:

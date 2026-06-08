@@ -631,6 +631,11 @@ Plugin authors mark key tools with `visibility: primary` in
 `plugin.yaml`. All other tools default to deferred. See
 [docs/plugin-guide.md](docs/plugin-guide.md) for details.
 
+> **Note:** Progressive discovery is a UX optimization — deferred
+> tools remain fully registered and callable via the MCP protocol.
+> It is not a security boundary. Use `tool_search_exclude_write`
+> and elicitation for access control.
+
 ## Testing
 
 ```bash
