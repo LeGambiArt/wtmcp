@@ -60,3 +60,30 @@ pipeline, it calls the corresponding MCP tool. wtmcp receives the call, routes
 it to the right plugin, and returns the result.
 
 </details>
+
+## 2. Prerequisites
+
+The table below lists everything you need before running `make build`. Verify
+each tool is available by running the command in the last column.
+
+| Tool | Minimum version | Required for | Verify |
+|------|-----------------|-------------|--------|
+| [Go](https://go.dev/dl/) | 1.26+ | Building wtmcp and all Go plugins | `go version` |
+| [Git](https://git-scm.com/) | any | Cloning the repository | `git --version` |
+| [Python 3](https://www.python.org/downloads/) | 3.9+ | Jira, Confluence, GitHub, Jenkins, Snyk, and Testing Farm plugins | `python3 --version` |
+| AI client | — | Issuing natural-language commands | — |
+
+**Supported AI clients:** Claude Code, Gemini CLI, or Cursor.
+
+Go plugins (Bugzilla, GitLab, and the full Google Workspace suite) do not
+require Python.
+
+**Operating system:** Linux and macOS are supported. Windows users should run
+wtmcp inside [WSL](https://learn.microsoft.com/en-us/windows/wsl/install)
+(Windows Subsystem for Linux).
+
+> **Go toolchain auto-download.** If the exact Go toolchain version is not
+> already installed on your system, Go will download it automatically when
+> `GOTOOLCHAIN=auto` is set. Check your current setting with
+> `go env GOTOOLCHAIN` and enable auto-download with
+> `go env -w GOTOOLCHAIN=auto`.
