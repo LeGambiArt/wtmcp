@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -511,12 +512,14 @@ func (m *Manager) registerAuthBindings(name string, handle *Handle) {
 	if len(bindings) > maxDynamicDomains {
 		log.Printf("[%s] WARNING: init_ok declared %d auth bindings, capped at %d",
 			name, len(bindings), maxDynamicDomains)
+		sorted := make([]string, 0, len(bindings))
+		for d := range bindings {
+			sorted = append(sorted, d)
+		}
+		sort.Strings(sorted)
 		capped := make(map[string]string, maxDynamicDomains)
-		for domain, envVar := range bindings {
-			capped[domain] = envVar
-			if len(capped) >= maxDynamicDomains {
-				break
-			}
+		for _, d := range sorted[:maxDynamicDomains] {
+			capped[d] = bindings[d]
 		}
 		bindings = capped
 	}
