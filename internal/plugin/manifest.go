@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"log"
 	"maps"
 	"net/url"
 	"os"
@@ -682,8 +681,7 @@ func ValidateUserHandler(m *Manifest) error {
 	info, err := os.Lstat(handlerPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			log.Printf("[%s] handler does not exist yet, deferring validation", m.Name)
-			return nil
+			return fmt.Errorf("handler %q does not exist", m.Handler)
 		}
 		return fmt.Errorf("lstat handler: %w", err)
 	}

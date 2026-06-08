@@ -1051,7 +1051,7 @@ func TestValidateUserHandlerAllowsRegularFile(t *testing.T) {
 	}
 }
 
-func TestValidateUserHandlerNonexistentSkips(t *testing.T) {
+func TestValidateUserHandlerNonexistentRejects(t *testing.T) {
 	pluginDir := t.TempDir()
 
 	m := &Manifest{
@@ -1059,8 +1059,12 @@ func TestValidateUserHandlerNonexistentSkips(t *testing.T) {
 		Dir:          pluginDir,
 		IsUserPlugin: true,
 	}
-	if err := ValidateUserHandler(m); err != nil {
-		t.Errorf("nonexistent handler should skip validation, got %v", err)
+	err := ValidateUserHandler(m)
+	if err == nil {
+		t.Fatal("nonexistent handler should be rejected")
+	}
+	if !strings.Contains(err.Error(), "does not exist") {
+		t.Errorf("expected 'does not exist' error, got %v", err)
 	}
 }
 
@@ -1148,6 +1152,127 @@ func TestValidateUserHandlerAllowsSingleLinkFile(t *testing.T) {
 	}
 	if err := ValidateUserHandler(m); err != nil {
 		t.Errorf("single-link file should be allowed, got %v", err)
+	}
+}
+
+// ─── validateHandlerAtLaunch Tests ───────────────────────────────
+
+func TestValidateHandlerAtLaunchSkipsSystemPlugin(t *testing.T) {
+	m := &Manifest{
+		Handler:      "./handler",
+		Dir:          t.TempDir(),
+		IsUserPlugin: false,
+	}
+	if err := validateHandlerAtLaunch(m); err != nil {
+		t.Errorf("system plugin should skip launch validation, got %v", err)
+	}
+}
+
+func TestValidateHandlerAtLaunchAllowsRegularFile(t *testing.T) {
+	pluginDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(pluginDir, "handler"), []byte("#!/bin/bash\n"), 0o755); err != nil { //nolint:gosec
+		t.Fatal(err)
+	}
+	m := &Manifest{
+		Handler:      "./handler",
+		Dir:          pluginDir,
+		IsUserPlugin: true,
+	}
+	if err := validateHandlerAtLaunch(m); err != nil {
+		t.Errorf("regular handler should pass, got %v", err)
+	}
+}
+
+func TestValidateHandlerAtLaunchRejectsSymlink(t *testing.T) {
+	pluginDir := t.TempDir()
+	outsideDir := t.TempDir()
+	outsideHandler := filepath.Join(outsideDir, "evil")
+	if err := os.WriteFile(outsideHandler, []byte("#!/bin/bash\n"), 0o755); err != nil { //nolint:gosec
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outsideHandler, filepath.Join(pluginDir, "handler")); err != nil {
+		t.Fatal(err)
+	}
+	m := &Manifest{
+		Handler:      "./handler",
+		Dir:          pluginDir,
+		IsUserPlugin: true,
+	}
+	err := validateHandlerAtLaunch(m)
+	if err == nil {
+		t.Fatal("expected error for symlink handler at launch")
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Errorf("error = %q, want substring 'symlink'", err.Error())
+	}
+}
+
+func TestValidateHandlerAtLaunchRejectsNonexistent(t *testing.T) {
+	m := &Manifest{
+		Handler:      "./handler",
+		Dir:          t.TempDir(),
+		IsUserPlugin: true,
+	}
+	err := validateHandlerAtLaunch(m)
+	if err == nil {
+		t.Fatal("expected error for nonexistent handler at launch")
+	}
+	if !strings.Contains(err.Error(), "lstat handler at launch") {
+		t.Errorf("error = %q, want substring 'lstat handler at launch'", err.Error())
+	}
+}
+
+func TestValidateHandlerAtLaunchRejectsIntermediateDirSymlink(t *testing.T) {
+	pluginDir := t.TempDir()
+	outsideDir := t.TempDir()
+	realSubdir := filepath.Join(outsideDir, "real")
+	if err := os.MkdirAll(realSubdir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(realSubdir, "handler"), []byte("#!/bin/bash\n"), 0o755); err != nil { //nolint:gosec
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realSubdir, filepath.Join(pluginDir, "sub")); err != nil {
+		t.Fatal(err)
+	}
+	m := &Manifest{
+		Handler:      "./sub/handler",
+		Dir:          pluginDir,
+		IsUserPlugin: true,
+	}
+	err := validateHandlerAtLaunch(m)
+	if err == nil {
+		t.Fatal("expected error for handler through intermediate symlink dir")
+	}
+	if !strings.Contains(err.Error(), "escapes plugin directory at launch") {
+		t.Errorf("error = %q, want substring 'escapes plugin directory at launch'", err.Error())
+	}
+}
+
+func TestValidateHandlerAtLaunchRejectsHardlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("hardlink detection not available on Windows")
+	}
+	pluginDir := t.TempDir()
+	handler := filepath.Join(pluginDir, "handler")
+	if err := os.WriteFile(handler, []byte("#!/bin/bash\n"), 0o755); err != nil { //nolint:gosec
+		t.Fatal(err)
+	}
+	hardlink := filepath.Join(pluginDir, "handler-link")
+	if err := os.Link(handler, hardlink); err != nil {
+		t.Fatal(err)
+	}
+	m := &Manifest{
+		Handler:      "./handler",
+		Dir:          pluginDir,
+		IsUserPlugin: true,
+	}
+	err := validateHandlerAtLaunch(m)
+	if err == nil {
+		t.Fatal("expected error for hardlink handler at launch")
+	}
+	if !strings.Contains(err.Error(), "hardlink") {
+		t.Errorf("error = %q, want substring 'hardlink'", err.Error())
 	}
 }
 

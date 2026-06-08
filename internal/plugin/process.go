@@ -128,6 +128,11 @@ func (p *Process) Start(ctx context.Context) error {
 }
 
 func (p *Process) startSandboxed(stdin *io.WriteCloser, stdout, stderr *io.ReadCloser) error {
+	if err := validateHandlerAtLaunch(p.manifest); err != nil {
+		p.state = StateFailed
+		return err
+	}
+
 	launchCtx, cancel := context.WithCancel(context.Background())
 	p.cancel = cancel
 
