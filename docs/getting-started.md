@@ -8,8 +8,8 @@ mkdir -p -m 700 ~/.config/wtmcp/env.d
 cp env.d/jira.env.example ~/.config/wtmcp/env.d/jira.env
 # Edit ~/.config/wtmcp/env.d/jira.env with your credentials
 chmod 600 ~/.config/wtmcp/env.d/jira.env
-./bin/wtmcpctl agent enable claude
-./bin/wtmcpctl check
+./wtmcpctl agent enable claude
+./wtmcpctl check
 # Open Claude Code and ask: "Who am I in Jira?"
 ```
 
