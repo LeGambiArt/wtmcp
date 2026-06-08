@@ -430,21 +430,18 @@ func TestRequireWriteScopeTransientError(t *testing.T) {
 	}
 }
 
-func homeTempFile(t *testing.T, name string, content []byte) string {
+func sessionTempFile(t *testing.T, name string, content []byte) string {
 	t.Helper()
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Fatal(err)
-	}
-	dir := filepath.Join(home, ".cache", "wtmcp-test")
-	if err := os.MkdirAll(dir, 0o750); err != nil {
-		t.Fatal(err)
-	}
+	origSD := sessionDir
+	t.Cleanup(func() { sessionDir = origSD })
+
+	dir := t.TempDir()
+	sessionDir = dir
+
 	path := filepath.Join(dir, name)
 	if err := os.WriteFile(path, content, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Remove(path) })
 	return path
 }
 
@@ -570,7 +567,7 @@ func TestToolUploadFileDryRun(t *testing.T) {
 	writeScopeProbed = true
 	hasWriteScope = true
 
-	testFile := homeTempFile(t, "hello.txt", []byte("hello"))
+	testFile := sessionTempFile(t, "hello.txt", []byte("hello"))
 
 	result, err := toolUploadFile(mustJSON(t, map[string]any{
 		"file_path": testFile,
@@ -613,7 +610,7 @@ func TestToolUploadFileActual(t *testing.T) {
 		_, _ = fmt.Fprint(w, `{"id":"up1","name":"hello.txt","mimeType":"text/plain","size":"5","webViewLink":"https://drive.google.com/file/d/up1/view"}`)
 	}))
 
-	testFile := homeTempFile(t, "upload-actual.txt", []byte("hello"))
+	testFile := sessionTempFile(t, "upload-actual.txt", []byte("hello"))
 
 	result, err := toolUploadFile(mustJSON(t, map[string]any{
 		"file_path": testFile,
@@ -672,24 +669,27 @@ func TestToolUploadFileMissingPath(t *testing.T) {
 	}
 }
 
-func TestToolUploadFileRejectsOutsideHome(t *testing.T) {
+func TestToolUploadFileRejectsOutsideSession(t *testing.T) {
 	orig := hasWriteScope
 	origProbed := writeScopeProbed
+	origSD := sessionDir
 	t.Cleanup(func() {
 		hasWriteScope = orig
 		writeScopeProbed = origProbed
+		sessionDir = origSD
 	})
 	writeScopeProbed = true
 	hasWriteScope = true
+	sessionDir = t.TempDir()
 
 	_, err := toolUploadFile(mustJSON(t, map[string]any{
 		"file_path": "/etc/passwd",
 	}), nil)
 	if err == nil {
-		t.Fatal("expected error for path outside home")
+		t.Fatal("expected error for path outside session dir")
 	}
-	if !strings.Contains(err.Error(), "home directory") {
-		t.Errorf("error should mention home directory, got: %v", err)
+	if !strings.Contains(err.Error(), "session directory") {
+		t.Errorf("error should mention session directory, got: %v", err)
 	}
 }
 
@@ -985,7 +985,7 @@ func TestWriteToolsDefaultDryRunTrue(t *testing.T) {
 		_, _ = fmt.Fprint(w, `{"id":"abc","name":"default.txt","mimeType":"text/plain","size":"10"}`)
 	}))
 
-	testFile := homeTempFile(t, "default-test.txt", []byte("x"))
+	testFile := sessionTempFile(t, "default-test.txt", []byte("x"))
 
 	// Upload: omit dry_run entirely — should default to true.
 	result, err := toolUploadFile(mustJSON(t, map[string]any{
@@ -1044,9 +1044,19 @@ func TestWriteToolsDefaultDryRunTrue(t *testing.T) {
 	}
 }
 
-func TestConfineToHome(t *testing.T) {
-	home, err := os.UserHomeDir()
-	if err != nil {
+func TestConfineToSessionDir(t *testing.T) {
+	origSD := sessionDir
+	t.Cleanup(func() { sessionDir = origSD })
+
+	dir := t.TempDir()
+	sessionDir = dir
+
+	inner := filepath.Join(dir, "sub")
+	if err := os.MkdirAll(inner, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	innerFile := filepath.Join(inner, "file.txt")
+	if err := os.WriteFile(innerFile, []byte("ok"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1055,15 +1065,16 @@ func TestConfineToHome(t *testing.T) {
 		path    string
 		wantErr bool
 	}{
-		{"under home", filepath.Join(home, "docs", "file.txt"), false},
-		{"home itself", home, false},
+		{"inside session dir", innerFile, false},
+		{"session dir itself", dir, false},
 		{"etc passwd", "/etc/passwd", true},
 		{"root", "/", true},
 		{"tmp", "/tmp/file.txt", true},
+		{"traversal", filepath.Join(dir, "..", "escape"), true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			err := confineToHome(tc.path)
+			_, err := confineToSessionDir(tc.path)
 			if tc.wantErr && err == nil {
 				t.Errorf("expected error for %s", tc.path)
 			}
@@ -1073,19 +1084,47 @@ func TestConfineToHome(t *testing.T) {
 		})
 	}
 
-	t.Run("symlink escape rejected", func(t *testing.T) {
-		dir := filepath.Join(home, ".cache", "wtmcp-test")
-		if err := os.MkdirAll(dir, 0o750); err != nil {
-			t.Fatal(err)
+	t.Run("relative path resolves against session dir", func(t *testing.T) {
+		resolved, err := confineToSessionDir("sub/file.txt")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
 		}
+		if !strings.HasSuffix(resolved, "sub/file.txt") {
+			t.Errorf("resolved = %q, want suffix sub/file.txt", resolved)
+		}
+	})
+
+	t.Run("symlink escape rejected", func(t *testing.T) {
 		link := filepath.Join(dir, "escape-link")
 		if err := os.Symlink("/etc/passwd", link); err != nil {
 			t.Skipf("symlinks not supported: %v", err)
 		}
-		t.Cleanup(func() { _ = os.Remove(link) })
 
-		if err := confineToHome(link); err == nil {
-			t.Error("expected error for symlink pointing outside home")
+		if _, err := confineToSessionDir(link); err == nil {
+			t.Error("expected error for symlink pointing outside session dir")
+		}
+	})
+
+	t.Run("empty session dir", func(t *testing.T) {
+		sessionDir = ""
+		_, err := confineToSessionDir("/any/path")
+		if err == nil {
+			t.Fatal("expected error for empty sessionDir")
+		}
+		if !strings.Contains(err.Error(), "session directory") {
+			t.Errorf("error should mention session directory: %v", err)
+		}
+		sessionDir = dir
+	})
+
+	t.Run("home path outside session dir rejected", func(t *testing.T) {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			t.Skip("cannot determine home dir")
+		}
+		_, err = confineToSessionDir(filepath.Join(home, ".ssh", "id_rsa"))
+		if err == nil {
+			t.Error("expected error for path under $HOME but outside session dir")
 		}
 	})
 }

@@ -513,24 +513,38 @@ func buildSearchQuery(text string, inNameOnly bool, mimeTypes, owners []string, 
 	return strings.Join(clauses, " and ")
 }
 
-func confineToHome(absPath string) error {
-	home, err := os.UserHomeDir()
+func confineToSessionDir(filePath string) (string, error) {
+	if sessionDir == "" {
+		return "", fmt.Errorf("file_path requires a configured session directory")
+	}
+
+	if !filepath.IsAbs(filePath) {
+		filePath = filepath.Join(sessionDir, filePath)
+	}
+
+	resolvedSession, err := filepath.EvalSymlinks(sessionDir)
 	if err != nil {
-		return fmt.Errorf("determine home directory: %w", err)
+		return "", fmt.Errorf("resolve session dir: %w", err)
 	}
-	if resolved, err := filepath.EvalSymlinks(home); err == nil {
-		home = resolved
+	resolved, err := filepath.EvalSymlinks(filePath)
+	if err != nil {
+		return "", fmt.Errorf("resolve path: %w", err)
 	}
-	// Resolve symlinks on the target path so that ~/link -> /etc/passwd
-	// doesn't bypass the prefix check.
-	resolved := absPath
-	if r, err := filepath.EvalSymlinks(absPath); err == nil {
-		resolved = r
+
+	absSession, err := filepath.Abs(resolvedSession)
+	if err != nil {
+		return "", fmt.Errorf("abs session dir: %w", err)
 	}
-	if !strings.HasPrefix(resolved, home+string(os.PathSeparator)) && resolved != home {
-		return fmt.Errorf("file_path must be under the user's home directory")
+	absResolved, err := filepath.Abs(resolved)
+	if err != nil {
+		return "", fmt.Errorf("abs file path: %w", err)
 	}
-	return nil
+
+	if !strings.HasPrefix(absResolved, absSession+string(os.PathSeparator)) &&
+		absResolved != absSession {
+		return "", fmt.Errorf("file_path must be under the session directory")
+	}
+	return absResolved, nil
 }
 
 var errNoWriteScope = fmt.Errorf("write operations require re-authorization with drive (read-write) scope; " +
@@ -674,25 +688,22 @@ func toolUploadFile(params, _ json.RawMessage) (any, error) {
 		return nil, fmt.Errorf("file_path is required")
 	}
 
-	absPath, err := filepath.Abs(p.FilePath)
+	resolved, err := confineToSessionDir(p.FilePath)
 	if err != nil {
-		return nil, fmt.Errorf("resolve path: %w", err)
-	}
-	if err := confineToHome(absPath); err != nil {
 		return nil, err
 	}
 
-	info, err := os.Stat(absPath)
+	info, err := os.Stat(resolved)
 	if err != nil {
 		return nil, fmt.Errorf("stat file: %w", err)
 	}
-	if info.IsDir() {
-		return nil, fmt.Errorf("file_path is a directory, not a file")
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("not a regular file")
 	}
 
 	name := p.Name
 	if name == "" {
-		name = filepath.Base(absPath)
+		name = filepath.Base(resolved)
 	}
 
 	if p.DryRun {
@@ -711,7 +722,7 @@ func toolUploadFile(params, _ json.RawMessage) (any, error) {
 		return result, nil
 	}
 
-	f, err := os.Open(absPath) //nolint:gosec // path validated above
+	f, err := os.Open(resolved) //nolint:gosec // path validated above
 	if err != nil {
 		return nil, fmt.Errorf("open file: %w", err)
 	}
