@@ -3,6 +3,7 @@ package server
 import (
 	"strings"
 	"testing"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -50,6 +51,13 @@ func TestSanitizeContent_ZeroWidthChars(t *testing.T) {
 		{"ZWJ preserved", "hello\u200dworld", "hello\u200dworld"},
 		{"all stripped", "\u200b\u200c\u200e\u200f\u2060\ufeff", ""},
 		{"mixed with ZWJ", "\u200b\u200d\u200c", "\u200d"},
+		{"soft hyphen", "pass\u00adword", "password"},
+		{"bidi LRE", "hello\u202aworld", "helloworld"},
+		{"bidi RLE", "hello\u202bworld", "helloworld"},
+		{"bidi PDF", "hello\u202cworld", "helloworld"},
+		{"bidi LRI", "hello\u2066world", "helloworld"},
+		{"bidi RLI", "hello\u2067world", "helloworld"},
+		{"arabic letter mark", "hello\u061cworld", "helloworld"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -115,6 +123,8 @@ func FuzzSanitizeContent(f *testing.F) {
 	f.Add("\u200b\u200c\u200d\u200e\u200f\u2060\ufeff")
 	f.Add("<!-- \u200b hidden \u200c -->")
 	f.Add("<\u200b!-- hidden -->")
+	f.Add("pass\u00adword")
+	f.Add("hello\u202a\u202b\u202cworld")
 	f.Add(strings.Repeat("<!--", 1000))
 	f.Add(strings.Repeat("-->", 1000))
 	f.Add("")
@@ -127,12 +137,15 @@ func FuzzSanitizeContent(f *testing.F) {
 		if !utf8.ValidString(output) {
 			t.Fatalf("sanitizeContent produced invalid UTF-8")
 		}
-		for _, r := range []rune{0x200b, 0x200c, 0x200e, 0x200f, 0x2060, 0xfeff} {
-			if strings.ContainsRune(output, r) {
-				t.Errorf("output still contains U+%04X", r)
+		for _, r := range output {
+			if r != '\u200d' && unicode.Is(unicode.Cf, r) {
+				t.Errorf("output still contains format character U+%04X", r)
 			}
 		}
-		if strings.ContainsRune(input, 0x200d) && !strings.ContainsRune(output, 0x200d) {
+		// ZWJ inside an HTML comment is legitimately removed with the
+		// comment. Only flag if ZWJ existed outside all comments.
+		stripped := htmlCommentRE.ReplaceAllString(input, "")
+		if strings.ContainsRune(stripped, 0x200d) && !strings.ContainsRune(output, 0x200d) {
 			t.Error("ZWJ (U+200D) was incorrectly stripped")
 		}
 	})

@@ -3,23 +3,26 @@ package server
 import (
 	"regexp"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
 // htmlCommentRE matches HTML comments including multi-line.
 var htmlCommentRE = regexp.MustCompile(`<!--[\s\S]*?-->`)
 
-// zeroWidthChars strips Unicode zero-width characters that can
-// encode hidden instructions. U+200D (zero-width joiner) is excluded
-// because it has legitimate uses in emoji sequences and Indic scripts.
-var zeroWidthChars = strings.NewReplacer(
-	"\u200b", "", // zero-width space
-	"\u200c", "", // zero-width non-joiner
-	"\u200e", "", // left-to-right mark
-	"\u200f", "", // right-to-left mark
-	"\u2060", "", // word joiner
-	"\ufeff", "", // byte order mark
-)
+// stripFormatChars removes all Unicode format characters (category
+// Cf) that can encode hidden instructions: zero-width spaces, bidi
+// overrides, tag characters, soft hyphens, etc. U+200D (zero-width
+// joiner) is preserved for emoji sequences and Indic scripts.
+func stripFormatChars(r rune) rune {
+	if r == '\u200d' {
+		return r
+	}
+	if unicode.Is(unicode.Cf, r) {
+		return -1
+	}
+	return r
+}
 
 // sanitizeContent strips HTML comments and zero-width Unicode
 // characters from tool output text.
@@ -34,7 +37,7 @@ func sanitizeContent(text string) string {
 	// char inside a delimiter (e.g. <​!--) prevents the regex
 	// from matching, then stripping afterward reassembles a valid
 	// comment in the output.
-	text = zeroWidthChars.Replace(text)
+	text = strings.Map(stripFormatChars, text)
 	text = htmlCommentRE.ReplaceAllString(text, "")
 	return text
 }
