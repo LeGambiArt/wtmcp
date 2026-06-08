@@ -316,6 +316,8 @@ func resolveCredentialPath(path, credentialsDir string) (string, error) {
 	}
 	if resolvedBase, err := filepath.EvalSymlinks(base); err == nil {
 		base = resolvedBase
+	} else if !os.IsNotExist(err) {
+		return "", fmt.Errorf("resolve credentials base: %w", err)
 	}
 	var resolved string
 	if filepath.IsAbs(path) {
@@ -325,9 +327,13 @@ func resolveCredentialPath(path, credentialsDir string) (string, error) {
 	}
 	if r, err := filepath.EvalSymlinks(resolved); err == nil {
 		resolved = r
+	} else if !os.IsNotExist(err) {
+		return "", fmt.Errorf("resolve credential path: %w", err)
 	} else if dir := filepath.Dir(resolved); dir != resolved {
 		if rd, err := filepath.EvalSymlinks(dir); err == nil {
 			resolved = filepath.Join(rd, filepath.Base(resolved))
+		} else if !os.IsNotExist(err) {
+			return "", fmt.Errorf("resolve credential parent dir: %w", err)
 		}
 	}
 	cleanBase := filepath.Clean(base)
