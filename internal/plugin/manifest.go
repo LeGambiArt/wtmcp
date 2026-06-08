@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"log"
 	"maps"
 	"net/url"
 	"os"
@@ -681,7 +682,8 @@ func ValidateUserHandler(m *Manifest) error {
 	info, err := os.Lstat(handlerPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil // handler may not exist yet during manifest-only validation
+			log.Printf("[%s] handler does not exist yet, deferring validation", m.Name)
+			return nil
 		}
 		return fmt.Errorf("lstat handler: %w", err)
 	}

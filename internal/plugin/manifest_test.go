@@ -250,7 +250,7 @@ func TestManifestValidation(t *testing.T) {
 				t.Fatal("expected error")
 			}
 			if tt.wantErr != "" {
-				if !contains(err.Error(), tt.wantErr) {
+				if !strings.Contains(err.Error(), tt.wantErr) {
 					t.Errorf("error = %q, want substring %q", err.Error(), tt.wantErr)
 				}
 			}
@@ -554,7 +554,7 @@ services:
 	if err == nil {
 		t.Fatal("expected error for IP in allowed_domains")
 	}
-	if !contains(err.Error(), "IP addresses") {
+	if !strings.Contains(err.Error(), "IP addresses") {
 		t.Errorf("error = %q, want substring 'IP addresses'", err.Error())
 	}
 }
@@ -848,22 +848,9 @@ tools: []
 	if err == nil {
 		t.Fatal("expected error for symlink escaping plugin dir")
 	}
-	if !contains(err.Error(), "escapes plugin directory") {
+	if !strings.Contains(err.Error(), "escapes plugin directory") {
 		t.Errorf("error = %q, want substring 'escapes plugin directory'", err.Error())
 	}
-}
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && searchSubstring(s, substr)
-}
-
-func searchSubstring(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }
 
 func TestLoadManifest_SizeLimit(t *testing.T) {
@@ -999,7 +986,7 @@ func TestValidateUserHandlerRejectsSymlink(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for symlink handler in user plugin")
 	}
-	if !contains(err.Error(), "symlink") {
+	if !strings.Contains(err.Error(), "symlink") {
 		t.Errorf("error = %q, want substring 'symlink'", err.Error())
 	}
 }
@@ -1043,7 +1030,7 @@ func TestValidateUserHandlerRejectsDanglingSymlink(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for dangling symlink handler in user plugin")
 	}
-	if !contains(err.Error(), "symlink") {
+	if !strings.Contains(err.Error(), "symlink") {
 		t.Errorf("error = %q, want substring 'symlink'", err.Error())
 	}
 }
@@ -1101,7 +1088,7 @@ func TestValidateUserHandlerIntermediateDirSymlink(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for handler via symlinked intermediate directory")
 	}
-	if !contains(err.Error(), "escapes plugin directory") {
+	if !strings.Contains(err.Error(), "escapes plugin directory") {
 		t.Errorf("error = %q, want 'escapes plugin directory'", err.Error())
 	}
 }
@@ -1140,7 +1127,7 @@ func TestValidateUserHandlerRejectsHardlink(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for hardline handler in user plugin")
 	}
-	if !contains(err.Error(), "hardlink") {
+	if !strings.Contains(err.Error(), "hardlink") {
 		t.Errorf("error = %q, want substring 'hardlink'", err.Error())
 	}
 }
