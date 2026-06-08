@@ -1358,8 +1358,8 @@ func TestSanitizeReason(t *testing.T) {
 			name:    "strips custom envDir outside workdir",
 			workdir: "/home/user/.config/wtmcp",
 			envDir:  "/opt/secrets/env.d",
-			reason:  "/opt/secrets/env.d has mode 0755, must not be accessible",
-			want:    "env.d has mode 0755, must not be accessible",
+			reason:  "/opt/secrets/env.d/jira.env has mode 0755, must not be accessible",
+			want:    "env.d/jira.env has mode 0755, must not be accessible",
 		},
 		{
 			name:    "envDir under workdir uses workdir stripping only",
@@ -1367,6 +1367,13 @@ func TestSanitizeReason(t *testing.T) {
 			envDir:  "/home/user/.config/wtmcp/env.d",
 			reason:  "/home/user/.config/wtmcp/env.d has mode 0755",
 			want:    "env.d has mode 0755",
+		},
+		{
+			name:    "envDir stripped when workdir is empty",
+			workdir: "",
+			envDir:  "/opt/secrets/env.d",
+			reason:  "/opt/secrets/env.d/jira.env has mode 0644",
+			want:    "env.d/jira.env has mode 0644",
 		},
 	}
 

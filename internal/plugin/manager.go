@@ -1018,7 +1018,8 @@ func (m *Manager) sanitizeReason(reason string) string {
 	if m.workdir != "" {
 		reason = strings.ReplaceAll(reason, m.workdir+"/", "")
 	}
-	if m.envDir != "" && !strings.HasPrefix(m.envDir, m.workdir+"/") {
+	if m.envDir != "" && (m.workdir == "" || !strings.HasPrefix(m.envDir, m.workdir+"/")) {
+		reason = strings.ReplaceAll(reason, m.envDir+"/", "env.d/")
 		reason = strings.ReplaceAll(reason, m.envDir, "env.d")
 	}
 	if m.cfg != nil && m.cfg.Secrets.VaultPasswordFile != "" {
@@ -1029,6 +1030,7 @@ func (m *Manager) sanitizeReason(reason string) string {
 	}
 	if m.cfg.CredentialsDir != "" {
 		reason = strings.ReplaceAll(reason, m.cfg.CredentialsDir+"/", "credentials/")
+		reason = strings.ReplaceAll(reason, m.cfg.CredentialsDir, "credentials")
 	}
 	for _, path := range m.cfg.Secrets.VaultIDs {
 		if path != "" {
