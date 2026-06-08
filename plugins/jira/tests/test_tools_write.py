@@ -811,6 +811,47 @@ class TestClearParent:
             assert "/rest/agile/1.0/epic/none/issue" in agile_call[0][1]
 
 
+# --- jira_set_issue_type ---
+
+
+class TestSetIssueType:
+    def test_dry_run(self):
+        result = tools_write.set_issue_type({"issue_key": "PROJ-1", "issue_type": "Bug", "dry_run": True})
+        assert result["dry_run"] is True
+        assert result["action"] == "jira_set_issue_type"
+        assert result["issue_key"] == "PROJ-1"
+        assert result["issue_type"] == "Bug"
+
+    def test_success(self):
+        with _mock_http(204, {}):
+            result = tools_write.set_issue_type({"issue_key": "PROJ-1", "issue_type": "Story", "dry_run": False})
+            assert result["success"] is True
+            assert result["issue_type"] == "Story"
+
+    def test_sends_correct_payload(self):
+        with _mock_http(204, {}) as mock_http:
+            tools_write.set_issue_type({"issue_key": "PROJ-1", "issue_type": "Epic", "dry_run": False})
+            call_body = mock_http.call_args[1].get("body") or mock_http.call_args[0][3]
+            assert call_body == {"fields": {"issuetype": {"name": "Epic"}}}
+
+    def test_http_error(self):
+        with _mock_http(400, {"errorMessages": ["Cannot change type"]}):
+            result = tools_write.set_issue_type({"issue_key": "PROJ-1", "issue_type": "Epic", "dry_run": False})
+            assert "error" in result
+
+    def test_invalid_key_raises(self):
+        with pytest.raises(ValueError, match="Invalid issue key"):
+            tools_write.set_issue_type({"issue_key": "bad", "issue_type": "Bug"})
+
+    def test_empty_issue_type_raises(self):
+        with pytest.raises(ValueError, match="issue_type is required"):
+            tools_write.set_issue_type({"issue_key": "PROJ-1", "issue_type": ""})
+
+    def test_whitespace_issue_type_raises(self):
+        with pytest.raises(ValueError, match="issue_type is required"):
+            tools_write.set_issue_type({"issue_key": "PROJ-1", "issue_type": "   "})
+
+
 # --- Cache invalidation ---
 
 

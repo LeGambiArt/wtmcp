@@ -567,6 +567,31 @@ def clear_parent(params):
     return {"success": True, "issue_keys": issue_keys}
 
 
+def set_issue_type(params):
+    """Change the issue type of a Jira issue."""
+    issue_key = validate_issue_key(params.get("issue_key", ""))
+    issue_type = params.get("issue_type", "")
+    dry_run = params.get("dry_run", True)
+
+    if not issue_type.strip():
+        raise ValueError("issue_type is required")
+
+    if dry_run:
+        return {
+            "dry_run": True,
+            "action": "jira_set_issue_type",
+            "issue_key": issue_key,
+            "issue_type": issue_type,
+        }
+
+    fields = {"issuetype": {"name": issue_type}}
+    status, body, _ = handler.http("PUT", f"/rest/api/2/issue/{issue_key}", body={"fields": fields})
+    if status < 200 or status >= 300:
+        return http_error(status, body)
+    handler.invalidate_cache(issue_key)
+    return {"success": True, "issue_key": issue_key, "issue_type": issue_type}
+
+
 TOOLS = {
     "jira_create_issue": create_issue,
     "jira_add_comment": add_comment,
@@ -588,4 +613,5 @@ TOOLS = {
     "jira_add_issues_to_backlog": add_issues_to_backlog,
     "jira_set_parent": set_parent,
     "jira_clear_parent": clear_parent,
+    "jira_set_issue_type": set_issue_type,
 }

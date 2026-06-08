@@ -577,6 +577,61 @@ class TestGetLinkTypes:
             assert result["error"] == "HTTP 403"
 
 
+# --- jira_get_issue_types ---
+
+
+class TestGetIssueTypes:
+    def test_project_specific(self):
+        project_body = {
+            "key": "PROJ",
+            "issueTypes": [
+                {"id": "1", "name": "Bug", "subtask": False},
+                {"id": "2", "name": "Story", "subtask": False},
+                {"id": "3", "name": "Sub-task", "subtask": True},
+            ],
+        }
+        with _mock_cache_get(None), _mock_http(200, project_body) as mock_http, _mock_cache_set() as mock_set:
+            result = tools_read.get_issue_types({"project_key": "PROJ"})
+            assert result["project_key"] == "PROJ"
+            assert len(result["issue_types"]) == 3
+            assert result["issue_types"][0] == {"id": "1", "name": "Bug", "subtask": False}
+            assert result["issue_types"][2]["subtask"] is True
+            mock_http.assert_called_once_with("GET", "/rest/api/2/project/PROJ")
+            mock_set.assert_called_once()
+            assert mock_set.call_args[1]["ttl"] == 3600
+
+    def test_all_instance_types(self):
+        all_types = [
+            {"id": "10", "name": "Epic", "subtask": False},
+            {"id": "11", "name": "Task", "subtask": False},
+        ]
+        with _mock_cache_get(None), _mock_http(200, all_types) as mock_http, _mock_cache_set():
+            result = tools_read.get_issue_types({})
+            assert "project_key" not in result
+            assert len(result["issue_types"]) == 2
+            mock_http.assert_called_once_with("GET", "/rest/api/2/issuetype")
+
+    def test_cache_hit(self):
+        cached = {"issue_types": [{"id": "1", "name": "Bug", "subtask": False}], "project_key": "PROJ"}
+        with _mock_cache_get(cached):
+            result = tools_read.get_issue_types({"project_key": "PROJ"})
+            assert result == cached
+
+    def test_cache_key_varies_by_project(self):
+        keys = set()
+        body = {"key": "X", "issueTypes": [{"id": "1", "name": "Bug"}]}
+        for proj in ["PROJ", "OTHER"]:
+            with _mock_cache_get(None), _mock_http(200, body), _mock_cache_set() as mock_set:
+                tools_read.get_issue_types({"project_key": proj})
+                keys.add(mock_set.call_args[0][0])
+        assert len(keys) == 2
+
+    def test_http_error(self):
+        with _mock_cache_get(None), _mock_http(404, {"error": "Project not found"}):
+            result = tools_read.get_issue_types({"project_key": "NOPE"})
+            assert result["error"] == "HTTP 404"
+
+
 # --- jira_flush_cache ---
 
 

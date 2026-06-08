@@ -275,6 +275,38 @@ def get_link_types(_params):
     return body
 
 
+def get_issue_types(params):
+    """Get available issue types for a project, cached for 1 hour."""
+    project_key = params.get("project_key", "")
+
+    cache_key = f"issue_types:{project_key}" if project_key else "issue_types:all"
+    cached = handler.cache_get(cache_key)
+    if cached:
+        return cached
+
+    if project_key:
+        status, body, _ = handler.http("GET", f"/rest/api/2/project/{project_key}")
+        if status < 200 or status >= 300:
+            return http_error(status, body)
+        raw_types = body.get("issueTypes", []) if isinstance(body, dict) else []
+    else:
+        status, body, _ = handler.http("GET", "/rest/api/2/issuetype")
+        if status < 200 or status >= 300:
+            return http_error(status, body)
+        raw_types = body if isinstance(body, list) else []
+
+    result = {
+        "issue_types": [
+            {"id": t.get("id"), "name": t.get("name"), "subtask": t.get("subtask", False)}
+            for t in raw_types
+        ],
+    }
+    if project_key:
+        result["project_key"] = project_key
+    handler.cache_set(cache_key, result, ttl=3600)
+    return result
+
+
 def flush_cache(_params):
     """Flush all Jira plugin cache entries."""
     handler.cache_flush()
@@ -289,5 +321,6 @@ TOOLS = {
     "jira_get_transitions": get_transitions,
     "jira_get_resolutions": get_resolutions,
     "jira_get_link_types": get_link_types,
+    "jira_get_issue_types": get_issue_types,
     "jira_flush_cache": flush_cache,
 }

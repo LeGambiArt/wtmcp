@@ -134,6 +134,17 @@ tools:
       link type names.
     params: {}
 
+  - name: jira_get_issue_types
+    access: read
+    description: >
+      Get available issue types for a project. Use before
+      jira_set_issue_type to find valid issue type names.
+      Optionally filter by project key. Cached for 1 hour.
+    params:
+      project_key:
+        type: string
+        description: "Project key to list types for (e.g. PROJ). If omitted, lists all instance types."
+
   - name: jira_flush_cache
     access: read
     description: >
@@ -565,6 +576,25 @@ tools:
         type: string
         required: true
         description: "Comma-separated issue keys to unlink from their parent"
+      dry_run:
+        type: boolean
+        default: true
+
+  - name: jira_set_issue_type
+    access: write
+    description: >
+      Change the issue type of a Jira issue (e.g. Story to Bug,
+      Task to Epic). Use jira_get_issue_types first to find valid
+      type names for the project. Defaults to dry_run=true.
+    params:
+      issue_key:
+        type: string
+        required: true
+        description: "Issue key (e.g. PROJ-123)"
+      issue_type:
+        type: string
+        required: true
+        description: "Target issue type name (e.g. Bug, Story, Task, Epic)"
       dry_run:
         type: boolean
         default: true
