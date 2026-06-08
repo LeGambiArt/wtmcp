@@ -134,7 +134,7 @@ func New(version string, manager *plugin.Manager, cfg *config.Config, index *Too
 	}
 
 	// Register disabled plugin tools with [DISABLED] descriptions
-	registerDisabledPluginTools(srv, disabled, progressive, cfg.ReadOnly)
+	registerDisabledPluginTools(srv, disabled, progressive, cfg.ReadOnly, auditor)
 
 	// Register context files as MCP resources
 	registerContextResources(srv, manager, collector)
@@ -188,7 +188,7 @@ func registerPluginTools(deps *serverDeps, manifest *plugin.Manifest) {
 
 		tool, schemaJSON := buildMCPTool(toolDef, progressive)
 		if manifest.IsUserPlugin {
-			tool.Description = "[user plugin] " + tool.Description
+			tool.Description = "[user plugin] " + sanitizeContent(tool.Description)
 		}
 		format := outputFormat
 		fallback := deps.cfg.Output.ToonFallback
@@ -421,7 +421,7 @@ func buildMCPTool(def plugin.ToolDef, progressive bool) (mcp.Tool, []byte) {
 	return tool, schemaJSON
 }
 
-func registerDisabledPluginTools(srv *mcpserver.MCPServer, disabled map[string]plugin.DisabledPlugin, progressive bool, readOnly bool) {
+func registerDisabledPluginTools(srv *mcpserver.MCPServer, disabled map[string]plugin.DisabledPlugin, progressive bool, readOnly bool, auditor *audit.Logger) {
 	for _, dp := range disabled {
 		pluginName := dp.Name
 		for _, toolDef := range dp.Manifest.Tools {
@@ -434,12 +434,16 @@ func registerDisabledPluginTools(srv *mcpserver.MCPServer, disabled map[string]p
 			}
 
 			tool, _ := buildMCPTool(toolDef, progressive)
+			prefix := "[DISABLED]"
+			if dp.Manifest.IsUserPlugin {
+				prefix = "[DISABLED] [user plugin]"
+			}
 			tool.Description = fmt.Sprintf(
-				"[DISABLED] %s — after fixing, run plugin_reload(name=\"%s\") to enable.\n\n---\n\n%s",
-				sanitizeContent(dp.Reason), pluginName, sanitizeContent(toolDef.Description),
+				"%s %s — after fixing, run plugin_reload(name=\"%s\") to enable.\n\n---\n\n%s",
+				prefix, sanitizeContent(dp.Reason), pluginName, sanitizeContent(toolDef.Description),
 			)
 
-			reason := dp.Reason
+			reason := auditor.ScrubErrorText(dp.Reason)
 			name := pluginName
 			srv.AddTool(tool, func(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 				return frameErrorResult(fmt.Sprintf(
@@ -706,7 +710,7 @@ func ReloadPlugin(ctx context.Context, srv *mcpserver.MCPServer, mgr *plugin.Man
 	// so checking manifests first would skip the disabled branch.
 	if dp, ok := mgr.DisabledPlugins()[name]; ok {
 		single := map[string]plugin.DisabledPlugin{name: dp}
-		registerDisabledPluginTools(srv, single, progressive, cfg.ReadOnly)
+		registerDisabledPluginTools(srv, single, progressive, cfg.ReadOnly, auditor)
 	} else if manifest, ok := mgr.Manifests()[name]; ok {
 		registerPluginTools(deps, manifest)
 		registerPluginContextResources(srv, manifest, collector)
@@ -755,7 +759,7 @@ func ReloadPlugin(ctx context.Context, srv *mcpserver.MCPServer, mgr *plugin.Man
 // this function reconciles the tool list after startup completes.
 //
 // Call this after mgr.StartPending() returns (or after WaitLoaded).
-func SwapStartFailedTools(srv *mcpserver.MCPServer, mgr *plugin.Manager, cfg *config.Config) {
+func SwapStartFailedTools(srv *mcpserver.MCPServer, mgr *plugin.Manager, cfg *config.Config, auditor *audit.Logger) {
 	progressive := cfg.Tools.Discovery == "progressive"
 
 	for name, dp := range mgr.DisabledPlugins() {
@@ -782,7 +786,7 @@ func SwapStartFailedTools(srv *mcpserver.MCPServer, mgr *plugin.Manager, cfg *co
 		srv.DeleteTools(toolNames...)
 
 		single := map[string]plugin.DisabledPlugin{name: dp}
-		registerDisabledPluginTools(srv, single, progressive, cfg.ReadOnly)
+		registerDisabledPluginTools(srv, single, progressive, cfg.ReadOnly, auditor)
 		log.Printf("swapped tools for failed plugin %s to [DISABLED] stubs", name)
 	}
 }
