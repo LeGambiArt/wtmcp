@@ -314,15 +314,25 @@ func resolveCredentialPath(path, credentialsDir string) (string, error) {
 		}
 		base = filepath.Join(home, ".config", "wtmcp", "credentials")
 	}
+	if resolvedBase, err := filepath.EvalSymlinks(base); err == nil {
+		base = resolvedBase
+	}
 	var resolved string
 	if filepath.IsAbs(path) {
 		resolved = filepath.Clean(path)
 	} else {
 		resolved = filepath.Clean(filepath.Join(base, path))
 	}
+	if r, err := filepath.EvalSymlinks(resolved); err == nil {
+		resolved = r
+	} else if dir := filepath.Dir(resolved); dir != resolved {
+		if rd, err := filepath.EvalSymlinks(dir); err == nil {
+			resolved = filepath.Join(rd, filepath.Base(resolved))
+		}
+	}
 	cleanBase := filepath.Clean(base)
 	if resolved != cleanBase &&
-		!strings.HasPrefix(resolved, cleanBase+string(os.PathSeparator)) {
+		!strings.HasPrefix(resolved, cleanBase+string(filepath.Separator)) {
 		return "", fmt.Errorf("credential path escapes credentials directory: %s", path)
 	}
 	return resolved, nil

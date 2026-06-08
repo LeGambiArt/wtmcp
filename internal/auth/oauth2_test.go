@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -182,4 +183,61 @@ func TestResolveCredentialPath(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("traversal rejected", func(t *testing.T) {
+		_, err := resolveCredentialPath("../../etc/passwd", "/opt/creds")
+		if err == nil {
+			t.Error("expected error for path traversal")
+		}
+	})
+
+	t.Run("symlink in base dir resolved", func(t *testing.T) {
+		realDir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(realDir, "token.json"), []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		parent := t.TempDir()
+		link := filepath.Join(parent, "creds-link")
+		if err := os.Symlink(realDir, link); err != nil {
+			t.Skipf("symlinks not supported: %v", err)
+		}
+		result, err := resolveCredentialPath("token.json", link)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		realDirResolved, _ := filepath.EvalSymlinks(realDir)
+		if !strings.HasPrefix(result, realDirResolved) {
+			t.Errorf("expected resolved path under %s, got %s", realDirResolved, result)
+		}
+	})
+
+	t.Run("absolute path through symlinked base with nonexistent file", func(t *testing.T) {
+		realDir := t.TempDir()
+		parent := t.TempDir()
+		link := filepath.Join(parent, "creds-link")
+		if err := os.Symlink(realDir, link); err != nil {
+			t.Skipf("symlinks not supported: %v", err)
+		}
+		absPath := filepath.Join(link, "new-token.json")
+		result, err := resolveCredentialPath(absPath, link)
+		if err != nil {
+			t.Fatalf("should accept absolute path through symlinked base for new file: %v", err)
+		}
+		realDirResolved, _ := filepath.EvalSymlinks(realDir)
+		if !strings.HasPrefix(result, realDirResolved) {
+			t.Errorf("expected resolved path under %s, got %s", realDirResolved, result)
+		}
+	})
+
+	t.Run("symlink escaping base rejected", func(t *testing.T) {
+		dir := t.TempDir()
+		link := filepath.Join(dir, "escape")
+		if err := os.Symlink("/etc/passwd", link); err != nil {
+			t.Skipf("symlinks not supported: %v", err)
+		}
+		_, err := resolveCredentialPath("escape", dir)
+		if err == nil {
+			t.Error("expected error for symlink escaping credentials dir")
+		}
+	})
 }
