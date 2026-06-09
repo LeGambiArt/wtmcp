@@ -10,6 +10,7 @@ from helpers import (
     http_error,
     is_user_alias,
     validate_issue_key,
+    validate_project_key,
 )
 
 
@@ -277,9 +278,10 @@ def get_link_types(_params):
 
 def get_issue_types(params):
     """Get available issue types for a project, cached for 1 hour."""
-    project_key = params.get("project_key", "")
+    raw_key = params.get("project_key", "")
+    project_key = validate_project_key(raw_key) if raw_key else ""
 
-    cache_key = f"issue_types:{project_key}" if project_key else "issue_types:all"
+    cache_key = f"issue_types:project:{project_key}" if project_key else "issue_types:global"
     cached = handler.cache_get(cache_key)
     if cached:
         return cached

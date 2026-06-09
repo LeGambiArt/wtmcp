@@ -8,6 +8,7 @@ import math
 import re
 
 _ISSUE_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]+-\d+$")
+_PROJECT_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]+$")
 
 _USER_ALIASES = frozenset({"me", "myself", "currentuser"})
 
@@ -96,6 +97,17 @@ def validate_issue_key(key):
     cleaned = key.strip().upper()
     if not _ISSUE_KEY_RE.match(cleaned):
         raise ValueError(f"Invalid issue key: '{key}' (expected format: PROJECT-123)")
+    return cleaned
+
+
+def validate_project_key(key):
+    """Validate and return a cleaned project key.
+
+    Raises ValueError if key doesn't match Jira's project key format.
+    """
+    cleaned = key.strip().upper()
+    if not _PROJECT_KEY_RE.match(cleaned):
+        raise ValueError(f"Invalid project key: '{key}' (expected format: PROJ)")
     return cleaned
 
 

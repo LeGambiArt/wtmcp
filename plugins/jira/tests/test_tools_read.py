@@ -3,6 +3,7 @@
 from unittest.mock import patch
 
 import handler
+import pytest
 import tools_read
 
 
@@ -402,8 +403,6 @@ class TestGetIssues:
         assert result == {"issues": [], "count": 0}
 
     def test_invalid_key_raises(self):
-        import pytest
-
         with pytest.raises(ValueError, match="Invalid issue key"):
             tools_read.get_issues({"issue_keys": "bad-key"})
 
@@ -505,8 +504,6 @@ class TestGetTransitions:
             assert result["transitions"][0]["name"] == "Start Progress"
 
     def test_invalid_key(self):
-        import pytest
-
         with pytest.raises(ValueError, match="Invalid issue key"):
             tools_read.get_transitions({"issue_key": "bad"})
 
@@ -598,6 +595,7 @@ class TestGetIssueTypes:
             assert result["issue_types"][2]["subtask"] is True
             mock_http.assert_called_once_with("GET", "/rest/api/2/project/PROJ")
             mock_set.assert_called_once()
+            assert mock_set.call_args[0][0] == "issue_types:project:PROJ"
             assert mock_set.call_args[1]["ttl"] == 3600
 
     def test_all_instance_types(self):
@@ -605,11 +603,12 @@ class TestGetIssueTypes:
             {"id": "10", "name": "Epic", "subtask": False},
             {"id": "11", "name": "Task", "subtask": False},
         ]
-        with _mock_cache_get(None), _mock_http(200, all_types) as mock_http, _mock_cache_set():
+        with _mock_cache_get(None), _mock_http(200, all_types) as mock_http, _mock_cache_set() as mock_set:
             result = tools_read.get_issue_types({})
             assert "project_key" not in result
             assert len(result["issue_types"]) == 2
             mock_http.assert_called_once_with("GET", "/rest/api/2/issuetype")
+            assert mock_set.call_args[0][0] == "issue_types:global"
 
     def test_cache_hit(self):
         cached = {"issue_types": [{"id": "1", "name": "Bug", "subtask": False}], "project_key": "PROJ"}
@@ -630,6 +629,17 @@ class TestGetIssueTypes:
         with _mock_cache_get(None), _mock_http(404, {"error": "Project not found"}):
             result = tools_read.get_issue_types({"project_key": "NOPE"})
             assert result["error"] == "HTTP 404"
+
+    def test_invalid_project_key_raises(self):
+        with pytest.raises(ValueError, match="Invalid project key"):
+            tools_read.get_issue_types({"project_key": "../evil"})
+
+    def test_lowercase_key_normalized(self):
+        body = {"key": "PROJ", "issueTypes": [{"id": "1", "name": "Bug"}]}
+        with _mock_cache_get(None), _mock_http(200, body) as mock_http, _mock_cache_set():
+            result = tools_read.get_issue_types({"project_key": "proj"})
+            assert result["project_key"] == "PROJ"
+            mock_http.assert_called_once_with("GET", "/rest/api/2/project/PROJ")
 
 
 # --- jira_flush_cache ---
