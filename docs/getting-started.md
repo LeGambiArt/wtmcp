@@ -86,11 +86,8 @@ sudo dnf install wtmcp
 
 ```bash
 brew tap legambiart/wtmcp
-brew install --HEAD wtmcp
+brew install wtmcp
 ```
-
-> **Note:** `--HEAD` is required until the 0.1.9 release, after which
-> `brew install wtmcp` will work.
 
 ### Build from source
 
