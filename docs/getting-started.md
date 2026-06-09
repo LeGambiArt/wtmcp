@@ -63,27 +63,41 @@ it to the right plugin, and returns the result.
 
 ## 2. Prerequisites
 
-The table below lists everything you need before running `make build`. Verify
-each tool is available by running the command in the last column.
+You need an AI client that supports MCP: **Claude Code**, **Gemini CLI**,
+or **Cursor**.
 
-| Tool | Minimum version | Required for | Verify |
-|------|-----------------|-------------|--------|
-| [Go](https://go.dev/dl/) | 1.26+ | Building wtmcp and all Go plugins | `go version` |
-| [Git](https://git-scm.com/) | any | Cloning the repository | `git --version` |
-| [Python 3](https://www.python.org/downloads/) | 3.9+ | Jira, Confluence, GitHub, Jenkins, Snyk, and Testing Farm plugins | `python3 --version` |
-| AI client | — | Issuing natural-language commands | — |
+Python 3.9+ is required for the Jira, Confluence, GitHub, GitLab, Jenkins,
+Snyk, and Testing Farm plugins. Go plugins (Bugzilla and the Google
+Workspace suite) work without Python.
 
-**Supported AI clients:** Claude Code, Gemini CLI, or Cursor.
+**Operating system:** Linux and macOS are supported. Windows users should
+use [WSL](https://learn.microsoft.com/en-us/windows/wsl/install).
 
-Go plugins (Bugzilla, GitLab, and the full Google Workspace suite) do not
-require Python.
+## 3. Install wtmcp
 
-**Operating system:** Linux and macOS are supported. Windows users should run
-wtmcp inside [WSL](https://learn.microsoft.com/en-us/windows/wsl/install)
-(Windows Subsystem for Linux).
+### COPR (Fedora / RHEL)
 
-> **Go toolchain auto-download.** If the exact Go toolchain version is not
-> already installed on your system, Go will download it automatically when
-> `GOTOOLCHAIN=auto` is set. Check your current setting with
-> `go env GOTOOLCHAIN` and enable auto-download with
-> `go env -w GOTOOLCHAIN=auto`.
+```bash
+sudo dnf copr enable scorreia/wtmcp
+sudo dnf install wtmcp
+```
+
+### Homebrew (macOS / Linux)
+
+```bash
+brew tap legambiart/wtmcp
+brew install --HEAD wtmcp
+```
+
+> **Note:** `--HEAD` is required until the 0.1.9 release, after which
+> `brew install wtmcp` will work.
+
+### Build from source
+
+```bash
+git clone https://github.com/LeGambiArt/wtmcp.git && cd wtmcp
+make build
+```
+
+This requires Go and Git. See `go.mod` for the required Go version.
+Binaries are built in the repository root (`wtmcp` and `wtmcpctl`).
