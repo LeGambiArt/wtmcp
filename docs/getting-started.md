@@ -94,10 +94,4 @@ brew install --HEAD wtmcp
 
 ### Build from source
 
-```bash
-git clone https://github.com/LeGambiArt/wtmcp.git && cd wtmcp
-make build
-```
-
-This requires Go and Git. See `go.mod` for the required Go version.
-Binaries are built in the repository root (`wtmcp` and `wtmcpctl`).
+See [BUILDING.md](../BUILDING.md) for instructions on building from source.
