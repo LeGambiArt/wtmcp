@@ -92,3 +92,103 @@ brew install wtmcp
 ### Build from source
 
 See [BUILDING.md](../BUILDING.md) for instructions on building from source.
+
+## 4. Configure Your First Plugin (Jira)
+
+### Create the credentials directory
+
+```bash
+mkdir -p -m 700 ~/.config/wtmcp/env.d
+```
+
+The `-m 700` flag sets the correct permissions in a single step —
+no separate `chmod` needed for the directory.
+
+### Copy the example file
+
+From the repository root:
+
+```bash
+cp env.d/jira.env.example ~/.config/wtmcp/env.d/jira.env
+```
+
+### Edit for your Jira setup
+
+Open `~/.config/wtmcp/env.d/jira.env` and fill in the block that
+matches your Jira URL. Delete or leave commented out any lines that
+don't apply.
+
+**Jira Cloud** — URL looks like `https://yourorg.atlassian.net`:
+
+```bash
+JIRA_URL=https://yourorg.atlassian.net
+JIRA_AUTH_TYPE=cloud
+JIRA_EMAIL=you@example.com
+JIRA_TOKEN=your-api-token
+```
+
+> **Tip:** Create or copy an API token at
+> <https://id.atlassian.com/manage-profile/security/api-tokens>.
+
+**Jira Server / Data Center with personal access token** — self-hosted
+instance (URL does *not* end in `.atlassian.net`):
+
+```bash
+JIRA_URL=https://jira.example.com
+JIRA_AUTH_TYPE=server-token
+JIRA_TOKEN=your-personal-access-token
+```
+
+**Jira Server / Data Center with Kerberos** — your organisation uses
+SSO / single sign-on:
+
+```bash
+JIRA_URL=https://jira.example.com
+JIRA_AUTH_TYPE=server-kerberos
+```
+
+Make sure you have an active Kerberos ticket before starting the MCP
+server (`kinit` if the ticket has expired).
+
+### Lock down the file
+
+```bash
+chmod 600 ~/.config/wtmcp/env.d/jira.env
+```
+
+> **Important:** wtmcp enforces OpenSSH-style file permissions.
+> If `~/.config/wtmcp/env.d/jira.env` is readable by group or other
+> users (any permission bit outside `0600`), the server refuses to load
+> that credential file and disables the Jira plugin. The `env.d`
+> directory itself must be mode `0700`. Both checks are enforced by
+> `CheckPermissions()` in `internal/config/env.go`.
+
+<details>
+<summary>How do credentials work?</summary>
+
+env.d files are loaded at startup and scoped by filename. The file
+`jira.env` maps to the credential group named `jira` — which is exactly
+what the Jira plugin declares in its `credential_group` field. Only the
+Jira plugin can see the variables from `jira.env`; other plugins never
+receive them.
+
+Variables are **not** exported into the server's process environment.
+They are passed only to the plugin that owns the credential group, and
+only the variables listed in that plugin's `env:` manifest field are
+forwarded to the handler process.
+
+Shell-exported variables (e.g. `export JIRA_TOKEN=...` in your
+`.bashrc`) have no effect on plugins. All credentials must live in
+`env.d` files.
+
+The mapping is always:
+
+```
+~/.config/wtmcp/env.d/<name>.env  →  credential group "<name>"  →  plugin(s) that declare credential_group: <name>
+```
+
+Multiple plugins can share one file — for example,
+`google-calendar`, `google-drive`, and `google-gmail` all read from a
+single `env.d/google.env`.
+
+</details>
