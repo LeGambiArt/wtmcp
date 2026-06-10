@@ -240,10 +240,8 @@ func registerPluginTools(deps *serverDeps, manifest *plugin.Manifest) {
 					collector.Record(toolName, plugName, start,
 						inputRaw, outputText, isErr)
 				}
-				if auditor != nil {
-					auditor.ToolCall(ctx, plugName, toolName,
-						inputRaw, time.Since(start), errMsg)
-				}
+				auditor.ToolCall(ctx, plugName, toolName,
+					inputRaw, time.Since(start), errMsg)
 			}()
 
 			if d := rateLimiter.Allow(plugName); d > 0 {
@@ -323,9 +321,7 @@ func registerPluginTools(deps *serverDeps, manifest *plugin.Manifest) {
 					elicitAction = "accept"
 				}
 
-				if auditor != nil {
-					auditor.Elicitation(ctx, plugName, toolName, elicitAction)
-				}
+				auditor.Elicitation(ctx, plugName, toolName, elicitAction)
 
 				if elicitBlock {
 					switch elicitAction {
@@ -347,15 +343,10 @@ func registerPluginTools(deps *serverDeps, manifest *plugin.Manifest) {
 				var pluginErr *protocol.Error
 				if isPluginError(err, &pluginErr) {
 					msg := pluginErr.Message
-					if auditor != nil {
-						msg = auditor.ScrubErrorText(msg)
-					}
+					msg = auditor.ScrubErrorText(msg)
 					outputText = fmt.Sprintf("[%s] %s", pluginErr.Code, msg)
 				} else {
-					outputText = err.Error()
-					if auditor != nil {
-						outputText = auditor.ScrubErrorText(outputText)
-					}
+					outputText = auditor.ScrubErrorText(err.Error())
 				}
 				isErr = true
 				errMsg = outputText
@@ -521,10 +512,7 @@ func registerManagementTools(deps *serverDeps) {
 					return frameErrorResult(fmt.Sprintf("invalid plugin name: %v", err)), nil
 				}
 				if err := ReloadPlugin(ctx, srv, mgr, cfg, name, index, collector, auditor, rateLimiter, framer, toolOwners); err != nil {
-					errText := err.Error()
-					if auditor != nil {
-						errText = auditor.ScrubErrorText(errText)
-					}
+					errText := auditor.ScrubErrorText(err.Error())
 					return frameErrorResult(errText), nil
 				}
 				return sanitizedTextResult(fmt.Sprintf("plugin %s reloaded", name)), nil

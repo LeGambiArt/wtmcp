@@ -298,9 +298,7 @@ func run() error {
 		if collector != nil {
 			collector.Close()
 		}
-		if auditor != nil {
-			auditor.Close() //nolint:errcheck,gosec // best-effort on shutdown
-		}
+		auditor.Close() //nolint:errcheck,gosec // best-effort on shutdown
 		log.Println("shutting down plugins...")
 		mgr.WaitLoaded()
 		mgr.ShutdownAll(context.Background())

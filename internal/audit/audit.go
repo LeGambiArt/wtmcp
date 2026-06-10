@@ -89,7 +89,7 @@ func New(cfg Config) (*Logger, error) {
 
 // ToolCall logs a tool invocation event.
 func (l *Logger) ToolCall(ctx context.Context, plugin, tool string, params json.RawMessage, duration time.Duration, errMsg string) {
-	if !l.configured {
+	if l == nil || !l.configured {
 		return
 	}
 
@@ -116,7 +116,7 @@ func (l *Logger) ToolCall(ctx context.Context, plugin, tool string, params json.
 
 // Elicitation logs a user confirmation prompt event.
 func (l *Logger) Elicitation(ctx context.Context, plugin, tool, action string) {
-	if !l.configured {
+	if l == nil || !l.configured {
 		return
 	}
 
@@ -133,7 +133,7 @@ func (l *Logger) Elicitation(ctx context.Context, plugin, tool, action string) {
 
 // HTTPRequest logs an HTTP proxy request event.
 func (l *Logger) HTTPRequest(ctx context.Context, plugin, method, host, path string, status int, size int64) {
-	if !l.configured {
+	if l == nil || !l.configured {
 		return
 	}
 
@@ -153,7 +153,7 @@ func (l *Logger) HTTPRequest(ctx context.Context, plugin, method, host, path str
 
 // ControlAction logs a control-plane action (e.g., plugin reload).
 func (l *Logger) ControlAction(ctx context.Context, action, pluginName, status, errMsg string) {
-	if !l.configured {
+	if l == nil || !l.configured {
 		return
 	}
 
@@ -182,10 +182,10 @@ func (l *Logger) ScrubErrorText(s string) string {
 
 // Close flushes and closes the audit log file (if any).
 func (l *Logger) Close() error {
-	if l.file != nil {
-		return l.file.Close()
+	if l == nil || l.file == nil {
+		return nil
 	}
-	return nil
+	return l.file.Close()
 }
 
 func (l *Logger) log(ctx context.Context, attrs []slog.Attr) {
