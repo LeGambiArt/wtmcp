@@ -10,7 +10,7 @@ require github.com/sassoftware/gssapi v0.0.0-20210121192716-4ccd52fd8e05
 
 require (
 	github.com/BurntSushi/toml v1.6.0
-	github.com/JohannesKaufmann/html-to-markdown/v2 v2.5.1
+	github.com/JohannesKaufmann/html-to-markdown/v2 v2.5.2
 	github.com/LeGambiArt/oauth2flow v0.2.0
 	github.com/alecthomas/chroma/v2 v2.26.1
 	github.com/charmbracelet/huh v1.0.0
@@ -33,7 +33,7 @@ require (
 	cloud.google.com/go/auth v0.20.0 // indirect
 	cloud.google.com/go/auth/oauth2adapt v0.2.8 // indirect
 	cloud.google.com/go/compute/metadata v0.9.0 // indirect
-	github.com/JohannesKaufmann/dom v0.2.0 // indirect
+	github.com/JohannesKaufmann/dom v0.3.1 // indirect
 	github.com/atotto/clipboard v0.1.4 // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
 	github.com/catppuccin/go v0.3.0 // indirect
