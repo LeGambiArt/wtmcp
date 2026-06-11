@@ -7,6 +7,8 @@
 //	{"cmd": "echo", "msg": "hello"}
 //	{"cmd": "env", "key": "GITLAB_TOKEN"}
 //	{"cmd": "tmpdir"}
+//	{"cmd": "stat", "path": "/some/dir"}
+//	{"cmd": "eval_symlinks", "path": "/some/dir"}
 package main
 
 import (
@@ -14,6 +16,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -73,6 +76,22 @@ func main() {
 
 	case "tmpdir":
 		writeResponse(response{OK: true, Data: os.TempDir()})
+
+	case "stat":
+		info, err := os.Stat(req.Path)
+		if err != nil {
+			writeResponse(response{Error: err.Error()})
+			return
+		}
+		writeResponse(response{OK: true, Data: fmt.Sprintf("mode=%s size=%d", info.Mode(), info.Size())})
+
+	case "eval_symlinks":
+		resolved, err := filepath.EvalSymlinks(req.Path)
+		if err != nil {
+			writeResponse(response{Error: err.Error()})
+			return
+		}
+		writeResponse(response{OK: true, Data: resolved})
 
 	default:
 		writeResponse(response{Error: fmt.Sprintf("unknown cmd: %s", req.Cmd)})

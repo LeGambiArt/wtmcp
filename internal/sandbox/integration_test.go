@@ -360,6 +360,80 @@ func TestIntegration_EnvPassthrough(t *testing.T) {
 	}
 }
 
+// TestIntegration_SessionDirAccess verifies that a sandboxed process can
+// access files in the session directory. This guards against regressions
+// where path confinement functions fail inside the sandbox (e.g., using
+// filepath.EvalSymlinks which walks ancestors denied by the sandbox).
+//
+// Skipped on macOS: Go's t.TempDir() lives under /var/folders/... whose
+// ancestor directories are not in the Seatbelt profile. When a macOS CI
+// runner is available, consider a variant that uses a stable path with
+// known ancestors (e.g., under /tmp which is /private/tmp on macOS).
+func TestIntegration_SessionDirAccess(t *testing.T) {
+	skipIfIntegrationDisabled(t)
+	if runtime.GOOS == "darwin" {
+		t.Skip("Seatbelt profile does not allow temp dir ancestor paths used by Go tests")
+	}
+
+	bin := buildProbe(t)
+	mgr := integrationTestManager(t)
+
+	// Use a separate directory for SessionDir so we can verify the
+	// sandbox profile grants access via the SessionDir rule, not
+	// just the Dir rule (which always includes the plugin directory).
+	sessionDir := t.TempDir()
+
+	markerPath := filepath.Join(sessionDir, "session-marker.txt")
+	if err := os.WriteFile(markerPath, []byte("session-accessible"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	info := PluginInfo{
+		Name:       "session-access",
+		Dir:        filepath.Dir(bin),
+		Handler:    filepath.Base(bin),
+		SessionDir: sessionDir,
+	}
+
+	t.Run("stat_session_dir", func(t *testing.T) {
+		resp := runProbe(t, mgr, info, nil, probeRequest{Cmd: "stat", Path: sessionDir})
+		if !resp.OK {
+			t.Fatalf("os.Stat(sessionDir) failed inside sandbox: %s", resp.Error)
+		}
+	})
+
+	t.Run("eval_symlinks_session_dir", func(t *testing.T) {
+		// EvalSymlinks succeeds here because sessionDir is in the
+		// sandbox ReadPaths and Landlock grants implicit traversal
+		// of ancestor directories for path_beneath rules.
+		resp := runProbe(t, mgr, info, nil, probeRequest{Cmd: "eval_symlinks", Path: sessionDir})
+		if !resp.OK {
+			t.Fatalf("filepath.EvalSymlinks(sessionDir) failed inside sandbox: %s", resp.Error)
+		}
+	})
+
+	t.Run("read_file_in_session_dir", func(t *testing.T) {
+		resp := runProbe(t, mgr, info, nil, probeRequest{Cmd: "read_file", Path: markerPath})
+		if !resp.OK {
+			t.Fatalf("read file in session dir failed: %s", resp.Error)
+		}
+		if resp.Data != "session-accessible" {
+			t.Errorf("data = %q, want %q", resp.Data, "session-accessible")
+		}
+	})
+
+	t.Run("cannot_write_to_session_dir", func(t *testing.T) {
+		resp := runProbe(t, mgr, info, nil, probeRequest{
+			Cmd:  "write_file",
+			Path: filepath.Join(sessionDir, "hacked.txt"),
+			Data: "pwned",
+		})
+		if resp.OK {
+			t.Error("sandboxed process should NOT be able to write to session dir")
+		}
+	})
+}
+
 func TestIntegration_TmpdirOverride(t *testing.T) {
 	skipIfIntegrationDisabled(t)
 
