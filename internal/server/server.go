@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log"
 	"maps"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -94,12 +95,24 @@ func New(version string, manager *plugin.Manager, cfg *config.Config, index *Too
 	if cfg.Security.ElicitationEnabled() {
 		opts = append(opts, mcpserver.WithElicitation())
 	}
+	var instructions []string
 	if !sandboxBuilt {
-		opts = append(opts, mcpserver.WithInstructions(
+		instructions = append(instructions,
 			"WARNING: This server is running WITHOUT sandbox isolation. "+
 				"Plugin processes have unrestricted access to the filesystem and network. "+
 				"This configuration is unsafe for production use. "+
-				"Exercise caution with tools that write files or make network requests."))
+				"Exercise caution with tools that write files or make network requests.")
+	}
+	if sd := manager.SessionDir(); sd != "" {
+		instructions = append(instructions,
+			fmt.Sprintf("Session directory: %s — "+
+				"file_path parameters in tools that accept local files "+
+				"resolve relative paths against this directory. "+
+				"Output files are written to %s/.wtmcp-data/<plugin>/.",
+				sd, sd))
+	}
+	if len(instructions) > 0 {
+		opts = append(opts, mcpserver.WithInstructions(strings.Join(instructions, "\n\n")))
 	}
 	srv := mcpserver.NewMCPServer("wtmcp", version, opts...)
 
@@ -138,6 +151,9 @@ func New(version string, manager *plugin.Manager, cfg *config.Config, index *Too
 
 	// Register context files as MCP resources
 	registerContextResources(srv, manager, collector)
+
+	// Register session directory info as a server-level resource
+	registerSessionResource(srv, manager, collector)
 
 	// Register resources from resource provider plugins
 	RegisterPluginResources(srv, manager, collector)
@@ -814,6 +830,43 @@ func registerPluginContextResources(srv *mcpserver.MCPServer, manifest *plugin.M
 			},
 		)
 	}
+}
+
+func registerSessionResource(srv *mcpserver.MCPServer, mgr *plugin.Manager, collector *stats.Collector) {
+	sd := mgr.SessionDir()
+	if sd == "" {
+		return
+	}
+	const uri = "wtmcp://server/session"
+	srv.AddResource(
+		mcp.NewResource(uri, "Session directory info",
+			mcp.WithResourceDescription("Session directory, output paths, and file_path resolution"),
+			mcp.WithMIMEType("text/plain"),
+		),
+		func(_ context.Context, _ mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
+			var b strings.Builder
+			fmt.Fprintf(&b, "Session directory: %s\n\n", sd)
+			fmt.Fprintf(&b, "Tools that accept a file_path parameter resolve relative paths against this directory.\n")
+			fmt.Fprintf(&b, "Output files are written under: %s/.wtmcp-data/<plugin-name>/\n\n", sd)
+			fmt.Fprintf(&b, "Per-plugin output directories:\n")
+			names := mgr.LoadedPlugins()
+			sort.Strings(names)
+			for _, name := range names {
+				fmt.Fprintf(&b, "  %s: %s/.wtmcp-data/%s/\n", name, sd, name)
+			}
+			content := b.String()
+			if collector != nil {
+				collector.RecordResourceRead(uri, "server", "session", content)
+			}
+			return []mcp.ResourceContents{
+				mcp.TextResourceContents{
+					URI:      uri,
+					MIMEType: "text/plain",
+					Text:     content,
+				},
+			}, nil
+		},
+	)
 }
 
 // processToolActions handles side effects declared in tool results.

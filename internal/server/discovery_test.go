@@ -189,6 +189,87 @@ func TestNewSandboxInactiveInjectsWarning(t *testing.T) {
 	}
 }
 
+func TestRegisterSessionResource(t *testing.T) {
+	mgr := plugin.NewManagerForTest()
+	mgr.SetSessionDir("/mock/session/dir")
+	mgr.SetManifest("beta", &plugin.Manifest{Name: "beta"})
+	mgr.SetHandle("beta")
+	mgr.SetManifest("alpha", &plugin.Manifest{Name: "alpha"})
+	mgr.SetHandle("alpha")
+
+	cfg := config.DefaultConfig()
+	index := NewToolIndex(mgr, false)
+	srv, _ := New("test", mgr, cfg, index, nil, nil, nil, nil, true)
+
+	// Initialize the server (required before resource reads).
+	resp := srv.HandleMessage(context.Background(), json.RawMessage(`{
+		"jsonrpc": "2.0", "id": 1, "method": "initialize",
+		"params": {"protocolVersion": "2025-03-26",
+		           "clientInfo": {"name": "test", "version": "1"},
+		           "capabilities": {}}
+	}`))
+	initResp, ok := resp.(mcp.JSONRPCResponse)
+	if !ok {
+		t.Fatalf("expected JSONRPCResponse for initialize, got %T", resp)
+	}
+	b, _ := json.Marshal(initResp.Result)
+	if !strings.Contains(string(b), "/mock/session/dir") {
+		t.Errorf("initialize instructions should contain session dir, got: %s", b)
+	}
+
+	// Read the session resource.
+	readResp := srv.HandleMessage(context.Background(), json.RawMessage(`{
+		"jsonrpc": "2.0", "id": 2, "method": "resources/read",
+		"params": {"uri": "wtmcp://server/session"}
+	}`))
+	r, ok := readResp.(mcp.JSONRPCResponse)
+	if !ok {
+		t.Fatalf("expected JSONRPCResponse for resources/read, got %T", readResp)
+	}
+	rb, _ := json.Marshal(r.Result)
+	content := string(rb)
+	if !strings.Contains(content, "/mock/session/dir") {
+		t.Errorf("session resource should contain session dir, got: %s", content)
+	}
+	// Plugins should appear sorted (alpha before beta).
+	alphaIdx := strings.Index(content, "alpha")
+	betaIdx := strings.Index(content, "beta")
+	if alphaIdx < 0 || betaIdx < 0 {
+		t.Errorf("session resource should list plugin names, got: %s", content)
+	} else if alphaIdx > betaIdx {
+		t.Errorf("plugins should be sorted: alpha (%d) should appear before beta (%d)", alphaIdx, betaIdx)
+	}
+}
+
+func TestRegisterSessionResourceSkippedWithoutSessionDir(t *testing.T) {
+	mgr := plugin.NewManagerForTest()
+	cfg := config.DefaultConfig()
+	index := NewToolIndex(mgr, false)
+	srv, _ := New("test", mgr, cfg, index, nil, nil, nil, nil, true)
+
+	// Initialize.
+	srv.HandleMessage(context.Background(), json.RawMessage(`{
+		"jsonrpc": "2.0", "id": 1, "method": "initialize",
+		"params": {"protocolVersion": "2025-03-26",
+		           "clientInfo": {"name": "test", "version": "1"},
+		           "capabilities": {}}
+	}`))
+
+	// List resources — session resource should not appear.
+	listResp := srv.HandleMessage(context.Background(), json.RawMessage(`{
+		"jsonrpc": "2.0", "id": 2, "method": "resources/list",
+		"params": {}
+	}`))
+	r, ok := listResp.(mcp.JSONRPCResponse)
+	if !ok {
+		t.Fatalf("expected JSONRPCResponse for resources/list, got %T", listResp)
+	}
+	rb, _ := json.Marshal(r.Result)
+	if strings.Contains(string(rb), "wtmcp://server/session") {
+		t.Error("session resource should NOT be registered when sessionDir is empty")
+	}
+}
+
 func TestDiscoveryFullModeBackwardCompatible(t *testing.T) {
 	mgr := plugin.NewManagerForTest()
 	mgr.SetManifest("alpha", &plugin.Manifest{

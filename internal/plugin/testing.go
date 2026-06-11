@@ -20,6 +20,11 @@ func (m *Manager) SetHandle(name string) {
 	m.handles[name] = &Handle{manifest: manifest}
 }
 
+// SetSessionDir sets the session directory for testing.
+func (m *Manager) SetSessionDir(dir string) {
+	m.sessionDir = dir
+}
+
 // SetDisabledPlugin marks a plugin as disabled for testing.
 func (m *Manager) SetDisabledPlugin(name, reason string) {
 	if m.disabled == nil {

@@ -1116,6 +1116,12 @@ func (m *Manager) LoadedPlugins() []string {
 	return names
 }
 
+// SessionDir returns the session directory (caller's CWD at startup).
+// Empty if no session directory was determined.
+func (m *Manager) SessionDir() string {
+	return m.sessionDir
+}
+
 // ToolOwner returns the plugin name that owns a tool.
 func (m *Manager) ToolOwner(toolName string) string {
 	name, _ := m.CallTool(context.Background(), toolName)
