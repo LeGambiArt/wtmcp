@@ -357,12 +357,12 @@ func TestConfineRead(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		resolvedDir, err := filepath.EvalSymlinks(dir)
+		expected, err := filepath.EvalSymlinks(dir)
 		if err != nil {
-			t.Fatal(err)
+			t.Fatalf("EvalSymlinks: %v", err)
 		}
-		if !strings.HasPrefix(got, resolvedDir) {
-			t.Errorf("result %q not under dir %q", got, resolvedDir)
+		if !strings.HasPrefix(got, expected) {
+			t.Errorf("result %q not under dir %q", got, expected)
 		}
 	})
 
@@ -396,6 +396,41 @@ func TestConfineRead(t *testing.T) {
 		_, err := confineRead("", dir)
 		if err == nil {
 			t.Fatal("expected error for empty path")
+		}
+	})
+
+	t.Run("symlink escape rejected", func(t *testing.T) {
+		link := filepath.Join(dir, "escape-link")
+		if err := os.Symlink("/etc/passwd", link); err != nil {
+			t.Skipf("symlinks not supported: %v", err)
+		}
+
+		_, err := confineRead(link, dir)
+		if err == nil {
+			t.Error("expected error for symlink pointing outside allowed dir")
+		}
+	})
+
+	t.Run("symlink loop returns error", func(t *testing.T) {
+		linkA := filepath.Join(dir, "loop-a")
+		linkB := filepath.Join(dir, "loop-b")
+		if err := os.Symlink(linkB, linkA); err != nil {
+			t.Skipf("symlinks not supported: %v", err)
+		}
+		if err := os.Symlink(linkA, linkB); err != nil {
+			t.Skipf("symlinks not supported: %v", err)
+		}
+
+		_, err := confineRead(linkA, dir)
+		if err == nil {
+			t.Fatal("expected error for symlink loop")
+		}
+	})
+
+	t.Run("relative traversal rejected", func(t *testing.T) {
+		_, err := confineRead("../../../etc/passwd", dir)
+		if err == nil {
+			t.Fatal("expected error for relative path traversal")
 		}
 	})
 }

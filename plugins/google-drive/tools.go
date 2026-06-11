@@ -15,6 +15,7 @@ import (
 	"sync"
 
 	htmltomarkdown "github.com/JohannesKaufmann/html-to-markdown/v2"
+	"github.com/LeGambiArt/wtmcp/pkg/pathutil"
 	"google.golang.org/api/drive/v3"
 	googleapi "google.golang.org/api/googleapi"
 )
@@ -522,29 +523,24 @@ func confineToSessionDir(filePath string) (string, error) {
 		filePath = filepath.Join(sessionDir, filePath)
 	}
 
-	resolvedSession, err := filepath.EvalSymlinks(sessionDir)
-	if err != nil {
-		return "", fmt.Errorf("resolve session dir: %w", err)
+	absSession := resolvedSessionDir
+	if absSession == "" {
+		var err error
+		absSession, err = pathutil.ResolvePath(sessionDir)
+		if err != nil {
+			return "", fmt.Errorf("resolve session dir: %w", err)
+		}
 	}
-	resolved, err := filepath.EvalSymlinks(filePath)
+	absFile, err := pathutil.ResolvePath(filePath)
 	if err != nil {
-		return "", fmt.Errorf("resolve path: %w", err)
-	}
-
-	absSession, err := filepath.Abs(resolvedSession)
-	if err != nil {
-		return "", fmt.Errorf("abs session dir: %w", err)
-	}
-	absResolved, err := filepath.Abs(resolved)
-	if err != nil {
-		return "", fmt.Errorf("abs file path: %w", err)
+		return "", err
 	}
 
-	if !strings.HasPrefix(absResolved, absSession+string(os.PathSeparator)) &&
-		absResolved != absSession {
+	if !strings.HasPrefix(absFile, absSession+string(os.PathSeparator)) &&
+		absFile != absSession {
 		return "", fmt.Errorf("file_path must be under the session directory")
 	}
-	return absResolved, nil
+	return absFile, nil
 }
 
 var errNoWriteScope = fmt.Errorf("write operations require re-authorization with drive (read-write) scope; " +

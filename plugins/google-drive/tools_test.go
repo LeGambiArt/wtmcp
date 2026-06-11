@@ -1100,6 +1100,10 @@ func TestConfineToSessionDir(t *testing.T) {
 			t.Skipf("symlinks not supported: %v", err)
 		}
 
+		// Outside the sandbox, EvalSymlinks succeeds and resolves the
+		// symlink target, so the prefix check rejects it. Inside the
+		// sandbox, EvalSymlinks fails (ancestor lstat denied) but the
+		// OS sandbox blocks access to the target at the kernel level.
 		if _, err := confineToSessionDir(link); err == nil {
 			t.Error("expected error for symlink pointing outside session dir")
 		}
@@ -1125,6 +1129,13 @@ func TestConfineToSessionDir(t *testing.T) {
 		_, err = confineToSessionDir(filepath.Join(home, ".ssh", "id_rsa"))
 		if err == nil {
 			t.Error("expected error for path under $HOME but outside session dir")
+		}
+	})
+
+	t.Run("relative traversal rejected", func(t *testing.T) {
+		_, err := confineToSessionDir("../../../etc/passwd")
+		if err == nil {
+			t.Fatal("expected error for relative path traversal")
 		}
 	})
 }

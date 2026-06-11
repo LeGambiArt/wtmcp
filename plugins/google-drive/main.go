@@ -11,12 +11,14 @@ import (
 	"google.golang.org/api/option"
 
 	"github.com/LeGambiArt/wtmcp/pkg/handler"
+	"github.com/LeGambiArt/wtmcp/pkg/pathutil"
 )
 
 var (
-	driveSvc   *drive.Service
-	sessionDir string
-	plug       *handler.Plugin
+	driveSvc           *drive.Service
+	sessionDir         string
+	resolvedSessionDir string
+	plug               *handler.Plugin
 )
 
 func main() {
@@ -34,6 +36,13 @@ func main() {
 		var cfg map[string]string
 		if err := json.Unmarshal(cfgRaw, &cfg); err == nil {
 			sessionDir = cfg["_session_dir"]
+			if sessionDir != "" {
+				var err error
+				resolvedSessionDir, err = pathutil.ResolvePath(sessionDir)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "warning: resolve session dir: %v\n", err)
+				}
+			}
 		}
 		return nil
 	})

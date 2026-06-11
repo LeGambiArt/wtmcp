@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/LeGambiArt/wtmcp/pkg/handler"
+	"github.com/LeGambiArt/wtmcp/pkg/pathutil"
 )
 
 var cfg struct {
@@ -211,31 +212,33 @@ func confineRead(filePath string, allowedDirs ...string) (string, error) {
 	if filePath == "" {
 		return "", fmt.Errorf("file path is required")
 	}
-	cleaned := filepath.Clean(filePath)
 
-	resolved, err := filepath.EvalSymlinks(cleaned)
-	if err != nil {
-		return "", fmt.Errorf("resolve path: %w", err)
+	if !filepath.IsAbs(filePath) && len(allowedDirs) > 0 && allowedDirs[0] != "" {
+		filePath = filepath.Join(allowedDirs[0], filePath)
 	}
 
-	info, err := os.Stat(resolved)
+	absFile, err := pathutil.ResolvePath(filePath)
 	if err != nil {
-		return "", fmt.Errorf("stat: %w", err)
-	}
-	if !info.Mode().IsRegular() {
-		return "", fmt.Errorf("not a regular file")
+		return "", err
 	}
 
 	for _, dir := range allowedDirs {
 		if dir == "" {
 			continue
 		}
-		resolvedDir, err := filepath.EvalSymlinks(dir)
+		absDir, err := pathutil.ResolvePath(dir)
 		if err != nil {
 			continue
 		}
-		if strings.HasPrefix(resolved, resolvedDir+string(os.PathSeparator)) {
-			return resolved, nil
+		if strings.HasPrefix(absFile, absDir+string(os.PathSeparator)) {
+			info, err := os.Stat(absFile)
+			if err != nil {
+				return "", fmt.Errorf("stat: %w", err)
+			}
+			if !info.Mode().IsRegular() {
+				return "", fmt.Errorf("not a regular file")
+			}
+			return absFile, nil
 		}
 	}
 	return "", fmt.Errorf("path escapes allowed directories")

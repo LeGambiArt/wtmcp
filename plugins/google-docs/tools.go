@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/LeGambiArt/wtmcp/pkg/pathutil"
 	"github.com/LeGambiArt/wtmcp/plugins/google-docs/highlighter"
 	"google.golang.org/api/docs/v1"
 )
@@ -2603,29 +2604,24 @@ func readFileForWrite(filePath string) ([]byte, error) {
 		filePath = filepath.Join(sessionDir, filePath)
 	}
 
-	resolvedSession, err := filepath.EvalSymlinks(sessionDir)
-	if err != nil {
-		return nil, fmt.Errorf("resolve session dir: %w", err)
+	absSession := resolvedSessionDir
+	if absSession == "" {
+		var err error
+		absSession, err = pathutil.ResolvePath(sessionDir)
+		if err != nil {
+			return nil, fmt.Errorf("resolve session dir: %w", err)
+		}
 	}
-	resolved, err := filepath.EvalSymlinks(filePath)
+	absFile, err := pathutil.ResolvePath(filePath)
 	if err != nil {
-		return nil, fmt.Errorf("resolve path: %w", err)
+		return nil, err
+	}
+	if !strings.HasPrefix(absFile, absSession+string(os.PathSeparator)) &&
+		absFile != absSession {
+		return nil, fmt.Errorf("file path escapes session directory")
 	}
 
-	absSession, err := filepath.Abs(resolvedSession)
-	if err != nil {
-		return nil, fmt.Errorf("abs session dir: %w", err)
-	}
-	absResolved, err := filepath.Abs(resolved)
-	if err != nil {
-		return nil, fmt.Errorf("abs file path: %w", err)
-	}
-	if !strings.HasPrefix(absResolved, absSession+string(os.PathSeparator)) &&
-		absResolved != absSession {
-		return nil, fmt.Errorf("file path escapes session directory: %s", filePath)
-	}
-
-	info, err := os.Stat(resolved)
+	info, err := os.Stat(absFile)
 	if err != nil {
 		return nil, fmt.Errorf("stat file: %w", err)
 	}
@@ -2636,7 +2632,7 @@ func readFileForWrite(filePath string) ([]byte, error) {
 		return nil, fmt.Errorf("file too large: %d bytes (max %d)", info.Size(), maxReadFileSize)
 	}
 
-	return os.ReadFile(resolved)
+	return os.ReadFile(absFile) //nolint:gosec // path validated by ResolvePath+HasPrefix above
 }
 
 type writeParams struct {

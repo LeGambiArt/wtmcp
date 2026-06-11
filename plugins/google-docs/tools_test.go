@@ -6243,6 +6243,9 @@ func TestReadFileForWrite(t *testing.T) {
 			t.Skipf("symlinks not supported: %v", err)
 		}
 
+		// Outside the sandbox, EvalSymlinks succeeds and resolves the
+		// symlink target, so the prefix check rejects it. Inside the
+		// sandbox, EvalSymlinks fails but the OS blocks the access.
 		_, err := readFileForWrite(linkPath)
 		if err == nil {
 			t.Fatal("expected error for symlink outside sessionDir")
