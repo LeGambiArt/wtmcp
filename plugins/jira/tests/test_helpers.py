@@ -372,6 +372,90 @@ class TestTextToAdf:
         assert result["type"] == "doc"
         assert result["content"][0]["content"][0]["text"] == '{"key": "value"}'
 
+    def test_plain_text_with_url_becomes_link(self):
+        result = text_to_adf("See https://example.com for details")
+        nodes = result["content"][0]["content"]
+        assert nodes[0] == {"type": "text", "text": "See "}
+        assert nodes[1]["text"] == "https://example.com"
+        assert nodes[1]["marks"] == [{"type": "link", "attrs": {"href": "https://example.com"}}]
+        assert nodes[2] == {"type": "text", "text": " for details"}
+
+    def test_plain_text_url_only(self):
+        result = text_to_adf("https://gitlab.com/redhat/centos-stream/rpms/python-jwcrypto/-/merge_requests/20")
+        nodes = result["content"][0]["content"]
+        assert len(nodes) == 1
+        assert nodes[0]["text"] == "https://gitlab.com/redhat/centos-stream/rpms/python-jwcrypto/-/merge_requests/20"
+        assert nodes[0]["marks"] == [
+            {
+                "type": "link",
+                "attrs": {"href": "https://gitlab.com/redhat/centos-stream/rpms/python-jwcrypto/-/merge_requests/20"},
+            }
+        ]
+
+    def test_plain_text_url_trailing_period_stripped(self):
+        result = text_to_adf("See https://example.com.")
+        nodes = result["content"][0]["content"]
+        link_node = next(n for n in nodes if n.get("marks"))
+        assert link_node["text"] == "https://example.com"
+        assert link_node["marks"] == [{"type": "link", "attrs": {"href": "https://example.com"}}]
+        assert any(n.get("text") == "." for n in nodes)
+
+    def test_plain_text_url_with_tilde_query_fragment(self):
+        url = "https://example.com/~testuser/content.html?some=value#partial=field"
+        result = text_to_adf(url)
+        nodes = result["content"][0]["content"]
+        assert len(nodes) == 1
+        assert nodes[0]["text"] == url
+        assert nodes[0]["marks"] == [{"type": "link", "attrs": {"href": url}}]
+
+    def test_plain_text_mr_comment_url(self):
+        """Regression: MR comment with bare URL should render URL as clickable link."""
+        text = "Merge request for rebase to 1.5.8: https://gitlab.com/redhat/centos-stream/rpms/python-jwcrypto/-/merge_requests/20"
+        result = text_to_adf(text)
+        nodes = result["content"][0]["content"]
+        assert nodes[0]["text"] == "Merge request for rebase to 1.5.8: "
+        assert nodes[1]["marks"] == [
+            {
+                "type": "link",
+                "attrs": {"href": "https://gitlab.com/redhat/centos-stream/rpms/python-jwcrypto/-/merge_requests/20"},
+            }
+        ]
+
+    def test_url_with_jql_in_parentheses(self):
+        """JQL filter URLs with balanced parentheses must not be truncated."""
+        url = "https://jira.example.com/issues/?jql=project+in+(FOO,BAR)"
+        result = text_to_adf(f"See {url}")
+        nodes = result["content"][0]["content"]
+        link_node = next(n for n in nodes if n.get("marks"))
+        assert link_node["text"] == url
+        assert link_node["marks"] == [{"type": "link", "attrs": {"href": url}}]
+
+    def test_url_with_wiki_page_parentheses(self):
+        """Wikipedia-style URLs with balanced parentheses must not be truncated."""
+        url = "https://en.wikipedia.org/wiki/Foo_(bar)"
+        result = text_to_adf(f"See {url}")
+        nodes = result["content"][0]["content"]
+        link_node = next(n for n in nodes if n.get("marks"))
+        assert link_node["text"] == url
+        assert link_node["marks"] == [{"type": "link", "attrs": {"href": url}}]
+
+    def test_url_with_multiple_parentheses_balanced(self):
+        """URLs with multiple balanced parentheses groups must not be truncated."""
+        url = "https://example.com/api(v1)/search?q=(a+b)+(c+d)"
+        result = text_to_adf(f"API: {url}")
+        nodes = result["content"][0]["content"]
+        link_node = next(n for n in nodes if n.get("marks"))
+        assert link_node["text"] == url
+        assert link_node["marks"] == [{"type": "link", "attrs": {"href": url}}]
+
+    def test_url_with_unbalanced_parenthesis_truncated(self):
+        """URLs with unbalanced closing parentheses should still be truncated."""
+        result = text_to_adf("See https://example.com.")
+        nodes = result["content"][0]["content"]
+        link_node = next(n for n in nodes if n.get("marks"))
+        assert link_node["text"] == "https://example.com"
+        assert any(n.get("text") == "." for n in nodes)
+
 
 # --- normalize_components ---
 
@@ -868,6 +952,50 @@ class TestParseInlineMarkup:
         assert nodes[0]["text"] == "https://example.com"
         assert nodes[0]["marks"] == [{"type": "link", "attrs": {"href": "https://example.com"}}]
 
+    def test_bare_url_no_brackets(self):
+        nodes = _parse_inline_markup("See https://example.com here")
+        assert nodes[0] == {"type": "text", "text": "See "}
+        assert nodes[1]["text"] == "https://example.com"
+        assert nodes[1]["marks"] == [{"type": "link", "attrs": {"href": "https://example.com"}}]
+        assert nodes[2] == {"type": "text", "text": " here"}
+
+    def test_bare_url_trailing_period_stripped(self):
+        nodes = _parse_inline_markup("See https://example.com.")
+        link_node = next(n for n in nodes if n.get("marks"))
+        assert link_node["text"] == "https://example.com"
+        assert link_node["marks"] == [{"type": "link", "attrs": {"href": "https://example.com"}}]
+        period_nodes = [n for n in nodes if n.get("text") == "."]
+        assert period_nodes
+
+    def test_bare_url_jql_parentheses_balanced(self):
+        """JQL filter URLs with balanced parentheses must not be truncated."""
+        url = "https://jira.example.com/issues/?jql=project+in+(FOO,BAR)"
+        nodes = _parse_inline_markup(f"See {url}")
+        link_node = next(n for n in nodes if n.get("marks"))
+        assert link_node["text"] == url
+        assert link_node["marks"] == [{"type": "link", "attrs": {"href": url}}]
+
+    def test_bare_url_wiki_page_parentheses_balanced(self):
+        """Wikipedia-style URLs with balanced parentheses must not be truncated."""
+        url = "https://en.wikipedia.org/wiki/Foo_(bar)"
+        nodes = _parse_inline_markup(f"See {url}")
+        link_node = next(n for n in nodes if n.get("marks"))
+        assert link_node["text"] == url
+        assert link_node["marks"] == [{"type": "link", "attrs": {"href": url}}]
+
+    def test_bare_url_multiple_parentheses_balanced(self):
+        """URLs with multiple balanced parentheses groups must not be truncated."""
+        url = "https://example.com/api(v1)/search?q=(a+b)+(c+d)"
+        nodes = _parse_inline_markup(f"API: {url}")
+        link_node = next(n for n in nodes if n.get("marks"))
+        assert link_node["text"] == url
+        assert link_node["marks"] == [{"type": "link", "attrs": {"href": url}}]
+
+    def test_bare_url_with_query_params(self):
+        nodes = _parse_inline_markup("https://example.com/search?q=test&page=1")
+        assert nodes[0]["text"] == "https://example.com/search?q=test&page=1"
+        assert nodes[0]["marks"] == [{"type": "link", "attrs": {"href": "https://example.com/search?q=test&page=1"}}]
+
     def test_mention(self):
         nodes = _parse_inline_markup("[~abc123]")
         assert nodes[0] == {"type": "mention", "attrs": {"id": "abc123"}}
@@ -1090,6 +1218,18 @@ class TestIsSafeUrl:
 
     def test_javascript_case_insensitive(self):
         assert _is_safe_url("JavaScript:alert(1)") is False
+
+    def test_localhost(self):
+        assert _is_safe_url("http://localhost:8080/api") is True
+
+    def test_ip_address(self):
+        assert _is_safe_url("https://192.168.1.1/api") is True
+
+    def test_ip_address_with_port(self):
+        assert _is_safe_url("http://127.0.0.1:3000") is True
+
+    def test_localhost_with_path(self):
+        assert _is_safe_url("http://localhost/api/v1") is True
 
 
 # --- Input length cap ---

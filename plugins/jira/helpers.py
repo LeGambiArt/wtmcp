@@ -52,6 +52,7 @@ _WIKI_INLINE_RE = re.compile(
     r"(?P<monospace>\{\{(.+?)\}\})"
     r"|(?P<link>\[(?P<link_text>[^]|~]*)\|(?P<link_url>[^]]+)\])"
     r"|(?P<bare_link>\[(?P<bare_url>https?://[^]]+)\])"
+    r"|(?P<plain_url>https?://[^\s<>\[\]{}*^\\]+)"
     r"|(?P<mention>\[~(?P<mention_id>[^]]+)\])"
     r"|(?P<image>!(?P<image_url>\S+?\.\S+?)!)"
     r"|(?P<bold>(?<!\w)\*(?=\S)(?P<bold_text>.+?)(?<=\S)\*(?!\w))"
@@ -62,6 +63,32 @@ _WIKI_INLINE_RE = re.compile(
     r"|(?P<sub>(?<!\w)~(?=\S)(?P<sub_text>.+?)(?<=\S)~(?!\w))"
     r"|(?P<linebreak>\\\\)"
 )
+
+_URL_RE = re.compile(r"https?://[^\s<>\"']+")
+
+
+def _linkify_urls(text):
+    """Parse text, turning bare https?:// URLs into ADF link nodes, leaving everything else as literal text."""
+    nodes = []
+    pos = 0
+    for m in _URL_RE.finditer(text):
+        if m.start() > pos:
+            nodes.append({"type": "text", "text": text[pos : m.start()]})
+        raw = m.group()
+        url = raw.rstrip(".,;:!?")
+        if url.endswith(")") and url.count("(") < url.count(")"):
+            url = url.rstrip(")")
+        suffix = raw[len(url) :]
+        if _is_safe_url(url):
+            nodes.append({"type": "text", "text": url, "marks": [{"type": "link", "attrs": {"href": url}}]})
+        else:
+            nodes.append({"type": "text", "text": url})
+        if suffix:
+            nodes.append({"type": "text", "text": suffix})
+        pos = m.end()
+    if pos < len(text):
+        nodes.append({"type": "text", "text": text[pos:]})
+    return nodes
 
 
 def http_error(status, body):
@@ -241,6 +268,18 @@ def _parse_inline_markup(text):
                 nodes.append({"type": "text", "text": url, "marks": [{"type": "link", "attrs": {"href": url}}]})
             else:
                 nodes.append({"type": "text", "text": m.group("bare_link")})
+        elif m.group("plain_url"):
+            raw = m.group("plain_url")
+            url = raw.rstrip(".,;:!?")
+            if url.endswith(")") and url.count("(") < url.count(")"):
+                url = url.rstrip(")")
+            suffix = raw[len(url) :]
+            if _is_safe_url(url):
+                nodes.append({"type": "text", "text": url, "marks": [{"type": "link", "attrs": {"href": url}}]})
+            else:
+                nodes.append({"type": "text", "text": url})
+            if suffix:
+                nodes.append({"type": "text", "text": suffix})
         elif m.group("mention"):
             nodes.append({"type": "mention", "attrs": {"id": m.group("mention_id")}})
         elif m.group("image"):
@@ -619,11 +658,11 @@ def text_to_adf(text: str | dict | None) -> dict:
     if isinstance(text, str) and len(text) <= _MAX_WIKI_PARSE_LEN and _looks_like_wiki_markup(text):
         return wiki_to_adf(text)
 
-    # Plain text — split into paragraphs
+    # Plain text — split into paragraphs, linkifying bare URLs only
     content = []
     for para in str(text).split("\n"):
         if para.strip():
-            content.append({"type": "paragraph", "content": [{"type": "text", "text": para}]})
+            content.append({"type": "paragraph", "content": _linkify_urls(para)})
         else:
             content.append({"type": "paragraph", "content": []})
 
