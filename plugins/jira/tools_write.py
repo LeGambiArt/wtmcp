@@ -250,6 +250,11 @@ def set_text_field(params):
     value = params.get("value", "")
     dry_run = params.get("dry_run", True)
 
+    # Version fields expect [{"name": ...}] arrays
+    if field_name in ("fixVersions", "versions"):
+        if isinstance(value, str):
+            value = [{"name": value}] if value.strip() else []
+
     if dry_run:
         return {
             "dry_run": True,

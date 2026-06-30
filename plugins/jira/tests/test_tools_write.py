@@ -321,6 +321,52 @@ class TestSetTextField:
             call_body = mock_http.call_args[1].get("body") or mock_http.call_args[0][3]
             assert call_body["fields"]["description"]["type"] == "doc"
 
+    def test_fixversions_string_to_name_array(self):
+        with _mock_http(204, {}) as mock_http:
+            tools_write.set_text_field(
+                {"issue_key": "PROJ-1", "field_name": "fixVersions", "value": "Acme v2.7", "dry_run": False}
+            )
+            call_body = mock_http.call_args[1].get("body") or mock_http.call_args[0][3]
+            assert call_body["fields"]["fixVersions"] == [{"name": "Acme v2.7"}]
+
+    def test_versions_string_to_name_array(self):
+        with _mock_http(204, {}) as mock_http:
+            tools_write.set_text_field(
+                {"issue_key": "PROJ-1", "field_name": "versions", "value": "Acme v2.7", "dry_run": False}
+            )
+            call_body = mock_http.call_args[1].get("body") or mock_http.call_args[0][3]
+            assert call_body["fields"]["versions"] == [{"name": "Acme v2.7"}]
+
+    def test_fixversions_empty_string_sends_empty_list(self):
+        with _mock_http(204, {}) as mock_http:
+            tools_write.set_text_field(
+                {"issue_key": "PROJ-1", "field_name": "fixVersions", "value": "", "dry_run": False}
+            )
+            call_body = mock_http.call_args[1].get("body") or mock_http.call_args[0][3]
+            assert call_body["fields"]["fixVersions"] == []
+
+    def test_fixversions_list_passthrough(self):
+        with _mock_http(204, {}) as mock_http:
+            tools_write.set_text_field(
+                {"issue_key": "PROJ-1", "field_name": "fixVersions", "value": [{"name": "Acme v2.7"}], "dry_run": False}
+            )
+            call_body = mock_http.call_args[1].get("body") or mock_http.call_args[0][3]
+            assert call_body["fields"]["fixVersions"] == [{"name": "Acme v2.7"}]
+
+    def test_fixversions_dry_run_shows_converted(self):
+        result = tools_write.set_text_field(
+            {"issue_key": "PROJ-1", "field_name": "fixVersions", "value": "Acme v2.7", "dry_run": True}
+        )
+        assert "name" in result["value_preview"]
+
+    def test_plain_string_field_unchanged(self):
+        with _mock_http(204, {}) as mock_http:
+            tools_write.set_text_field(
+                {"issue_key": "PROJ-1", "field_name": "summary", "value": "New title", "dry_run": False}
+            )
+            call_body = mock_http.call_args[1].get("body") or mock_http.call_args[0][3]
+            assert call_body["fields"]["summary"] == "New title"
+
 
 # --- jira_set_custom_field ---
 
