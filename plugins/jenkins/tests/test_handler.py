@@ -93,7 +93,7 @@ class TestHttpUrlConstruction:
     """Test that http() constructs full URLs from _jenkins_url."""
 
     def test_url_constructed_from_jenkins_url(self, capsys):
-        handler._jenkins_url = "https://jenkins.example.com"  # type: ignore
+        handler._jenkins_url = "https://jenkins.example.com"
 
         captured_msgs = []
         original_send = handler._send
@@ -115,7 +115,7 @@ class TestHttpUrlConstruction:
         assert msg["domains"] == ["jenkins.example.com"]
 
     def test_explicit_url_overrides_jenkins_url(self, capsys):
-        handler._jenkins_url = "https://jenkins.example.com"  # type: ignore
+        handler._jenkins_url = "https://jenkins.example.com"
 
         captured_msgs = []
         original_send = handler._send

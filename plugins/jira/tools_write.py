@@ -267,7 +267,7 @@ def set_text_field(params):
         }
 
     # Cloud v3 API requires ADF for description
-    if handler.is_cloud and field_name == "description":
+    if handler.is_cloud and field_name == "description" and isinstance(value, (str, dict, type(None))):
         value = text_to_adf(value)
 
     status, body, _ = handler.http("PUT", f"/rest/api/2/issue/{issue_key}", body={"fields": {field_name: value}})
