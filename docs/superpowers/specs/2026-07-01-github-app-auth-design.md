@@ -30,8 +30,12 @@ func NewGitHubAppProvider(appID, installationID string, privateKeyPEM []byte, ba
 ```
 
 - Parses PEM, extracts RSA private key, validates it — fails fast on invalid key
+- Zeros the raw PEM byte slice after parsing (minimizes key material exposure, use `vault.ZeroBytes()`)
 - Defaults `baseURL` to `https://api.github.com` if empty
-- Wraps `transport` in `&http.Client{}`
+- Rejects non-HTTPS `baseURL` (error at construction)
+- Strips trailing slash from `baseURL` to avoid double-slash in constructed URLs
+- Validates `appID` and `installationID` are non-empty
+- Wraps `transport` in `&http.Client{Timeout: 30 * time.Second}` (consistent with `RefreshTokenProvider`)
 
 ### Interface Implementation
 
@@ -51,7 +55,7 @@ func NewGitHubAppProvider(appID, installationID string, privateKeyPEM []byte, ba
       - Header: `alg: RS256`, `typ: JWT`
    b. **Exchange for installation token**:
       - `POST {baseURL}/app/installations/{installationID}/access_tokens`
-      - Headers: `Authorization: Bearer <jwt>`, `Accept: application/vnd.github+json`
+      - Headers: `Authorization: Bearer <jwt>`, `Accept: application/vnd.github+json`, `X-GitHub-Api-Version: 2022-11-28`
    c. **Parse response**: extract `token` and `expires_at` from JSON body
    d. **Cache**: store `accessToken` and parsed `expiry`
    e. **Return**: `Authorization: Bearer <accessToken>`
@@ -72,6 +76,7 @@ func NewGitHubAppProvider(appID, installationID string, privateKeyPEM []byte, ba
 
 - **In-memory only** — no disk persistence
 - Refresh trigger: 90% of token lifetime elapsed (consistent with `refresh_token` provider)
+- GitHub returns absolute `expires_at` (not `expires_in`), so the effective expiry is computed as: `expiry = now + 0.9 * (expires_at - now)` where `now` is the time the token exchange response is received
 - GitHub installation tokens have a 1-hour lifetime, so refresh happens at ~54 minutes
 
 ## Private Key Loading
@@ -111,9 +116,9 @@ services:
 
 | File | Change |
 |------|--------|
-| `internal/auth/variants.go` | Add `"github_app"` to `KnownProviderTypes`; add `AppID`, `InstallationID`, `PrivateKey`, `PrivateKeyFile` to `SingleAuthConfig`; add case to `providerFromConfig()` |
+| `internal/auth/variants.go` | Add `"github_app"` to `KnownProviderTypes`; add `AppID`, `InstallationID`, `PrivateKey`, `PrivateKeyFile`, `BaseURL` to `SingleAuthConfig`; add case to `providerFromConfig()` |
 | `internal/plugin/manifest.go` | Add `AppID`, `InstallationID`, `PrivateKey`, `PrivateKeyFile` to `AuthServiceConfig` |
-| `internal/plugin/manager.go` | Map new `AuthServiceConfig` fields to `SingleAuthConfig` in `resolveAuth()` (single config and variant config paths) |
+| `internal/plugin/manager.go` | Map new `AuthServiceConfig` fields to `SingleAuthConfig` in `resolveAuth()` (single config and variant config paths). `PrivateKeyFile` must go through `decryptCredFile(resolve(...))` — same treatment as `CredentialsFile`. `PrivateKey` (raw PEM from env var) goes through `resolve()` for env var expansion. `BaseURL` is populated from the resolved `services.http.base_url` (already available in `resolveAuth()` scope) |
 | `go.mod` / `go.sum` | Add `github.com/golang-jwt/jwt/v5` |
 
 ## Dependencies
@@ -143,6 +148,8 @@ Test server: `httptest.NewTLSServer` mocking GitHub's installation token endpoin
 - HTTP 422 → error (validation failed)
 - Empty `token` in 201 response → error
 - Missing `expires_at` in response → error
+- Unparseable `expires_at` (e.g., `"invalid"`) → error
+- Malformed response (non-JSON body, e.g. HTML from proxy) → error
 - Oversized response (>1MB) → error
 
 ### Key Loading
@@ -151,6 +158,12 @@ Test server: `httptest.NewTLSServer` mocking GitHub's installation token endpoin
 - Private key from file with symlink rejection
 - Private key from raw PEM content
 - File takes precedence over raw PEM
+
+### Constructor Validation
+- Empty `appID` → error
+- Empty `installationID` → error
+- Non-HTTPS `baseURL` → error
+- Trailing slash in `baseURL` is stripped
 
 ### Provider Interface
 - `Available()` returns false when no key provided
@@ -166,3 +179,4 @@ Test server: `httptest.NewTLSServer` mocking GitHub's installation token endpoin
 
 - [GitHub: Generating a JWT for a GitHub App](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-json-web-token-jwt-for-a-github-app)
 - [GitHub: Create an installation access token](https://docs.github.com/en/rest/apps/apps?apiVersion=2022-11-28#create-an-installation-access-token)
+- [GitHub: REST API versioning](https://docs.github.com/en/rest/about-the-rest-api/api-versions)
