@@ -116,6 +116,16 @@ func providerFromConfig(typeName string, cfg SingleAuthConfig) (Provider, error)
 		return NewOAuth2Provider(cfg.TokenFile, cfg.CredentialsFile, cfg.Scopes, cfg.CredentialsDir, cfg.Transport)
 	case "refresh_token":
 		return NewRefreshTokenProvider(cfg.TokenURL, cfg.ClientID, cfg.Token, cfg.Transport, cfg.TokenFile)
+	case "github_app":
+		privateKeyPEM := []byte(cfg.PrivateKey)
+		if cfg.PrivateKeyFile != "" {
+			data, err := loadPrivateKeyFile(cfg.PrivateKeyFile)
+			if err != nil {
+				return nil, fmt.Errorf("github_app: load private key file: %w", err)
+			}
+			privateKeyPEM = data
+		}
+		return NewGitHubAppProvider(cfg.AppID, cfg.InstallationID, privateKeyPEM, cfg.BaseURL, cfg.Transport)
 	default:
 		return nil, fmt.Errorf("unknown auth type: %s", typeName)
 	}

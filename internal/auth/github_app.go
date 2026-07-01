@@ -11,10 +11,12 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/LeGambiArt/wtmcp/internal/config"
 	"github.com/LeGambiArt/wtmcp/internal/secrets/vault"
 	"github.com/golang-jwt/jwt/v5"
 )
@@ -213,4 +215,20 @@ func truncateBody(body []byte, maxLen int) string {
 		return string(body)
 	}
 	return string(body[:maxLen]) + "..."
+}
+
+// loadPrivateKeyFile reads a PEM private key file after verifying it is
+// not a symlink and has restrictive permissions (no group/other access).
+func loadPrivateKeyFile(path string) ([]byte, error) {
+	if err := config.RejectSymlink(path); err != nil {
+		return nil, fmt.Errorf("private key file: %w", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if err := config.CheckPermissions(path, info); err != nil {
+		return nil, fmt.Errorf("private key file: %w", err)
+	}
+	return os.ReadFile(path) //nolint:gosec // path validated above
 }

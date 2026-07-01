@@ -1485,6 +1485,11 @@ func (m *Manager) resolveAuth(pluginName string, manifest *Manifest) auth.Provid
 				CredentialsDir:  credDir,
 				TokenURL:        resolve(v.TokenURL),
 				ClientID:        resolve(v.ClientID),
+				AppID:           resolve(v.AppID),
+				InstallationID:  resolve(v.InstallationID),
+				PrivateKey:      resolve(v.PrivateKey),
+				PrivateKeyFile:  decryptCredFile(resolve(v.PrivateKeyFile)),
+				BaseURL:         resolve(manifest.Services.HTTP.BaseURL),
 				Transport:       safeTransport,
 			}
 		}
@@ -1508,6 +1513,11 @@ func (m *Manager) resolveAuth(pluginName string, manifest *Manifest) auth.Provid
 				CredentialsDir:  credDir,
 				TokenURL:        resolve(authCfg.TokenURL),
 				ClientID:        resolve(authCfg.ClientID),
+				AppID:           resolve(authCfg.AppID),
+				InstallationID:  resolve(authCfg.InstallationID),
+				PrivateKey:      resolve(authCfg.PrivateKey),
+				PrivateKeyFile:  decryptCredFile(resolve(authCfg.PrivateKeyFile)),
+				BaseURL:         resolve(manifest.Services.HTTP.BaseURL),
 				Transport:       safeTransport,
 			},
 		}

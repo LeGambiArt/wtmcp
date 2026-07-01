@@ -11,6 +11,8 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -616,5 +618,106 @@ func TestGitHubAppPKCS8Key(t *testing.T) {
 	}
 	if got := h.Get("Authorization"); got != "Bearer ghs_pkcs8" {
 		t.Errorf("Authorization = %q", got)
+	}
+}
+
+// --- Private key file loading tests ---
+
+func TestLoadPrivateKeyFile(t *testing.T) {
+	_, pemBytes := generateTestKey(t)
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "app.pem")
+	if err := os.WriteFile(path, pemBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := loadPrivateKeyFile(path)
+	if err != nil {
+		t.Fatalf("loadPrivateKeyFile: %v", err)
+	}
+	if len(data) == 0 {
+		t.Fatal("expected non-empty PEM data")
+	}
+}
+
+func TestLoadPrivateKeyFile_LoosePermissions(t *testing.T) {
+	_, pemBytes := generateTestKey(t)
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "app.pem")
+	if err := os.WriteFile(path, pemBytes, 0o644); err != nil { //nolint:gosec
+		t.Fatal(err)
+	}
+
+	_, err := loadPrivateKeyFile(path)
+	if err == nil {
+		t.Fatal("expected error for loose permissions")
+	}
+	if !strings.Contains(err.Error(), "group/other") {
+		t.Errorf("error = %q, want group/other permission error", err)
+	}
+}
+
+func TestLoadPrivateKeyFile_Symlink(t *testing.T) {
+	_, pemBytes := generateTestKey(t)
+
+	dir := t.TempDir()
+	target := filepath.Join(dir, "real.pem")
+	link := filepath.Join(dir, "link.pem")
+
+	if err := os.WriteFile(target, pemBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := loadPrivateKeyFile(link)
+	if err == nil {
+		t.Fatal("expected error for symlink")
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Errorf("error = %q, want symlink error", err)
+	}
+}
+
+func TestLoadPrivateKeyFile_MissingFile(t *testing.T) {
+	_, err := loadPrivateKeyFile(filepath.Join(t.TempDir(), "nonexistent.pem"))
+	if err == nil {
+		t.Fatal("expected error for missing file")
+	}
+}
+
+func TestPrivateKeyFileTakesPrecedence(t *testing.T) {
+	key, pemBytes := generateTestKey(t)
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "app.pem")
+	if err := os.WriteFile(path, pemBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := SingleAuthConfig{
+		Type:           "github_app",
+		AppID:          "app-from-file",
+		InstallationID: "inst",
+		PrivateKey:     "this-is-not-valid-pem",
+		PrivateKeyFile: path,
+		BaseURL:        "",
+		Transport:      http.DefaultTransport,
+	}
+
+	p, err := providerFromConfig("github_app", cfg)
+	if err != nil {
+		t.Fatalf("providerFromConfig: %v", err)
+	}
+
+	gap := p.(*GitHubAppProvider)
+	if gap.appID != "app-from-file" {
+		t.Errorf("appID = %q, want %q", gap.appID, "app-from-file")
+	}
+	if gap.privateKey.N.Cmp(key.N) != 0 {
+		t.Error("private key does not match file key")
 	}
 }
