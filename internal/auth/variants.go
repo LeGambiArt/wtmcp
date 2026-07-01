@@ -9,7 +9,7 @@ import (
 // KnownProviderTypes lists the built-in auth provider type names.
 // This is the single source of truth shared by the server and CLI.
 var KnownProviderTypes = []string{
-	"bearer", "basic", "kerberos/spnego", "oauth2", "refresh_token",
+	"bearer", "basic", "kerberos/spnego", "oauth2", "refresh_token", "github_app",
 }
 
 // IsKnownProviderType reports whether name is a recognized provider type.
@@ -57,6 +57,11 @@ type SingleAuthConfig struct {
 	CredentialsDir  string
 	TokenURL        string
 	ClientID        string
+	AppID           string
+	InstallationID  string
+	PrivateKey      string
+	PrivateKeyFile  string
+	BaseURL         string
 	Transport       http.RoundTripper // safe transport injected by plugin manager
 }
 

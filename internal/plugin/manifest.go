@@ -102,6 +102,10 @@ type AuthServiceConfig struct {
 	TokenFile       string                       `yaml:"token_file"`
 	TokenURL        string                       `yaml:"token_url"`
 	ClientID        string                       `yaml:"client_id"`
+	AppID           string                       `yaml:"app_id"`
+	InstallationID  string                       `yaml:"installation_id"`
+	PrivateKey      string                       `yaml:"private_key"`
+	PrivateKeyFile  string                       `yaml:"private_key_file"`
 	Select          string                       `yaml:"select"`
 	Variants        map[string]AuthServiceConfig `yaml:"variants"`
 	VariantOrder    []string                     `yaml:"-"` // populated from YAML key order
