@@ -16,6 +16,7 @@ require (
 	github.com/charmbracelet/huh v1.0.0
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/charmbracelet/x/term v0.2.2
+	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
 	github.com/sergio-correia/go-arapuca v0.2.1
 	github.com/spf13/cobra v1.10.2
