@@ -72,17 +72,12 @@ func NewGitHubAppProvider(appID, installationID string, privateKeyPEM []byte, ba
 		return nil, fmt.Errorf("github_app: %w", err)
 	}
 
-	var tr http.RoundTripper
-	if transport != nil {
-		tr = transport
-	}
-
 	return &GitHubAppProvider{
 		appID:          appID,
 		installationID: installationID,
 		privateKey:     key,
 		baseURL:        baseURL,
-		client:         &http.Client{Timeout: 30 * time.Second, Transport: tr},
+		client:         &http.Client{Timeout: 30 * time.Second, Transport: transport},
 	}, nil
 }
 
