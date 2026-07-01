@@ -250,10 +250,12 @@ def set_text_field(params):
     value = params.get("value", "")
     dry_run = params.get("dry_run", True)
 
-    # Version fields expect [{"name": ...}] arrays
-    if field_name in ("fixVersions", "versions"):
+    # Name-array fields expect [{"name": ...}]
+    if field_name in ("fixVersions", "versions", "affectsVersions", "components"):
         if isinstance(value, str):
             value = [{"name": value}] if value.strip() else []
+        elif isinstance(value, list):
+            value = normalize_components(value)
 
     if dry_run:
         return {

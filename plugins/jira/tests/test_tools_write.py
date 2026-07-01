@@ -359,6 +359,38 @@ class TestSetTextField:
         )
         assert "name" in result["value_preview"]
 
+    def test_affectsversions_string_to_name_array(self):
+        with _mock_http(204, {}) as mock_http:
+            tools_write.set_text_field(
+                {"issue_key": "PROJ-1", "field_name": "affectsVersions", "value": "1.0", "dry_run": False}
+            )
+            call_body = mock_http.call_args[1].get("body") or mock_http.call_args[0][3]
+            assert call_body["fields"]["affectsVersions"] == [{"name": "1.0"}]
+
+    def test_fixversions_list_of_strings_normalized(self):
+        with _mock_http(204, {}) as mock_http:
+            tools_write.set_text_field(
+                {"issue_key": "PROJ-1", "field_name": "fixVersions", "value": ["v1", "v2"], "dry_run": False}
+            )
+            call_body = mock_http.call_args[1].get("body") or mock_http.call_args[0][3]
+            assert call_body["fields"]["fixVersions"] == [{"name": "v1"}, {"name": "v2"}]
+
+    def test_components_string_normalized(self):
+        with _mock_http(204, {}) as mock_http:
+            tools_write.set_text_field(
+                {"issue_key": "PROJ-1", "field_name": "components", "value": "Web", "dry_run": False}
+            )
+            call_body = mock_http.call_args[1].get("body") or mock_http.call_args[0][3]
+            assert call_body["fields"]["components"] == [{"name": "Web"}]
+
+    def test_components_empty_string_sends_empty_list(self):
+        with _mock_http(204, {}) as mock_http:
+            tools_write.set_text_field(
+                {"issue_key": "PROJ-1", "field_name": "components", "value": "", "dry_run": False}
+            )
+            call_body = mock_http.call_args[1].get("body") or mock_http.call_args[0][3]
+            assert call_body["fields"]["components"] == []
+
     def test_plain_string_field_unchanged(self):
         with _mock_http(204, {}) as mock_http:
             tools_write.set_text_field(

@@ -363,9 +363,12 @@ tools:
   - name: jira_set_text_field
     access: write
     description: >
-      Set a text field on a Jira issue (e.g. summary, description).
+      Set a text field on a Jira issue (e.g. summary, description, fixVersions).
       Cloud descriptions are converted to ADF automatically.
-      Defaults to dry_run=true.
+      Name-array fields (fixVersions, versions, affectsVersions, components)
+      accept a string or list and are auto-wrapped to [{"name": ...}].
+      For components and labels, prefer the dedicated jira_set_components
+      and jira_set_labels tools. Defaults to dry_run=true.
     params:
       issue_key:
         type: string
@@ -373,7 +376,7 @@ tools:
       field_name:
         type: string
         required: true
-        description: "Field name (e.g. summary, description, fixVersions)"
+        description: "Field name (e.g. summary, description, fixVersions, versions, affectsVersions)"
       value:
         type: string
         required: true
