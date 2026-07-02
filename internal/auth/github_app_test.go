@@ -292,7 +292,7 @@ func TestGitHubAppSuccessfulExchange(t *testing.T) {
 			t.Errorf("JWT iss = %q, want %q", iss, "12345")
 		}
 
-		return installationTokenResponse{ //nolint:gosec // test token
+		return installationTokenResponse{ //nolint:gosec // test token //nolint:gosec // test token
 			Token:     "ghs_test_token_123",
 			ExpiresAt: time.Now().Add(1 * time.Hour).UTC().Format(time.RFC3339),
 		}, 201
@@ -340,7 +340,7 @@ func TestGitHubAppJWTClaims(t *testing.T) {
 			t.Errorf("exp remaining = %v, want ~10m", remaining)
 		}
 
-		return installationTokenResponse{ //nolint:gosec // test token
+		return installationTokenResponse{ //nolint:gosec // test token //nolint:gosec // test token
 			Token:     "ghs_claims_test",
 			ExpiresAt: time.Now().Add(1 * time.Hour).UTC().Format(time.RFC3339),
 		}, 201
@@ -359,7 +359,7 @@ func TestGitHubAppTokenReuse(t *testing.T) {
 	var calls atomic.Int32
 	srv := newGitHubTestServer(t, func(_ *http.Request) (any, int) {
 		calls.Add(1)
-		return installationTokenResponse{ //nolint:gosec // test token
+		return installationTokenResponse{ //nolint:gosec // test token //nolint:gosec // test token
 			Token:     "ghs_cached",
 			ExpiresAt: time.Now().Add(1 * time.Hour).UTC().Format(time.RFC3339),
 		}, 201
@@ -382,7 +382,7 @@ func TestGitHubAppAutoRefreshOnExpiry(t *testing.T) {
 	var calls atomic.Int32
 	srv := newGitHubTestServer(t, func(_ *http.Request) (any, int) {
 		n := calls.Add(1)
-		return installationTokenResponse{
+		return installationTokenResponse{ //nolint:gosec // test token
 			Token:     fmt.Sprintf("ghs_tok_%d", n),
 			ExpiresAt: time.Now().Add(1 * time.Hour).UTC().Format(time.RFC3339),
 		}, 201
@@ -444,7 +444,7 @@ func TestGitHubAppEmptyToken(t *testing.T) {
 	_, pemBytes := generateTestKey(t)
 
 	srv := newGitHubTestServer(t, func(_ *http.Request) (any, int) {
-		return installationTokenResponse{
+		return installationTokenResponse{ //nolint:gosec // test token
 			Token:     "",
 			ExpiresAt: time.Now().Add(1 * time.Hour).UTC().Format(time.RFC3339),
 		}, 201
@@ -481,7 +481,7 @@ func TestGitHubAppInvalidExpiresAt(t *testing.T) {
 	_, pemBytes := generateTestKey(t)
 
 	srv := newGitHubTestServer(t, func(_ *http.Request) (any, int) {
-		return installationTokenResponse{
+		return installationTokenResponse{ //nolint:gosec // test token
 			Token:     "ghs_tok",
 			ExpiresAt: "not-a-date",
 		}, 201
@@ -501,7 +501,7 @@ func TestGitHubAppExpiryComputed(t *testing.T) {
 	_, pemBytes := generateTestKey(t)
 
 	srv := newGitHubTestServer(t, func(_ *http.Request) (any, int) {
-		return installationTokenResponse{
+		return installationTokenResponse{ //nolint:gosec // test token
 			Token:     "ghs_tok",
 			ExpiresAt: time.Now().Add(1 * time.Hour).UTC().Format(time.RFC3339),
 		}, 201
@@ -530,7 +530,7 @@ func TestGitHubAppConcurrentAccess(t *testing.T) {
 	var calls atomic.Int32
 	srv := newGitHubTestServer(t, func(_ *http.Request) (any, int) {
 		calls.Add(1)
-		return installationTokenResponse{
+		return installationTokenResponse{ //nolint:gosec // test token
 			Token:     "ghs_concurrent",
 			ExpiresAt: time.Now().Add(1 * time.Hour).UTC().Format(time.RFC3339),
 		}, 201
@@ -637,7 +637,7 @@ func TestGitHubAppPKCS8Key(t *testing.T) {
 	})
 
 	srv := newGitHubTestServer(t, func(_ *http.Request) (any, int) {
-		return installationTokenResponse{
+		return installationTokenResponse{ //nolint:gosec // test token
 			Token:     "ghs_pkcs8",
 			ExpiresAt: time.Now().Add(1 * time.Hour).UTC().Format(time.RFC3339),
 		}, 201
