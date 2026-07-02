@@ -43,6 +43,10 @@ proxying, caching, and output encoding so plugins stay minimal.
 - **File I/O**: Atomic writes, path confinement, size limits, per-plugin
   output directories, source_path handoff for large files
 - **Output**: TOON encoding for ~40% token savings (optional)
+- **Credential management**: Secure credential storage using OS-native
+  keyrings (Linux Secret Service, macOS Keychain) with migration from
+  plaintext env.d files, encrypted OAuth tokens, and backup/restore.
+  See [docs/credentials-guide.md](docs/credentials-guide.md)
 - **Plugin setup**: Manifest-declared wizard metadata for CLI tooling
 - **Progressive discovery**: Tools default to deferred; only primary
   tools are loaded into model context. Deferred tools are
@@ -416,7 +420,7 @@ MCP clients are automatically notified when tools or resources change.
 
 ### OAuth Plugin Management
 
-Plugin authentication (particularly for OAuth-enabled plugins) is managed through the `wtmcpctl` command-line utility. See [README-wtmcpctl.md](README-wtmcpctl.md) for usage instructions and setup.
+Plugin authentication (particularly for OAuth-enabled plugins) is managed through the `wtmcpctl` command-line utility. See [docs/wtmcpctl.md](docs/wtmcpctl.md) for usage instructions and setup.
 
 ## Encrypted Credentials
 
@@ -595,7 +599,7 @@ authentication:
 | google-docs | Document retrieval, summarization, and editing |
 | google-gmail | Email reading and sending |
 
-All Google plugins require OAuth2 authentication. See [README-wtmcpctl.md](README-wtmcpctl.md)
+All Google plugins require OAuth2 authentication. See [docs/wtmcpctl.md](docs/wtmcpctl.md)
 for setup instructions.
 
 ### Jira Plugin
@@ -663,6 +667,7 @@ internal/
   auth/                 Auth providers (bearer, basic, kerberos, oauth2)
   cache/                Key-value cache with TTL
   config/               Env var resolution, YAML config
+  credentials/          Keyring credential storage, migration, backup
   fileio/               Secure file I/O (atomic writes, path confinement)
   encoding/             TOON output encoding
   google/               Google OAuth helper (shared by Google plugins)
@@ -685,7 +690,8 @@ tests/
   plugins/              Plugin unit tests
 docs/
   plugin-guide.md       Plugin development guide
-  wtmcpctl.md           OAuth management tool guide
+  wtmcpctl.md           Plugin management tool guide
+  credentials-guide.md  Credential management guide
 ```
 
 ## License

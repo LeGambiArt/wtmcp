@@ -889,17 +889,32 @@ from their `credential_group`'s env.d file.
 ### credential_group
 
 Every plugin that uses `${VAR}` references or needs env vars must
-declare a `credential_group`. This scopes which `env.d/` file the
+declare a `credential_group`. This scopes which credentials the
 plugin can access:
 
 ```yaml
-credential_group: jira    # matches env.d/jira.env
+credential_group: jira    # matches env.d/jira.env or keyring service "wtmcp.jira"
 ```
 
-The group name matches the env.d filename (without `.env`). Multiple
-plugins can share a group — e.g., `google-calendar`, `google-drive`,
+The group name determines credential resolution. Depending on
+migration status, credentials are loaded from the OS keyring
+(recommended) or from `env.d/<group>.env` files (legacy). Multiple
+plugins can share a group -- e.g., `google-calendar`, `google-drive`,
 and `google-gmail` all declare `credential_group: google` to share
-one `env.d/google.env` credential file.
+credentials.
+
+**Keyring storage** (recommended for new plugins): Credentials are
+stored in the OS-native keyring (Linux Secret Service, macOS
+Keychain). Use `wtmcpctl credentials set <group> <key>` to store
+credentials and `wtmcpctl credentials migrate <group>` to migrate
+existing env.d credentials. See the
+[Credential Management Guide](credentials-guide.md) for details.
+
+**env.d storage** (legacy, still supported): The group name matches
+the env.d filename (without `.env`). A plugin with
+`credential_group: jira` reads from `env.d/jira.env`. This continues
+to work for all plugins and is the default for groups that have not
+been migrated.
 
 env.d files and credential files (`client-credentials.json`, TLS
 cert/key) can be encrypted with Ansible Vault. The server
@@ -910,7 +925,7 @@ credential files are decrypted to memory-backed file descriptors
 in README.md for setup details.
 
 Without `credential_group`, all `${VAR}` references resolve to empty
-strings and no env.d vars are passed to the handler.
+strings and no credentials are passed to the handler.
 
 ### env: list
 
