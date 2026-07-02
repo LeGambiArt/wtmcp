@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/LeGambiArt/wtmcp/internal/secrets"
 	"github.com/LeGambiArt/wtmcp/internal/secrets/vault"
 )
 
@@ -56,6 +57,11 @@ type EnvLoadOptions struct {
 	// May be nil — if nil, encrypted files produce per-group errors
 	// (same behavior as "no password configured").
 	VaultPassword func(vaultID string) ([]byte, error)
+
+	// Decryptor handles both $ANSIBLE_VAULT and $WTMCP_VAULT files.
+	// When set, it is preferred over VaultPassword for all encrypted
+	// files. When nil, falls back to VaultPassword (backward compat).
+	Decryptor secrets.VaultDecryptor
 }
 
 // EnvLoadResult holds both successfully loaded env groups and
@@ -189,10 +195,36 @@ func loadEnvFile(path string, opts EnvLoadOptions) (map[string]string, error) {
 		return nil, err
 	}
 
-	if vault.IsAnsibleVault(data) {
+	format := secrets.DetectFormat(data)
+	if format == secrets.FormatPlaintext {
+		return parseEnvData(data)
+	}
+
+	group := strings.TrimSuffix(filepath.Base(path), ".env")
+
+	if opts.Decryptor != nil {
+		return decryptWithDecryptor(data, group, opts.Decryptor)
+	}
+
+	if format == secrets.FormatAnsibleVault {
 		return decryptAndParse(data, opts)
 	}
-	return parseEnvData(data)
+
+	return nil, fmt.Errorf("$WTMCP_VAULT file requires a vault decryptor — " +
+		"upgrade your configuration or set WTMCP_VAULT_PASSWORD")
+}
+
+// decryptWithDecryptor decrypts any vault-encrypted env.d file via
+// the VaultDecryptor interface and parses the key=value pairs.
+func decryptWithDecryptor(data []byte, group string, d secrets.VaultDecryptor) (map[string]string, error) {
+	plaintext, err := d.Decrypt(data, group)
+	if err != nil {
+		return nil, err
+	}
+
+	result, parseErr := parseEnvData(plaintext)
+	vault.ZeroBytes(plaintext)
+	return result, parseErr
 }
 
 // decryptAndParse decrypts a vault-encrypted env.d file and parses

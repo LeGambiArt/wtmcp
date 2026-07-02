@@ -13,12 +13,24 @@ import (
 	"time"
 
 	"github.com/LeGambiArt/wtmcp/internal/config"
+	"github.com/LeGambiArt/wtmcp/internal/credentials"
 	"golang.org/x/oauth2"
 )
 
+// OAuth2Options configures optional encrypted token storage for
+// OAuth2Provider. When set, tokens are encrypted with AES-256-GCM
+// and access tokens are stored in the OS keyring.
+type OAuth2Options struct {
+	TokenEncryption *credentials.TokenEncryption
+	CredentialGroup string
+	PluginName      string
+}
+
 // OAuth2Provider manages OAuth2 tokens with automatic refresh.
 // Tokens are loaded from a file, refreshed when expired, and
-// saved back with restrictive permissions (0600).
+// saved back with restrictive permissions (0600). When token
+// encryption is configured, tokens are stored encrypted on disk
+// with access tokens in the OS keyring.
 type OAuth2Provider struct {
 	mu             sync.Mutex
 	token          *oauth2.Token
@@ -27,6 +39,11 @@ type OAuth2Provider struct {
 	scopes         []string
 	config         *oauth2.Config
 	transport      http.RoundTripper
+
+	// tokenEncryption, if non-nil, stores tokens encrypted.
+	tokenEncryption *credentials.TokenEncryption
+	credentialGroup string
+	pluginName      string
 }
 
 // NewOAuth2Provider creates an OAuth2 auth provider.
@@ -35,7 +52,7 @@ type OAuth2Provider struct {
 // credentialsFile is the path to the OAuth2 client credentials
 // (client_id, client_secret, etc.).
 // scopes are the OAuth2 scopes to request.
-func NewOAuth2Provider(tokenFile, credentialsFile string, scopes []string, credentialsDir string, transport http.RoundTripper) (*OAuth2Provider, error) {
+func NewOAuth2Provider(tokenFile, credentialsFile string, scopes []string, credentialsDir string, transport http.RoundTripper, opts ...*OAuth2Options) (*OAuth2Provider, error) {
 	if transport == nil {
 		return nil, fmt.Errorf("oauth2: transport must not be nil")
 	}
@@ -50,6 +67,13 @@ func NewOAuth2Provider(tokenFile, credentialsFile string, scopes []string, crede
 		transport:      transport,
 	}
 
+	// Apply optional encrypted token storage.
+	if len(opts) > 0 && opts[0] != nil {
+		p.tokenEncryption = opts[0].TokenEncryption
+		p.credentialGroup = opts[0].CredentialGroup
+		p.pluginName = opts[0].PluginName
+	}
+
 	// Load OAuth2 client config from credentials file
 	credPath, err := resolveCredentialPath(credentialsFile, credentialsDir)
 	if err != nil {
@@ -61,9 +85,31 @@ func NewOAuth2Provider(tokenFile, credentialsFile string, scopes []string, crede
 		log.Printf("oauth2: cannot load credentials from %s: %v", credPath, loadErr)
 	}
 
-	// Load cached token
-	if tok, err := loadToken(p.tokenFile); err == nil {
-		p.token = tok
+	// Load cached token — try encrypted first, then plaintext.
+	if p.tokenEncryption != nil && p.credentialGroup != "" {
+		token, err := p.tokenEncryption.LoadToken(p.credentialGroup, p.pluginName)
+		if err != nil {
+			// Try auto-migration from plaintext.
+			migErr := p.tokenEncryption.MigrateUnencryptedToken(p.credentialGroup, p.pluginName)
+			if migErr == nil {
+				// Retry encrypted load after migration.
+				var retryErr error
+				token, retryErr = p.tokenEncryption.LoadToken(p.credentialGroup, p.pluginName)
+				if retryErr != nil {
+					log.Printf("oauth2: encrypted load after migration failed for %s/%s: %v",
+						p.credentialGroup, p.pluginName, retryErr)
+				}
+			}
+		}
+		p.token = token
+	}
+
+	// Always fall back to plaintext if encrypted load failed or
+	// encryption is not configured.
+	if p.token == nil {
+		if tok, err := loadToken(p.tokenFile); err == nil {
+			p.token = tok
+		}
 	}
 
 	return p, nil
@@ -125,8 +171,19 @@ func (o *OAuth2Provider) refreshLocked(ctx context.Context) error {
 
 	o.token = newToken
 
-	if err := saveToken(o.tokenFile, newToken); err != nil {
-		log.Printf("oauth2: failed to save refreshed token: %v", err)
+	// Save the refreshed token — encrypted if available, plaintext otherwise.
+	if o.tokenEncryption != nil && o.credentialGroup != "" {
+		if err := o.tokenEncryption.SaveToken(o.credentialGroup, o.pluginName, newToken); err != nil {
+			log.Printf("oauth2: failed to save encrypted token: %v", err)
+			// Fall back to plaintext save.
+			if err := saveToken(o.tokenFile, newToken); err != nil {
+				log.Printf("oauth2: failed to save refreshed token: %v", err)
+			}
+		}
+	} else {
+		if err := saveToken(o.tokenFile, newToken); err != nil {
+			log.Printf("oauth2: failed to save refreshed token: %v", err)
+		}
 	}
 
 	return nil

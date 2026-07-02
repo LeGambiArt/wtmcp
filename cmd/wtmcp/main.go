@@ -20,11 +20,13 @@ import (
 	"github.com/LeGambiArt/wtmcp/internal/auth"
 	"github.com/LeGambiArt/wtmcp/internal/cache"
 	"github.com/LeGambiArt/wtmcp/internal/config"
+	"github.com/LeGambiArt/wtmcp/internal/credentials"
 	"github.com/LeGambiArt/wtmcp/internal/diagnostic"
 	"github.com/LeGambiArt/wtmcp/internal/plugin"
 	"github.com/LeGambiArt/wtmcp/internal/proxy"
 	"github.com/LeGambiArt/wtmcp/internal/ratelimit"
 	"github.com/LeGambiArt/wtmcp/internal/sandbox"
+	"github.com/LeGambiArt/wtmcp/internal/secrets"
 	"github.com/LeGambiArt/wtmcp/internal/server"
 	"github.com/LeGambiArt/wtmcp/internal/stats"
 )
@@ -155,8 +157,25 @@ func run() error {
 	envDir := config.ResolveEnvDir(cfg, wd)
 	vaultResolver, vaultCloser := config.ResolveVaultPassword(cfg)
 	defer func() { _ = vaultCloser.Close() }()
+
+	// Construct VaultDecryptor for both $ANSIBLE_VAULT and $WTMCP_VAULT.
+	decryptor, err := secrets.NewMultiDecryptor(secrets.MultiDecryptorConfig{
+		AnsibleResolver: vaultResolver,
+		UsePinentry:     true,
+	})
+	if err != nil {
+		log.Printf("WARNING: vault decryptor unavailable: %v", err)
+	}
+	if decryptor != nil {
+		defer func() { _ = decryptor.Close() }()
+		if decryptor.HasPinentry() {
+			log.Println("pinentry available for vault password prompting")
+		}
+	}
+
 	envOpts := config.EnvLoadOptions{
 		VaultPassword: vaultResolver,
+		Decryptor:     decryptor,
 	}
 	envResult, err := config.LoadEnvGroups(envDir, envOpts)
 	if err != nil {
@@ -199,7 +218,31 @@ func run() error {
 	})
 	httpProxy := proxy.New(nil, cfg.Plugins.MaxMessageSize, cfg.HTTP.Timeout)
 
-	mgr := plugin.NewManager(authReg, httpProxy, cacheStore, cfg, envResult.Groups, envResult.Errors, envResult.DirError, wd, envDir, envOpts, sessionDir)
+	// Initialize credential service for keyring-backed credential
+	// resolution. Non-fatal: if it fails, plugins continue using
+	// env.d files and environment variables.
+	var mgrOpts plugin.ManagerOptions
+	paths := config.Paths(wd)
+	migrationFile := filepath.Join(paths.CredentialsDir, ".migration.yaml")
+
+	credService, err := credentials.NewService(envDir, migrationFile)
+	if err != nil {
+		log.Printf("WARNING: credential service unavailable: %v", err)
+	} else {
+		mgrOpts.CredentialService = credService
+
+		// Enable encrypted token storage when the keyring is accessible.
+		if credService.IsKeyringAvailable() {
+			mgrOpts.TokenEncryption = credentials.NewTokenEncryption(
+				credService.KeyringStore(), credService.GetMigrationState(), paths.CredentialsDir)
+			log.Println("keyring credential storage available")
+		} else {
+			log.Println("keyring unavailable, using env.d/envvar credentials only")
+		}
+	}
+
+	mgrOpts.Decryptor = decryptor
+	mgr := plugin.NewManager(authReg, httpProxy, cacheStore, cfg, envResult.Groups, envResult.Errors, envResult.DirError, wd, envDir, envOpts, sessionDir, mgrOpts)
 
 	dataDir := filepath.Join(wd, "data")
 	sbMgr, err := sandbox.NewManager(cfg.Sandbox, cfg.CredentialsDir, dataDir)

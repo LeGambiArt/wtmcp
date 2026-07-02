@@ -3,24 +3,20 @@
 package kerberos
 
 /*
-#cgo darwin CFLAGS: -I/usr/include
 #cgo darwin LDFLAGS: -framework GSS
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
-#include <gssapi/gssapi.h>
+// Include directly from GSS.framework, which carries no deprecation markers
+// on the POSIX GSSAPI functions (unlike the compatibility shim at
+// /usr/include/gssapi/gssapi.h which Apple has deprecated).
+#include <GSS/gssapi.h>
+#include <GSS/gssapi_krb5.h>
+#include <GSS/gssapi_oid.h>
 
-// OID constants (from RFC 2743/2744)
-static const gss_OID_desc gss_nt_service_name_oid = {
-	10, (void *)"\x2a\x86\x48\x86\xf7\x12\x01\x02\x01\x04"
-};
-#define GSS_C_NT_HOSTBASED_SERVICE (&gss_nt_service_name_oid)
-
-// GSS_MECH_KRB5: {1.2.840.113554.1.2.2} - Pure Kerberos V5 mechanism
-static const gss_OID_desc krb5_oid = {
-	9, (void *)"\x2a\x86\x48\x86\xf7\x12\x01\x02\x02"
-};
-#define GSS_MECH_KRB5 (&krb5_oid)
+// Alias for the Kerberos V5 mechanism OID provided by the framework.
+// GSS_KRB5_MECHANISM is declared in gssapi_oid.h as an extern symbol.
+#define GSS_MECH_KRB5 GSS_KRB5_MECHANISM
 
 // Get detailed error message from GSS status codes.
 // Returns a malloc'd string that must be freed by caller.

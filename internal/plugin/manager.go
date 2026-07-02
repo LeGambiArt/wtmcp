@@ -18,10 +18,12 @@ import (
 	"github.com/LeGambiArt/wtmcp/internal/auth"
 	"github.com/LeGambiArt/wtmcp/internal/cache"
 	"github.com/LeGambiArt/wtmcp/internal/config"
+	"github.com/LeGambiArt/wtmcp/internal/credentials"
 	"github.com/LeGambiArt/wtmcp/internal/fileio"
 	"github.com/LeGambiArt/wtmcp/internal/protocol"
 	"github.com/LeGambiArt/wtmcp/internal/proxy"
 	"github.com/LeGambiArt/wtmcp/internal/sandbox"
+	"github.com/LeGambiArt/wtmcp/internal/secrets"
 	"github.com/LeGambiArt/wtmcp/internal/secrets/securefile"
 	"github.com/LeGambiArt/wtmcp/internal/secrets/vault"
 )
@@ -63,6 +65,36 @@ type Manager struct {
 	svcHandler     *serviceHandlerImpl
 	loadDone       chan struct{} // closed when LoadAll completes
 	pending        [][]string    // prepared plugin levels awaiting Start
+
+	// credentialService, if non-nil, resolves credentials from
+	// keyring/env.d/envvar with migration-awareness. Initialized
+	// at startup; nil when the keyring subsystem fails to start.
+	credentialService *credentials.Service
+
+	// tokenEncryption, if non-nil, handles AES-256-GCM encrypted
+	// OAuth token storage with access tokens in the keyring.
+	// Nil when the keyring is unavailable.
+	tokenEncryption *credentials.TokenEncryption
+
+	// decryptor handles both $ANSIBLE_VAULT and $WTMCP_VAULT files.
+	// Nil when no decryptor is configured (falls back to vaultPassword).
+	decryptor secrets.VaultDecryptor
+}
+
+// ManagerOptions holds optional dependencies for the plugin manager.
+// All fields are optional; nil values are handled gracefully.
+type ManagerOptions struct {
+	// CredentialService resolves credentials from keyring/env.d/envvar.
+	// When nil, credentials are resolved from envGroups only (backward compat).
+	CredentialService *credentials.Service
+
+	// TokenEncryption handles encrypted OAuth token storage.
+	// When nil, tokens are stored as plaintext (backward compat).
+	TokenEncryption *credentials.TokenEncryption
+
+	// Decryptor handles both $ANSIBLE_VAULT and $WTMCP_VAULT files.
+	// When nil, falls back to VaultPassword callback (backward compat).
+	Decryptor secrets.VaultDecryptor
 }
 
 // NewManager creates a plugin manager. envErrors maps credential
@@ -72,15 +104,17 @@ type Manager struct {
 // indicates the env.d directory itself has a problem (bad
 // permissions, stat failure) — all credential-dependent plugins
 // will be disabled. envDir is the resolved env.d directory path
-// used to re-read env files on plugin reload.
-func NewManager(authReg *auth.Registry, p *proxy.Proxy, c cache.Store, cfg *config.Config, envGroups config.EnvGroups, envErrors map[string]string, envDirError, workdir, envDir string, envLoadOpts config.EnvLoadOptions, sessionDir string) *Manager {
+// used to re-read env files on plugin reload. opts provides
+// optional credential service and token encryption dependencies.
+func NewManager(authReg *auth.Registry, p *proxy.Proxy, c cache.Store, cfg *config.Config, envGroups config.EnvGroups, envErrors map[string]string, envDirError, workdir, envDir string, envLoadOpts config.EnvLoadOptions, sessionDir string, opts ...ManagerOptions) *Manager {
 	if envGroups == nil {
 		envGroups = make(config.EnvGroups)
 	}
 	if envErrors == nil {
 		envErrors = make(map[string]string)
 	}
-	return &Manager{
+
+	m := &Manager{
 		handles:        make(map[string]*Handle),
 		manifests:      make(map[string]*Manifest),
 		disabled:       make(map[string]DisabledPlugin),
@@ -101,6 +135,14 @@ func NewManager(authReg *auth.Registry, p *proxy.Proxy, c cache.Store, cfg *conf
 		svcHandler:     &serviceHandlerImpl{proxy: p, cache: c},
 		loadDone:       make(chan struct{}),
 	}
+
+	if len(opts) > 0 {
+		m.credentialService = opts[0].CredentialService
+		m.tokenEncryption = opts[0].TokenEncryption
+		m.decryptor = opts[0].Decryptor
+	}
+
+	return m
 }
 
 // SetSandbox configures the sandbox manager. When set, all plugin
@@ -1041,9 +1083,9 @@ func (m *Manager) sanitizeReason(reason string) string {
 }
 
 // decryptCredentialIfVault reads a credential file and, if it is
-// Ansible Vault encrypted, decrypts it to a securefile. Returns
-// the original path for plaintext files, or the securefile path
-// for encrypted files.
+// vault-encrypted ($ANSIBLE_VAULT or $WTMCP_VAULT), decrypts it to a
+// securefile. Returns the original path for plaintext files, or the
+// securefile path for encrypted files.
 func (m *Manager) decryptCredentialIfVault(pluginName, path string) (string, error) {
 	info, err := os.Stat(path)
 	if err != nil {
@@ -1056,25 +1098,11 @@ func (m *Manager) decryptCredentialIfVault(pluginName, path string) (string, err
 	if err != nil {
 		return "", err
 	}
-	if !vault.IsAnsibleVault(data) {
+	if !secrets.IsEncrypted(data) {
 		return path, nil
 	}
-	if m.vaultPassword == nil {
-		return "", fmt.Errorf("encrypted credential file but no vault password configured")
-	}
 
-	header, err := vault.ParseHeader(strings.SplitN(string(data), "\n", 2)[0])
-	if err != nil {
-		return "", fmt.Errorf("invalid vault file format")
-	}
-
-	password, err := m.vaultPassword(header.VaultID)
-	if err != nil {
-		return "", err
-	}
-
-	plaintext, err := vault.Decrypt(data, password)
-	vault.ZeroBytes(password)
+	plaintext, err := m.decryptVaultData(data, pluginName)
 	if err != nil {
 		return "", err
 	}
@@ -1105,6 +1133,37 @@ func (m *Manager) ConfigDisabledPlugins() map[string]*Manifest {
 	return snapshot
 }
 
+// decryptVaultData decrypts vault-encrypted data using the decryptor
+// (if available) or falling back to the legacy vault password callback.
+func (m *Manager) decryptVaultData(data []byte, context string) ([]byte, error) {
+	if m.decryptor != nil {
+		return m.decryptor.Decrypt(data, context)
+	}
+
+	if !vault.IsAnsibleVault(data) {
+		return nil, fmt.Errorf("$WTMCP_VAULT file requires a vault decryptor — " +
+			"upgrade your configuration")
+	}
+
+	if m.vaultPassword == nil {
+		return nil, fmt.Errorf("encrypted credential file but no vault password configured")
+	}
+
+	header, err := vault.ParseHeader(strings.SplitN(string(data), "\n", 2)[0])
+	if err != nil {
+		return nil, fmt.Errorf("invalid vault file format")
+	}
+
+	password, err := m.vaultPassword(header.VaultID)
+	if err != nil {
+		return nil, err
+	}
+
+	plaintext, err := vault.Decrypt(data, password)
+	vault.ZeroBytes(password)
+	return plaintext, err
+}
+
 // LoadedPlugins returns the names of successfully loaded plugins.
 func (m *Manager) LoadedPlugins() []string {
 	m.handlesMu.RLock()
@@ -1128,13 +1187,28 @@ func (m *Manager) ToolOwner(toolName string) string {
 	return name
 }
 
-// pluginVars returns the scoped env.d variables for a plugin based
-// on its credential_group. Returns nil if no group is declared or
-// no matching env.d file exists.
+// pluginVars returns the scoped variables for a plugin based on its
+// credential_group. When a credential service is available, variables
+// are resolved from keyring/env.d/envvar with migration-awareness.
+// Otherwise, falls back to the legacy env.d groups loaded at startup.
+// Returns nil if no group is declared or no matching credentials exist.
 func (m *Manager) pluginVars(manifest *Manifest) map[string]string {
 	if manifest.CredentialGroup == "" {
 		return nil
 	}
+
+	// When a credential service is available, use it to resolve
+	// variables from all sources (keyring, env.d, envvar) with
+	// proper precedence based on migration state.
+	if m.credentialService != nil {
+		vars := m.credentialService.GetAll(manifest.CredentialGroup)
+		if len(vars) > 0 {
+			return vars
+		}
+		// Fall through to legacy env groups if credential service
+		// returned nothing (backward compat).
+	}
+
 	return m.envGroups.Get(manifest.CredentialGroup)
 }
 
@@ -1234,8 +1308,9 @@ func hasSSHKeyPrefix(s string) bool {
 }
 
 // hasVaultFiles reports whether any files in a directory start with
-// the Ansible Vault magic header. Only reads the first 15 bytes of
-// each file to avoid loading full credential file contents.
+// a vault header ($ANSIBLE_VAULT; or $WTMCP_VAULT;). Only reads the
+// first 15 bytes of each file to avoid loading full credential file
+// contents.
 func hasVaultFiles(dir string) bool {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -1253,7 +1328,7 @@ func hasVaultFiles(dir string) bool {
 		header := make([]byte, 15)
 		n, _ := f.Read(header)
 		_ = f.Close()
-		if vault.IsAnsibleVault(header[:n]) {
+		if secrets.IsEncrypted(header[:n]) {
 			return true
 		}
 	}
@@ -1296,15 +1371,21 @@ func (m *Manager) buildShadowCredentialsDir(pluginName, originalDir string) (str
 		shadowPath := filepath.Join(shadowDir, entry.Name())
 
 		fi, err := entry.Info()
-		if err != nil || fi.Size() > 1<<20 {
+		if err != nil {
+			log.Printf("[%s] shadow dir: stat %s: %v", pluginName, entry.Name(), err)
+			continue
+		}
+		if fi.Size() > 1<<20 {
+			log.Printf("[%s] shadow dir: skipping oversized file %s (%d bytes)", pluginName, entry.Name(), fi.Size())
 			continue
 		}
 		data, err := os.ReadFile(originalPath) //nolint:gosec // credential dir from config
 		if err != nil {
+			log.Printf("[%s] shadow dir: read %s: %v", pluginName, entry.Name(), err)
 			continue
 		}
 
-		if vault.IsAnsibleVault(data) {
+		if secrets.IsEncrypted(data) {
 			sfPath, err := m.decryptCredentialToInheritable(pluginName, entry.Name(), data)
 			if err != nil {
 				log.Printf("[%s] shadow decrypt %s: %v", pluginName, entry.Name(), err)
@@ -1327,22 +1408,7 @@ func (m *Manager) buildShadowCredentialsDir(pluginName, originalDir string) (str
 // inheritable securefile (no MFD_CLOEXEC) so plugin subprocesses
 // can read via /proc/self/fd/N.
 func (m *Manager) decryptCredentialToInheritable(pluginName, fileName string, data []byte) (string, error) {
-	if m.vaultPassword == nil {
-		return "", fmt.Errorf("encrypted credential file but no vault password configured")
-	}
-
-	header, err := vault.ParseHeader(strings.SplitN(string(data), "\n", 2)[0])
-	if err != nil {
-		return "", fmt.Errorf("invalid vault file format")
-	}
-
-	password, err := m.vaultPassword(header.VaultID)
-	if err != nil {
-		return "", err
-	}
-
-	plaintext, err := vault.Decrypt(data, password)
-	vault.ZeroBytes(password)
+	plaintext, err := m.decryptVaultData(data, pluginName)
 	if err != nil {
 		return "", err
 	}
@@ -1450,19 +1516,31 @@ func (m *Manager) resolveAuth(pluginName string, manifest *Manifest) auth.Provid
 		}
 		decrypted, err := m.decryptCredentialIfVault(pluginName, path)
 		if err != nil {
-			log.Printf("[%s] credential file decrypt: %v", pluginName, err)
-			return path
+			log.Printf("[%s] credential file decrypt failed, skipping: %v", pluginName, err)
+			return ""
 		}
 		return decrypted
 	}
 
+	// Build OAuth2 options from token encryption (if available).
+	var oauth2Opts *auth.OAuth2Options
+	if m.tokenEncryption != nil && manifest.CredentialGroup != "" {
+		oauth2Opts = &auth.OAuth2Options{
+			TokenEncryption: m.tokenEncryption,
+			CredentialGroup: manifest.CredentialGroup,
+			PluginName:      manifest.Name,
+		}
+	}
+
 	safeTransport, err := proxy.SafeTransportWithTLS(false, proxy.TLSConfig{})
 	if err != nil {
-		log.Printf("[%s] safe transport for auth: %v", manifest.Name, err)
+		log.Printf("[%s] auth disabled: could not create safe transport: %v", manifest.Name, err)
 		return nil
 	}
 
 	var variantCfg auth.VariantConfig
+	variantCfg.OAuth2Opts = oauth2Opts
+
 	if len(authCfg.Variants) > 0 {
 		variantCfg.Select = resolve(authCfg.Select)
 		variantCfg.Variants = make(map[string]auth.SingleAuthConfig)
@@ -1531,7 +1609,7 @@ func (m *Manager) resolveAuth(pluginName string, manifest *Manifest) auth.Provid
 
 	provider, err := auth.ResolveVariant(variantCfg)
 	if err != nil {
-		log.Printf("[%s] auth resolution failed: %v", manifest.Name, err)
+		log.Printf("[%s] auth disabled: variant resolution failed (plugin will return 401 on all requests): %v", manifest.Name, err)
 		return nil
 	}
 	return provider
@@ -1838,4 +1916,16 @@ func cacheError(id, msgType string, err error) protocol.Message {
 		Type:  msgType,
 		Error: &protocol.Error{Code: "cache_error", Message: err.Error()},
 	}
+}
+
+// CredentialService returns the credential resolution service, or nil
+// if it was not initialised (e.g., keyring unavailable at startup).
+func (m *Manager) CredentialService() *credentials.Service {
+	return m.credentialService
+}
+
+// TokenEncryption returns the token encryption handler, or nil if
+// the keyring is unavailable.
+func (m *Manager) TokenEncryption() *credentials.TokenEncryption {
+	return m.tokenEncryption
 }

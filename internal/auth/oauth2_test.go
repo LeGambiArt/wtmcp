@@ -10,10 +10,17 @@ import (
 	"testing"
 	"time"
 
+	"github.com/LeGambiArt/wtmcp/internal/credentials"
+	"github.com/zalando/go-keyring"
 	"golang.org/x/oauth2"
 )
 
 var testTransport = http.DefaultTransport
+
+func init() {
+	// Use mock keyring for testing encrypted token storage.
+	keyring.MockInit()
+}
 
 func TestOAuth2ProviderLoadToken(t *testing.T) {
 	dir := t.TempDir()
@@ -240,4 +247,139 @@ func TestResolveCredentialPath(t *testing.T) {
 			t.Error("expected error for symlink escaping credentials dir")
 		}
 	})
+}
+
+// --- C1 Fix Tests: OAuth2 Token Loading Fallback ---
+
+// TestOAuth2Provider_PlaintextFallbackWhenEncryptionConfigured verifies
+// that when token encryption is configured but no encrypted token exists
+// (and migration is a no-op), the provider falls back to loading the
+// plaintext token file. This was the critical C1 bug.
+func TestOAuth2Provider_PlaintextFallbackWhenEncryptionConfigured(t *testing.T) {
+	dir := t.TempDir()
+
+	// Write a plaintext token file at the resolved token path.
+	token := tokenJSON{ //nolint:gosec // test fixture
+		AccessToken:  "plaintext-access",
+		TokenType:    "Bearer",
+		RefreshToken: "plaintext-refresh",
+		Expiry:       time.Now().Add(1 * time.Hour).Format(time.RFC3339),
+	}
+	data, _ := json.Marshal(token) //nolint:gosec // test fixture
+	tokenFile := filepath.Join(dir, "token.json")
+	if err := os.WriteFile(tokenFile, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a TokenEncryption instance. The encrypted token file does
+	// NOT exist, and MigrateUnencryptedToken will be a no-op because
+	// the plaintext file is at a different path than what migration
+	// expects (migration looks in tokensDir/group/token-plugin.json).
+	store := credentials.NewKeyringStore()
+	te := credentials.NewTokenEncryption(store, nil, dir)
+
+	opts := &OAuth2Options{
+		TokenEncryption: te,
+		CredentialGroup: "testgroup",
+		PluginName:      "testplugin",
+	}
+
+	p, _ := NewOAuth2Provider(tokenFile, "nonexistent-creds.json", nil, dir, testTransport, opts)
+
+	if !p.Available() {
+		t.Fatal("provider should be available — plaintext fallback should have loaded the token")
+	}
+
+	headers, err := p.Authenticate(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+
+	auth := headers.Get("Authorization")
+	if auth != "Bearer plaintext-access" {
+		t.Errorf("Authorization = %q, want %q", auth, "Bearer plaintext-access")
+	}
+}
+
+// TestOAuth2Provider_EncryptedTokenTakesPrecedence verifies that when
+// both encrypted and plaintext tokens exist, the encrypted token is
+// used.
+func TestOAuth2Provider_EncryptedTokenTakesPrecedence(t *testing.T) {
+	dir := t.TempDir()
+
+	store := credentials.NewKeyringStore()
+	te := credentials.NewTokenEncryption(store, nil, dir)
+
+	// Save an encrypted token.
+	encToken := &oauth2.Token{
+		AccessToken:  "encrypted-access",
+		RefreshToken: "encrypted-refresh",
+		TokenType:    "Bearer",
+		Expiry:       time.Now().Add(1 * time.Hour).Truncate(time.Second),
+	}
+	if err := te.SaveToken("google", "calendar", encToken); err != nil {
+		t.Fatalf("SaveToken: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Delete("google", "__encryption_key")
+		_ = store.Delete("google", "__oauth_access_calendar")
+	})
+
+	// Also write a plaintext token file with a different access token.
+	plainToken := tokenJSON{ //nolint:gosec // test fixture
+		AccessToken:  "plaintext-should-not-be-used",
+		TokenType:    "Bearer",
+		RefreshToken: "plaintext-refresh",
+		Expiry:       time.Now().Add(1 * time.Hour).Format(time.RFC3339),
+	}
+	data, _ := json.Marshal(plainToken) //nolint:gosec // test fixture
+	tokenFile := filepath.Join(dir, "token.json")
+	if err := os.WriteFile(tokenFile, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	opts := &OAuth2Options{
+		TokenEncryption: te,
+		CredentialGroup: "google",
+		PluginName:      "calendar",
+	}
+
+	p, _ := NewOAuth2Provider(tokenFile, "nonexistent-creds.json", nil, dir, testTransport, opts)
+
+	if !p.Available() {
+		t.Fatal("provider should be available")
+	}
+
+	headers, err := p.Authenticate(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+
+	auth := headers.Get("Authorization")
+	if auth != "Bearer encrypted-access" {
+		t.Errorf("Authorization = %q, want %q (encrypted should take precedence)", auth, "Bearer encrypted-access")
+	}
+}
+
+// TestOAuth2Provider_NoTokenAnywhere verifies that when encryption is
+// configured but no token exists anywhere, the provider is not available.
+func TestOAuth2Provider_NoTokenAnywhere(t *testing.T) {
+	dir := t.TempDir()
+
+	store := credentials.NewKeyringStore()
+	te := credentials.NewTokenEncryption(store, nil, dir)
+
+	opts := &OAuth2Options{
+		TokenEncryption: te,
+		CredentialGroup: "empty",
+		PluginName:      "noplugin",
+	}
+
+	p, _ := NewOAuth2Provider(
+		filepath.Join(dir, "nonexistent-token.json"),
+		"nonexistent-creds.json", nil, dir, testTransport, opts)
+
+	if p.Available() {
+		t.Error("provider should not be available without any token")
+	}
 }

@@ -776,6 +776,7 @@ func TestManagerDiscoverFirstWins(t *testing.T) {
 	got := manifests["samename"]
 	if got == nil {
 		t.Fatal("expected 'samename' manifest")
+		return
 	}
 	if !strings.HasPrefix(got.Dir, dir1) {
 		t.Errorf("manifest Dir = %q, want prefix %q (first dir should win)", got.Dir, dir1)

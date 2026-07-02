@@ -40,6 +40,10 @@ type VariantConfig struct {
 
 	// Variants maps variant names to their auth configs.
 	Variants map[string]SingleAuthConfig
+
+	// OAuth2Opts, if non-nil, configures encrypted token storage
+	// for OAuth2 providers created from this config.
+	OAuth2Opts *OAuth2Options
 }
 
 // SingleAuthConfig is the config for a single auth provider instance.
@@ -78,7 +82,7 @@ func ResolveVariant(cfg VariantConfig) (Provider, error) {
 			Token:    "", // filled by caller from resolved config
 			Username: "",
 			Password: "",
-		})
+		}, cfg.OAuth2Opts)
 	}
 
 	if cfg.Select != "auto" && cfg.Select != "" {
@@ -86,13 +90,13 @@ func ResolveVariant(cfg VariantConfig) (Provider, error) {
 		if !ok {
 			return nil, fmt.Errorf("unknown auth variant: %s", cfg.Select)
 		}
-		return providerFromConfig(variant.Type, variant)
+		return providerFromConfig(variant.Type, variant, cfg.OAuth2Opts)
 	}
 
 	// Auto: try each variant in declaration order
 	for _, name := range cfg.VariantOrder {
 		variant := cfg.Variants[name]
-		p, err := providerFromConfig(variant.Type, variant)
+		p, err := providerFromConfig(variant.Type, variant, cfg.OAuth2Opts)
 		if err != nil {
 			continue
 		}
@@ -104,7 +108,7 @@ func ResolveVariant(cfg VariantConfig) (Provider, error) {
 	return nil, fmt.Errorf("no auth variant has valid credentials")
 }
 
-func providerFromConfig(typeName string, cfg SingleAuthConfig) (Provider, error) {
+func providerFromConfig(typeName string, cfg SingleAuthConfig, oauth2Opts *OAuth2Options) (Provider, error) {
 	switch typeName {
 	case "bearer":
 		return NewBearerProvider(cfg.Token, cfg.Header, cfg.Prefix)
@@ -113,7 +117,7 @@ func providerFromConfig(typeName string, cfg SingleAuthConfig) (Provider, error)
 	case "kerberos/spnego":
 		return NewKerberosProvider(cfg.SPN), nil
 	case "oauth2":
-		return NewOAuth2Provider(cfg.TokenFile, cfg.CredentialsFile, cfg.Scopes, cfg.CredentialsDir, cfg.Transport)
+		return NewOAuth2Provider(cfg.TokenFile, cfg.CredentialsFile, cfg.Scopes, cfg.CredentialsDir, cfg.Transport, oauth2Opts)
 	case "refresh_token":
 		return NewRefreshTokenProvider(cfg.TokenURL, cfg.ClientID, cfg.Token, cfg.Transport, cfg.TokenFile)
 	case "github_app":

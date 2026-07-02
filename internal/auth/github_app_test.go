@@ -843,7 +843,7 @@ func TestPrivateKeyFileTakesPrecedence(t *testing.T) {
 		Transport:      http.DefaultTransport,
 	}
 
-	p, err := providerFromConfig("github_app", cfg)
+	p, err := providerFromConfig("github_app", cfg, nil)
 	if err != nil {
 		t.Fatalf("providerFromConfig: %v", err)
 	}

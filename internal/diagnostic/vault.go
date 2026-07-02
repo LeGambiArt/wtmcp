@@ -11,7 +11,9 @@ import (
 
 	"github.com/LeGambiArt/wtmcp/internal/config"
 	"github.com/LeGambiArt/wtmcp/internal/plugin"
+	"github.com/LeGambiArt/wtmcp/internal/secrets"
 	"github.com/LeGambiArt/wtmcp/internal/secrets/vault"
+	"github.com/LeGambiArt/wtmcp/internal/secrets/wtmcpvault"
 )
 
 // VaultPasswordSource returns a human-readable label for how the vault
@@ -69,31 +71,30 @@ func PrintVaultStatus(w io.Writer, result *plugin.DiscoveryResult) {
 			continue
 		}
 
-		if !vault.IsAnsibleVault(data) {
+		format := secrets.DetectFormat(data)
+		if format == secrets.FormatPlaintext {
 			continue
 		}
 
-		header, err := vault.ParseHeader(strings.SplitN(string(data), "\n", 2)[0])
-		if err != nil {
-			_, _ = fmt.Fprintf(w, "  - %s (encrypted, invalid header)\n", group)
-			continue
-		}
+		vaultInfo := describeVaultFile(data, format)
 
-		vaultInfo := "vault " + header.Version
-		if header.VaultID != "" {
-			vaultInfo += " id=" + header.VaultID
-		}
-
-		password, err := resolve(header.VaultID)
+		password, err := resolve("")
 		if err != nil {
 			_, _ = fmt.Fprintf(w, "  - %s (encrypted, %s, no password)\n", group, vaultInfo)
 			continue
 		}
 
-		plaintext, err := vault.Decrypt(data, password)
+		var plaintext []byte
+		var decryptErr error
+		switch format {
+		case secrets.FormatAnsibleVault:
+			plaintext, decryptErr = vault.Decrypt(data, password)
+		case secrets.FormatWtmcpVault:
+			plaintext, decryptErr = wtmcpvault.DecryptPasswordWithContext(data, password, group)
+		}
 		vault.ZeroBytes(password)
 		vault.ZeroBytes(plaintext)
-		if err != nil {
+		if decryptErr != nil {
 			_, _ = fmt.Fprintf(w, "  - %s (encrypted, %s, decryption failed)\n", group, vaultInfo)
 		} else {
 			_, _ = fmt.Fprintf(w, "  - %s (encrypted, %s, decryption ok)\n", group, vaultInfo)
@@ -140,7 +141,7 @@ func PrintCredentialFileStatus(w io.Writer, cfg *config.Config, resolve func(str
 				_, _ = fmt.Fprintf(w, "  - %s/%s (read error: %v)\n", group.Name(), file.Name(), readErr)
 				continue
 			}
-			if !vault.IsAnsibleVault(header[:n]) {
+			if !secrets.IsEncrypted(header[:n]) {
 				continue
 			}
 
@@ -155,32 +156,51 @@ func PrintCredentialFileStatus(w io.Writer, cfg *config.Config, resolve func(str
 				continue
 			}
 
-			hdr, err := vault.ParseHeader(strings.SplitN(string(data), "\n", 2)[0])
-			if err != nil {
-				_, _ = fmt.Fprintf(w, "  - %s/%s (encrypted, invalid header)\n", group.Name(), file.Name())
-				continue
-			}
+			format := secrets.DetectFormat(data)
+			vaultInfo := describeVaultFile(data, format)
 
-			vaultInfo := "vault " + hdr.Version
-			if hdr.VaultID != "" {
-				vaultInfo += " id=" + hdr.VaultID
-			}
-
-			password, err := resolve(hdr.VaultID)
+			password, err := resolve("")
 			if err != nil {
 				_, _ = fmt.Fprintf(w, "  - %s/%s (encrypted, %s, no password)\n", group.Name(), file.Name(), vaultInfo)
 				continue
 			}
 
-			plaintext, err := vault.Decrypt(data, password)
+			var plaintext []byte
+			var decryptErr error
+			switch format {
+			case secrets.FormatAnsibleVault:
+				plaintext, decryptErr = vault.Decrypt(data, password)
+			case secrets.FormatWtmcpVault:
+				plaintext, decryptErr = wtmcpvault.DecryptPasswordWithContext(data, password, group.Name())
+			}
 			vault.ZeroBytes(password)
 			vault.ZeroBytes(plaintext)
-			if err != nil {
+			if decryptErr != nil {
 				_, _ = fmt.Fprintf(w, "  - %s/%s (encrypted, %s, decryption failed)\n", group.Name(), file.Name(), vaultInfo)
 			} else {
 				_, _ = fmt.Fprintf(w, "  - %s/%s (encrypted, %s, decryption ok)\n", group.Name(), file.Name(), vaultInfo)
 			}
 		}
+	}
+}
+
+// describeVaultFile returns a human-readable label for an encrypted file.
+func describeVaultFile(data []byte, format secrets.Format) string {
+	switch format {
+	case secrets.FormatAnsibleVault:
+		header, err := vault.ParseHeader(strings.SplitN(string(data), "\n", 2)[0])
+		if err != nil {
+			return "vault (invalid header)"
+		}
+		info := "vault " + header.Version
+		if header.VaultID != "" {
+			info += " id=" + header.VaultID
+		}
+		return info
+	case secrets.FormatWtmcpVault:
+		return wtmcpvault.FormatInfo(data)
+	default:
+		return "unknown"
 	}
 }
 

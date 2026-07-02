@@ -4,13 +4,17 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
 	"github.com/LeGambiArt/wtmcp/internal/config"
+	"github.com/LeGambiArt/wtmcp/internal/secrets"
 	"github.com/LeGambiArt/wtmcp/internal/secrets/vault"
+	"github.com/LeGambiArt/wtmcp/internal/secrets/wtmcpvault"
 )
 
 var (
@@ -18,6 +22,7 @@ var (
 	vaultID           string
 	vaultAskPass      bool
 	vaultCheckOnly    bool
+	vaultFormat       string // "ansible" or "wtmcp"
 )
 
 var vaultCmd = &cobra.Command{
@@ -53,7 +58,9 @@ func init() {
 		"Prompt for vault password")
 
 	vaultEncryptCmd.Flags().StringVar(&vaultID, "vault-id", "",
-		"Vault ID label for 1.2 format")
+		"Vault ID label for Ansible Vault 1.2 format")
+	vaultEncryptCmd.Flags().StringVar(&vaultFormat, "format", "ansible",
+		"Vault format: 'ansible' (default) or 'wtmcp' (AES-256-GCM + Argon2id)")
 
 	vaultDecryptCmd.Flags().BoolVar(&vaultCheckOnly, "check", false,
 		"Verify decryption without writing")
@@ -62,6 +69,10 @@ func init() {
 }
 
 func runVaultEncrypt(_ *cobra.Command, args []string) error {
+	if vaultFormat != "ansible" && vaultFormat != "wtmcp" {
+		return fmt.Errorf("invalid --format: %q (must be 'ansible' or 'wtmcp')", vaultFormat)
+	}
+
 	password, err := resolveVaultCLIPassword(true)
 	if err != nil {
 		return err
@@ -73,7 +84,7 @@ func runVaultEncrypt(_ *cobra.Command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("read %s: %w", path, err)
 		}
-		if vault.IsAnsibleVault(data) {
+		if secrets.IsEncrypted(data) {
 			return fmt.Errorf("%s is already encrypted", path)
 		}
 
@@ -83,10 +94,16 @@ func runVaultEncrypt(_ *cobra.Command, args []string) error {
 		}
 
 		var encrypted []byte
-		if vaultID != "" {
-			encrypted, err = vault.EncryptWithID(data, password, vaultID)
-		} else {
-			encrypted, err = vault.Encrypt(data, password)
+		switch vaultFormat {
+		case "wtmcp":
+			group := groupFromPath(path)
+			encrypted, err = wtmcpvault.EncryptPasswordWithContext(data, password, group)
+		default:
+			if vaultID != "" {
+				encrypted, err = vault.EncryptWithID(data, password, vaultID)
+			} else {
+				encrypted, err = vault.Encrypt(data, password)
+			}
 		}
 		if err != nil {
 			return fmt.Errorf("encrypt %s: %w", path, err)
@@ -95,7 +112,11 @@ func runVaultEncrypt(_ *cobra.Command, args []string) error {
 		if err := atomicWriteFile(path, encrypted, info.Mode().Perm()); err != nil {
 			return fmt.Errorf("write %s: %w", path, err)
 		}
-		fmt.Printf("Encryption successful: %s\n", path)
+		formatLabel := "Ansible Vault"
+		if vaultFormat == "wtmcp" {
+			formatLabel = "wtmcp vault (AES-256-GCM + Argon2id)"
+		}
+		fmt.Printf("Encryption successful (%s): %s\n", formatLabel, path)
 	}
 	return nil
 }
@@ -112,11 +133,8 @@ func runVaultDecrypt(_ *cobra.Command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("read %s: %w", path, err)
 		}
-		if !vault.IsAnsibleVault(data) {
-			return fmt.Errorf("%s is not an Ansible Vault encrypted file", path)
-		}
 
-		plaintext, err := vault.Decrypt(data, password)
+		plaintext, err := decryptVaultFile(data, password, path)
 		if err != nil {
 			return fmt.Errorf("decrypt %s: %w", path, err)
 		}
@@ -154,11 +172,8 @@ func runVaultView(_ *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("read %s: %w", args[0], err)
 	}
-	if !vault.IsAnsibleVault(data) {
-		return fmt.Errorf("%s is not an Ansible Vault encrypted file", args[0])
-	}
 
-	plaintext, err := vault.Decrypt(data, password)
+	plaintext, err := decryptVaultFile(data, password, args[0])
 	if err != nil {
 		return fmt.Errorf("decrypt %s: %w", args[0], err)
 	}
@@ -166,6 +181,37 @@ func runVaultView(_ *cobra.Command, args []string) error {
 
 	_, err = os.Stdout.Write(plaintext)
 	return err
+}
+
+// decryptVaultFile decrypts a file based on its detected format.
+func decryptVaultFile(data, password []byte, path string) ([]byte, error) {
+	format := secrets.DetectFormat(data)
+	switch format {
+	case secrets.FormatAnsibleVault:
+		return vault.Decrypt(data, password)
+	case secrets.FormatWtmcpVault:
+		group := groupFromPath(path)
+		return wtmcpvault.DecryptPasswordWithContext(data, password, group)
+	default:
+		return nil, fmt.Errorf("file is not encrypted")
+	}
+}
+
+// groupFromPath extracts the credential group name from a file path.
+// e.g., "env.d/github.env" → "github", "credentials/jira/token.json" → "jira"
+// For files nested under a named directory (e.g. credentials/jira/token.json),
+// the parent directory name is used as the group. For flat files (e.g.
+// env.d/github.env), the stem is used after stripping .enc and the remaining
+// extension.
+func groupFromPath(path string) string {
+	dir := filepath.Base(filepath.Dir(path))
+	if dir != "." && dir != "/" && dir != ".." {
+		return dir
+	}
+	base := filepath.Base(path)
+	// Strip double extensions: .env.enc → strip .enc first, then .env
+	base = strings.TrimSuffix(base, ".enc")
+	return strings.TrimSuffix(base, filepath.Ext(base))
 }
 
 // resolveVaultCLIPassword resolves the vault password for CLI
