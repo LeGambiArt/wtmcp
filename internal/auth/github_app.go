@@ -55,6 +55,9 @@ func NewGitHubAppProvider(appID, installationID string, privateKeyPEM []byte, ba
 	if installationID == "" {
 		return nil, fmt.Errorf("github_app: installation_id must not be empty")
 	}
+	if transport == nil {
+		return nil, fmt.Errorf("github_app: transport must not be nil")
+	}
 
 	if baseURL == "" {
 		baseURL = "https://api.github.com"
@@ -149,6 +152,9 @@ func (g *GitHubAppProvider) refreshLocked(ctx context.Context) error {
 	}
 	req.Header.Set("Authorization", "Bearer "+jwtToken)
 	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("User-Agent", "wtmcp")
+	// Pinned to 2022-11-28; supported until 2028-03-10.
+	// See https://docs.github.com/en/rest/about-the-rest-api/api-versions
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 
 	resp, err := g.client.Do(req) //nolint:gosec
@@ -164,7 +170,7 @@ func (g *GitHubAppProvider) refreshLocked(ctx context.Context) error {
 
 	if resp.StatusCode != http.StatusCreated {
 		return fmt.Errorf("github_app: HTTP %d from token endpoint: %s",
-			resp.StatusCode, truncateBody(body, 200))
+			resp.StatusCode, extractErrorMessage(body))
 	}
 
 	var tok installationTokenResponse
@@ -178,7 +184,10 @@ func (g *GitHubAppProvider) refreshLocked(ctx context.Context) error {
 
 	expiresAt, err := time.Parse(time.RFC3339, tok.ExpiresAt)
 	if err != nil {
-		return fmt.Errorf("github_app: parse expires_at %q: %w", tok.ExpiresAt, err)
+		expiresAt, err = time.Parse(time.RFC3339Nano, tok.ExpiresAt)
+		if err != nil {
+			return fmt.Errorf("github_app: parse expires_at %q: %w", tok.ExpiresAt, err)
+		}
 	}
 
 	// Refresh at 90% of the remaining lifetime to avoid edge-case failures.
@@ -206,6 +215,18 @@ func (g *GitHubAppProvider) createJWT() (string, error) {
 		return "", fmt.Errorf("sign JWT: %w", err)
 	}
 	return signed, nil
+}
+
+// extractErrorMessage tries to extract a GitHub API error message from
+// a JSON response body. Falls back to the truncated raw body.
+func extractErrorMessage(body []byte) string {
+	var gh struct {
+		Message string `json:"message"`
+	}
+	if json.Unmarshal(body, &gh) == nil && gh.Message != "" {
+		return gh.Message
+	}
+	return truncateBody(body, 200)
 }
 
 // truncateBody returns body as a string, truncated to maxLen with an

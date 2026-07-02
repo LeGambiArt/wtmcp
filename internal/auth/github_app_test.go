@@ -96,8 +96,7 @@ func validateJWT(t *testing.T, r *http.Request, pubKey *rsa.PublicKey) jwt.MapCl
 // --- Constructor and interface tests ---
 
 func TestGitHubAppName(t *testing.T) {
-	key, pemBytes := generateTestKey(t)
-	_ = key
+	_, pemBytes := generateTestKey(t)
 	srv := newGitHubTestServer(t, func(_ *http.Request) (any, int) {
 		return nil, 200
 	})
@@ -151,6 +150,7 @@ func TestGitHubAppConstructorValidation(t *testing.T) {
 		installationID string
 		pem            []byte
 		baseURL        string
+		transport      http.RoundTripper
 		wantErr        string
 	}{
 		{
@@ -158,6 +158,7 @@ func TestGitHubAppConstructorValidation(t *testing.T) {
 			appID:          "",
 			installationID: "456",
 			pem:            validPEM,
+			transport:      http.DefaultTransport,
 			wantErr:        "app_id must not be empty",
 		},
 		{
@@ -165,13 +166,23 @@ func TestGitHubAppConstructorValidation(t *testing.T) {
 			appID:          "123",
 			installationID: "",
 			pem:            validPEM,
+			transport:      http.DefaultTransport,
 			wantErr:        "installation_id must not be empty",
+		},
+		{
+			name:           "nil transport",
+			appID:          "123",
+			installationID: "456",
+			pem:            validPEM,
+			transport:      nil,
+			wantErr:        "transport must not be nil",
 		},
 		{
 			name:           "invalid PEM",
 			appID:          "123",
 			installationID: "456",
 			pem:            []byte("not a pem"),
+			transport:      http.DefaultTransport,
 			wantErr:        "no PEM block",
 		},
 		{
@@ -179,6 +190,7 @@ func TestGitHubAppConstructorValidation(t *testing.T) {
 			appID:          "123",
 			installationID: "456",
 			pem:            ecPEM,
+			transport:      http.DefaultTransport,
 			wantErr:        "parse private key",
 		},
 		{
@@ -186,6 +198,7 @@ func TestGitHubAppConstructorValidation(t *testing.T) {
 			appID:          "123",
 			installationID: "456",
 			pem:            validPEM,
+			transport:      http.DefaultTransport,
 			baseURL:        "http://github.example.com",
 			wantErr:        "must use https",
 		},
@@ -194,6 +207,7 @@ func TestGitHubAppConstructorValidation(t *testing.T) {
 			appID:          "123",
 			installationID: "456",
 			pem:            validPEM,
+			transport:      http.DefaultTransport,
 			baseURL:        "://bad",
 			wantErr:        "invalid base_url",
 		},
@@ -202,7 +216,7 @@ func TestGitHubAppConstructorValidation(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			pemCopy := make([]byte, len(tt.pem))
 			copy(pemCopy, tt.pem)
-			_, err := NewGitHubAppProvider(tt.appID, tt.installationID, pemCopy, tt.baseURL, nil)
+			_, err := NewGitHubAppProvider(tt.appID, tt.installationID, pemCopy, tt.baseURL, tt.transport)
 			if err == nil {
 				t.Fatal("expected error")
 			}
@@ -222,7 +236,7 @@ func TestGitHubAppDefaultBaseURL(t *testing.T) {
 	// verify the default is set by passing empty baseURL. The
 	// constructor will use https://api.github.com. Since transport is
 	// nil we just check the field.
-	p, err := NewGitHubAppProvider("123", "456", pemCopy, "", nil)
+	p, err := NewGitHubAppProvider("123", "456", pemCopy, "", http.DefaultTransport)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -236,7 +250,7 @@ func TestGitHubAppTrailingSlashStripped(t *testing.T) {
 	pemCopy := make([]byte, len(pemBytes))
 	copy(pemCopy, pemBytes)
 
-	p, err := NewGitHubAppProvider("123", "456", pemCopy, "https://ghes.example.com/api/v3/", nil)
+	p, err := NewGitHubAppProvider("123", "456", pemCopy, "https://ghes.example.com/api/v3/", http.DefaultTransport)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -267,6 +281,9 @@ func TestGitHubAppSuccessfulExchange(t *testing.T) {
 		}
 		if got := r.Header.Get("X-GitHub-Api-Version"); got != "2022-11-28" {
 			t.Errorf("X-GitHub-Api-Version = %q", got)
+		}
+		if got := r.Header.Get("User-Agent"); got != "wtmcp" {
+			t.Errorf("User-Agent = %q, want %q", got, "wtmcp")
 		}
 
 		// Validate JWT.
@@ -389,20 +406,37 @@ func TestGitHubAppAutoRefreshOnExpiry(t *testing.T) {
 	}
 }
 
-func TestGitHubAppHTTPError(t *testing.T) {
-	_, pemBytes := generateTestKey(t)
-
-	srv := newGitHubTestServer(t, func(_ *http.Request) (any, int) {
-		return map[string]string{"message": "Bad credentials"}, 401
-	})
-	p := newGitHubAppProvider(t, srv, pemBytes)
-
-	_, err := p.Authenticate(context.Background(), nil)
-	if err == nil {
-		t.Fatal("expected error on 401")
+func TestGitHubAppHTTPErrors(t *testing.T) {
+	tests := []struct {
+		name    string
+		status  int
+		body    map[string]string
+		wantErr string
+	}{
+		{"401 bad credentials", 401, map[string]string{"message": "Bad credentials"}, "Bad credentials"},
+		{"403 suspended", 403, map[string]string{"message": "This installation has been suspended"}, "suspended"},
+		{"404 not found", 404, map[string]string{"message": "Not Found"}, "Not Found"},
+		{"422 validation", 422, map[string]string{"message": "Invalid request"}, "Invalid request"},
 	}
-	if !strings.Contains(err.Error(), "HTTP 401") {
-		t.Errorf("error = %q, want HTTP 401", err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, pemBytes := generateTestKey(t)
+			srv := newGitHubTestServer(t, func(_ *http.Request) (any, int) {
+				return tt.body, tt.status
+			})
+			p := newGitHubAppProvider(t, srv, pemBytes)
+
+			_, err := p.Authenticate(context.Background(), nil)
+			if err == nil {
+				t.Fatalf("expected error on %d", tt.status)
+			}
+			if !strings.Contains(err.Error(), fmt.Sprintf("HTTP %d", tt.status)) {
+				t.Errorf("error = %q, want HTTP %d", err, tt.status)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("error = %q, want to contain %q", err, tt.wantErr)
+			}
+		})
 	}
 }
 
@@ -534,7 +568,7 @@ func TestGitHubAppConcurrentAccess(t *testing.T) {
 }
 
 func TestGitHubAppContextCancellation(t *testing.T) {
-	key, pemBytes := generateTestKey(t)
+	_, pemBytes := generateTestKey(t)
 
 	arrived := make(chan struct{})
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
@@ -544,7 +578,6 @@ func TestGitHubAppContextCancellation(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	p := newGitHubAppProvider(t, srv, pemBytes)
-	_ = key
 
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
