@@ -3,6 +3,8 @@
 Pure utility functions with no protocol or I/O dependencies.
 """
 
+from __future__ import annotations
+
 import json
 import math
 import re
