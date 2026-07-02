@@ -198,19 +198,25 @@ func decryptVaultFile(data, password []byte, path string) ([]byte, error) {
 }
 
 // groupFromPath extracts the credential group name from a file path.
-// e.g., "env.d/github.env" → "github", "credentials/jira/token.json" → "jira"
-// For files nested under a named directory (e.g. credentials/jira/token.json),
-// the parent directory name is used as the group. For flat files (e.g.
-// env.d/github.env), the stem is used after stripping .enc and the remaining
-// extension.
+// It mirrors the runtime derivation in config/env.go:
+//
+//	"env.d/github.env"            → "github"   (stem of .env file)
+//	"credentials/jira/token.json" → "jira"     (parent directory)
+//	"github.env"                  → "github"   (flat file, stem)
+//
+// For .env files the stem (base minus .env and optional .enc) is always
+// used as the group, regardless of parent directory name, so that the AAD
+// matches the runtime path in config/env.go.
 func groupFromPath(path string) string {
+	base := filepath.Base(path)
+	base = strings.TrimSuffix(base, ".enc")
+	if strings.HasSuffix(base, ".env") {
+		return strings.TrimSuffix(base, ".env")
+	}
 	dir := filepath.Base(filepath.Dir(path))
 	if dir != "." && dir != "/" && dir != ".." {
 		return dir
 	}
-	base := filepath.Base(path)
-	// Strip double extensions: .env.enc → strip .enc first, then .env
-	base = strings.TrimSuffix(base, ".enc")
 	return strings.TrimSuffix(base, filepath.Ext(base))
 }
 
