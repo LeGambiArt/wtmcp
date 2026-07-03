@@ -1302,6 +1302,37 @@ func TestTrySAMLSSO200UppercaseForm(t *testing.T) {
 	}
 }
 
+func TestIsSAMLChallengeJSRedirect(t *testing.T) {
+	tests := []struct {
+		name string
+		peek string
+	}{
+		{
+			"var redirectUrl",
+			`<html><script>var redirectUrl = 'https://wd5.myworkday.com/wday/authgwy/redhat/login.htmld';</script></html>`,
+		},
+		{
+			"var redirectUrl with query params",
+			`<html><script>var redirectUrl = 'https://example.com/authgwy?returnTo=%2fapp';</script></html>`,
+		},
+		{
+			"window.location assignment",
+			`<html><script>window.location = 'https://idp.example.com/sso';</script></html>`,
+		},
+		{
+			"window.location.href assignment",
+			`<html><script>window.location.href = 'https://idp.example.com/auth';</script></html>`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if !isSAMLChallenge([]byte(tt.peek)) {
+				t.Errorf("isSAMLChallenge should detect JS redirect for %q", tt.name)
+			}
+		})
+	}
+}
+
 func TestIsSAMLChallengeNegative(t *testing.T) {
 	tests := []struct {
 		name string
@@ -1311,6 +1342,9 @@ func TestIsSAMLChallengeNegative(t *testing.T) {
 		{"form without SAML", `<html><form action="/search"><input type="text"/></form></html>`},
 		{"empty", ""},
 		{"json-like", `{"SAMLRequest": "value"}`},
+		{"plain text", `<html><p>Hello world</p></html>`},
+		{"redirectUrl in text", `<html><p>Set redirectUrl param</p></html>`},
+		{"window.location in conditional", `<html><script>if (window.location.hash) { history.replaceState(null, '', window.location.pathname); }</script></html>`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

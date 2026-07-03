@@ -310,13 +310,16 @@ func (p *peekReadCloser) Close() error { return p.orig.Close() }
 
 // isSAMLChallenge checks if an 8KB peek from a 200 text/html
 // response looks like a SAML challenge. Fast substring pre-filter;
-// structural confirmation via parseSAMLForm happens after the full
-// body is read.
+// structural confirmation via parseSAMLForm or handleSAMLSSO happens
+// after the full body is read.
 func isSAMLChallenge(peek []byte) bool {
 	lower := bytes.ToLower(peek)
-	return bytes.Contains(lower, []byte("<form")) &&
+	if bytes.Contains(lower, []byte("<form")) &&
 		(bytes.Contains(peek, []byte("SAMLRequest")) ||
-			bytes.Contains(peek, []byte("SAMLResponse")))
+			bytes.Contains(peek, []byte("SAMLResponse"))) {
+		return true
+	}
+	return bytes.Contains(lower, []byte("<script")) && jsRedirectRe.Match(peek)
 }
 
 // trySAMLSSO checks if an HTTP response is a SAML SSO auth challenge
