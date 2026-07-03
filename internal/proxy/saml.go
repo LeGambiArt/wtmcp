@@ -19,6 +19,20 @@ import (
 	"github.com/LeGambiArt/wtmcp/internal/protocol"
 )
 
+const (
+	samlUserAgent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+	samlAccept    = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+	samlMaxLegs   = 5
+)
+
+func setSAMLHeaders(req *http.Request, origin string) {
+	req.Header.Set("User-Agent", samlUserAgent)
+	req.Header.Set("Accept", samlAccept)
+	if origin != "" {
+		req.Header.Set("Origin", origin)
+	}
+}
+
 func isAuthRedirect(statusCode int, contentType string) bool {
 	return (statusCode == 401 || statusCode == 403) && strings.Contains(contentType, "text/html")
 }
@@ -247,6 +261,7 @@ func handleSAMLSSO(ctx context.Context, client *http.Client, body []byte, baseUR
 		log.Printf("proxy: saml: invalid redirect URL %q: %v", redirectURL, err)
 		return false
 	}
+	setSAMLHeaders(idpReq, "")
 
 	idpResp, err := safeClient.Do(idpReq)
 	if err != nil {
@@ -286,21 +301,96 @@ func handleSAMLSSO(ctx context.Context, client *http.Client, body []byte, baseUR
 		return false
 	}
 	formReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	setSAMLHeaders(formReq, idpBase)
 
 	formResp, err := safeClient.Do(formReq)
 	if err != nil {
 		log.Printf("proxy: saml: SAML form POST failed: %v", err)
 		return false
 	}
-	io.Copy(io.Discard, formResp.Body) //nolint:errcheck,gosec
-	formResp.Body.Close()              //nolint:errcheck,gosec
-
-	if formResp.StatusCode >= 200 && formResp.StatusCode < 400 {
-		log.Printf("proxy: saml: SSO login completed")
-		return true
+	acsBody, err := io.ReadAll(io.LimitReader(formResp.Body, samlInitBodyLimit))
+	formResp.Body.Close() //nolint:errcheck,gosec
+	if err != nil {
+		log.Printf("proxy: saml: error reading ACS response body: %v", err)
 	}
-	log.Printf("proxy: saml: SAML form POST returned status %d", formResp.StatusCode)
-	return false
+
+	if formResp.StatusCode < 200 || formResp.StatusCode >= 400 {
+		log.Printf("proxy: saml: SAML form POST returned status %d", formResp.StatusCode)
+		return false
+	}
+
+	if legs := followSAMLChain(ctx, safeClient, acsBody, formResp.Request.URL.String(), baseURL, allowedDomains); legs > 0 {
+		log.Printf("proxy: saml: SSO login completed (%d post-ACS legs followed)", legs)
+	} else {
+		log.Printf("proxy: saml: SSO login completed")
+	}
+	return true
+}
+
+// followSAMLChain follows a chain of auto-submit forms or JS
+// redirects in an ACS response. Some SPs (notably Workday) return
+// an HTML page after processing the SAMLResponse that contains a
+// form targeting the auth gateway, which must be submitted to
+// complete session establishment.
+func followSAMLChain(ctx context.Context, client *http.Client, body []byte, currentBase, baseURL string, allowedDomains []string) int {
+	completed := 0
+	for leg := range samlMaxLegs {
+		if len(body) == 0 {
+			break
+		}
+
+		if nextAction, nextData, ok := parseSAMLForm(body, currentBase); ok && len(nextData) > 0 {
+			if !isDomainAllowedForSSO(nextAction, baseURL, allowedDomains) {
+				log.Printf("proxy: saml: post-ACS form action %q not in allowed domains (leg %d)", nextAction, leg+1)
+				break
+			}
+			log.Printf("proxy: saml: ACS response contains form, following (leg %d)", leg+1)
+			followReq, err := http.NewRequestWithContext(ctx, "POST", nextAction, strings.NewReader(nextData.Encode()))
+			if err != nil {
+				log.Printf("proxy: saml: post-ACS chain leg %d: build request failed: %v", leg+1, err)
+				break
+			}
+			followReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			setSAMLHeaders(followReq, "")
+			followResp, err := client.Do(followReq)
+			if err != nil {
+				log.Printf("proxy: saml: post-ACS chain leg %d: request failed: %v", leg+1, err)
+				break
+			}
+			body, _ = io.ReadAll(io.LimitReader(followResp.Body, samlInitBodyLimit))
+			followResp.Body.Close() //nolint:errcheck,gosec
+			currentBase = followResp.Request.URL.String()
+			completed++
+			continue
+		}
+
+		if jsRedirect := extractRedirectURL(body, currentBase); jsRedirect != "" {
+			if !isDomainAllowedForSSO(jsRedirect, baseURL, allowedDomains) {
+				log.Printf("proxy: saml: post-ACS redirect %q not in allowed domains (leg %d)", jsRedirect, leg+1)
+				break
+			}
+			log.Printf("proxy: saml: ACS response contains redirect, following (leg %d)", leg+1)
+			followReq, err := http.NewRequestWithContext(ctx, "GET", jsRedirect, nil)
+			if err != nil {
+				log.Printf("proxy: saml: post-ACS chain leg %d: build request failed: %v", leg+1, err)
+				break
+			}
+			setSAMLHeaders(followReq, "")
+			followResp, err := client.Do(followReq)
+			if err != nil {
+				log.Printf("proxy: saml: post-ACS chain leg %d: request failed: %v", leg+1, err)
+				break
+			}
+			body, _ = io.ReadAll(io.LimitReader(followResp.Body, samlInitBodyLimit))
+			followResp.Body.Close() //nolint:errcheck,gosec
+			currentBase = followResp.Request.URL.String()
+			completed++
+			continue
+		}
+
+		break
+	}
+	return completed
 }
 
 const samlInitBodyLimit = 1 << 20 // 1MB
@@ -409,7 +499,7 @@ func (p *Proxy) trySAMLSSO(ctx context.Context, pluginName string, pa *PluginAut
 		err := followSAMLFormChain(ctx, client, action, formData, baseURL, pa.AllowedDomains)
 		ssoOK = (err == nil)
 	}
-	if !ssoOK && action == "" {
+	if !ssoOK {
 		ssoOK = handleSAMLSSO(ctx, client, body, baseURL, pa.AllowedDomains)
 	}
 
@@ -502,6 +592,7 @@ func InitSAMLSession(ctx context.Context, client *http.Client, initURL, baseURL 
 	if err != nil {
 		return fmt.Errorf("build request for %s: %w", fullURL, err)
 	}
+	setSAMLHeaders(req, "")
 
 	resp, err := safeClient.Do(req)
 	if err != nil {
@@ -542,6 +633,7 @@ func followSAMLFormChain(ctx context.Context, client *http.Client, idpURL string
 		return fmt.Errorf("build IdP request: %w", err)
 	}
 	idpReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	setSAMLHeaders(idpReq, "")
 
 	idpResp, err := safeClient.Do(idpReq)
 	if err != nil {
@@ -568,17 +660,23 @@ func followSAMLFormChain(ctx context.Context, client *http.Client, idpURL string
 		return fmt.Errorf("build final SAML request: %w", err)
 	}
 	finalReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	setSAMLHeaders(finalReq, idpBase)
 
 	finalResp, err := safeClient.Do(finalReq)
 	if err != nil {
 		return fmt.Errorf("final SAML POST failed: %w", err)
 	}
-	io.Copy(io.Discard, finalResp.Body) //nolint:errcheck,gosec
-	finalResp.Body.Close()              //nolint:errcheck,gosec
+	finalBody, _ := io.ReadAll(io.LimitReader(finalResp.Body, samlInitBodyLimit))
+	finalResp.Body.Close() //nolint:errcheck,gosec
 
-	if finalResp.StatusCode >= 200 && finalResp.StatusCode < 400 {
-		log.Printf("proxy: saml: proactive SSO login completed")
-		return nil
+	if finalResp.StatusCode < 200 || finalResp.StatusCode >= 400 {
+		return fmt.Errorf("final SAML POST returned status %d", finalResp.StatusCode)
 	}
-	return fmt.Errorf("final SAML POST returned status %d", finalResp.StatusCode)
+
+	if legs := followSAMLChain(ctx, safeClient, finalBody, finalResp.Request.URL.String(), baseURL, allowedDomains); legs > 0 {
+		log.Printf("proxy: saml: proactive SSO login completed (%d post-ACS legs followed)", legs)
+	} else {
+		log.Printf("proxy: saml: proactive SSO login completed")
+	}
+	return nil
 }

