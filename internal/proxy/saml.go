@@ -172,6 +172,14 @@ func isDomainAllowedForSSO(rawURL string, baseURL string, allowedDomains []strin
 	return domaincheck.Contains(allowedDomains, host)
 }
 
+func samlCooldownKey(pluginName, fullURL string) string {
+	u, err := url.Parse(fullURL)
+	if err != nil {
+		return pluginName + "|" + fullURL
+	}
+	return pluginName + "|" + u.Host + u.Path
+}
+
 func extractHostname(rawURL string) string {
 	u, err := url.Parse(rawURL)
 	if err != nil {
@@ -297,6 +305,7 @@ func handleSAMLSSO(ctx context.Context, client *http.Client, body []byte, baseUR
 
 const samlInitBodyLimit = 1 << 20 // 1MB
 const samlPeekSize = 8 * 1024     // 8KB
+const samlCooldownDuration = 60 * time.Second
 
 // peekReadCloser wraps a MultiReader (peek + original body) while
 // preserving the original body's Close(). Without this, wrapping in
@@ -345,10 +354,12 @@ func (p *Proxy) trySAMLSSO(ctx context.Context, pluginName string, pa *PluginAut
 		return resp
 	}
 
-	if v, ok := p.samlCooldowns.Load(pluginName); ok {
-		if time.Since(time.Unix(0, v.(int64))) < 60*time.Second {
+	cooldownKey := samlCooldownKey(pluginName, fullURL)
+	if v, ok := p.samlCooldowns.Load(cooldownKey); ok {
+		if ts, ok := v.(int64); ok && time.Since(time.Unix(0, ts)) < samlCooldownDuration {
 			return resp
 		}
+		p.samlCooldowns.Delete(cooldownKey)
 	}
 
 	peek := make([]byte, samlPeekSize)
@@ -369,8 +380,6 @@ func (p *Proxy) trySAMLSSO(ctx context.Context, pluginName string, pa *PluginAut
 		}
 		return resp
 	}
-
-	p.samlCooldowns.Store(pluginName, time.Now().UnixNano())
 
 	rest, err := io.ReadAll(io.LimitReader(resp.Body, samlInitBodyLimit-int64(n)))
 	resp.Body.Close() //nolint:errcheck,gosec
@@ -402,6 +411,10 @@ func (p *Proxy) trySAMLSSO(ctx context.Context, pluginName string, pa *PluginAut
 	}
 	if !ssoOK && action == "" {
 		ssoOK = handleSAMLSSO(ctx, client, body, baseURL, pa.AllowedDomains)
+	}
+
+	if ssoOK {
+		p.samlCooldowns.Store(cooldownKey, time.Now().UnixNano())
 	}
 
 	if !ssoOK {

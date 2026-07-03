@@ -1193,6 +1193,75 @@ func TestTrySAMLSSO200Cooldown(t *testing.T) {
 	}
 }
 
+func TestTrySAMLSSO200CooldownAfterFalsePositive(t *testing.T) {
+	var apiCalls, idpCalls atomic.Int32
+	mux := http.NewServeMux()
+	srv := httptest.NewTLSServer(mux)
+	defer srv.Close()
+
+	mux.HandleFunc("/page", func(w http.ResponseWriter, _ *http.Request) {
+		n := apiCalls.Add(1)
+		w.Header().Set("Content-Type", "text/html")
+		if n <= 2 {
+			// First two calls: page with JS redirect to self (not a SAML challenge).
+			// This triggers isSAMLChallenge (has <script> + redirectUrl assignment)
+			// but structural validation finds no SAMLRequest/SAMLResponse form
+			// and handleSAMLSSO's redirect leads to a non-SAML page.
+			_, _ = fmt.Fprintf(w, `<html><script>var redirectUrl = '%s/page';</script><p>Normal page</p></html>`, srv.URL)
+			return
+		}
+		// Third call: real SAML challenge
+		_, _ = fmt.Fprintf(w, `<html><form action="%s/idp">
+			<input type="hidden" name="SAMLRequest" value="req"/>
+		</form></html>`, srv.URL)
+	})
+	mux.HandleFunc("/idp", func(w http.ResponseWriter, _ *http.Request) {
+		idpCalls.Add(1)
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = fmt.Fprintf(w, `<html><form action="%s/acs">
+			<input type="hidden" name="SAMLResponse" value="resp"/>
+		</form></html>`, srv.URL)
+	})
+	mux.HandleFunc("/acs", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(200)
+	})
+
+	jar, _ := cookiejar.New(nil)
+	client := srv.Client()
+	client.Jar = jar
+
+	p := newTestProxy(client)
+	pa := testPluginAuth(srv.URL)
+	pa.Client = client
+	pa.IsKerberos = true
+	p.RegisterPlugin("testfpcooldown", pa)
+
+	// First call: false positive — isSAMLChallenge triggers but SSO fails
+	p.Execute(context.Background(), "testfpcooldown", protocol.Message{
+		ID: "req-fp1", Type: protocol.TypeHTTPRequest,
+		Method: "GET", Path: "/page",
+	})
+	if idpCalls.Load() != 0 {
+		t.Fatalf("IdP should not be called on false positive (got %d)", idpCalls.Load())
+	}
+
+	// Second call: another false positive — must NOT be blocked by cooldown
+	// (cooldown should not have been set on the failed first attempt)
+	p.Execute(context.Background(), "testfpcooldown", protocol.Message{
+		ID: "req-fp2", Type: protocol.TypeHTTPRequest,
+		Method: "GET", Path: "/page",
+	})
+
+	// Third call: real SAML challenge — must trigger SSO
+	p.Execute(context.Background(), "testfpcooldown", protocol.Message{
+		ID: "req-real", Type: protocol.TypeHTTPRequest,
+		Method: "GET", Path: "/page",
+	})
+	if idpCalls.Load() != 1 {
+		t.Errorf("IdP calls = %d, want 1 (real SAML challenge should trigger SSO even after false positives)", idpCalls.Load())
+	}
+}
+
 func TestTrySAMLSSO200RetryStillSAML(t *testing.T) {
 	var apiCalls atomic.Int32
 	mux := http.NewServeMux()
