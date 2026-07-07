@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/LeGambiArt/wtmcp/pkg/pathutil"
@@ -1454,6 +1455,28 @@ func isAllowedLinkScheme(rawURL string) bool {
 	return strings.HasPrefix(lower, "https://") ||
 		strings.HasPrefix(lower, "http://") ||
 		strings.HasPrefix(lower, "mailto:")
+}
+
+// slugifyHeading produces a GFM-compatible anchor slug from a heading string.
+// It lowercases, keeps letters/digits/spaces/hyphens, converts spaces to
+// hyphens, and trims leading/trailing hyphens.
+func slugifyHeading(text string) string {
+	lower := strings.ToLower(text)
+	var b strings.Builder
+	prevHyphen := false
+	for _, r := range lower {
+		switch {
+		case unicode.IsLetter(r) || unicode.IsDigit(r):
+			b.WriteRune(r)
+			prevHyphen = false
+		case r == ' ' || r == '-':
+			if !prevHyphen {
+				b.WriteRune('-')
+				prevHyphen = true
+			}
+		}
+	}
+	return strings.Trim(b.String(), "-")
 }
 
 // mergeSegments combines consecutive segments with identical formatting properties

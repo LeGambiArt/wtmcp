@@ -6574,3 +6574,31 @@ func TestMergeSegmentsAnchorLink(t *testing.T) {
 		t.Errorf("middle segment anchorSlug = %q, want %q", merged[1].anchorSlug, "heading")
 	}
 }
+
+func TestSlugifyHeading(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"simple", "My Heading", "my-heading"},
+		{"mixed case", "PostgreSQL Tuning", "postgresql-tuning"},
+		{"with numbers", "Step 3 Plan", "step-3-plan"},
+		{"punctuation stripped", "What's Next?", "whats-next"},
+		{"hyphens preserved", "io2-block-express", "io2-block-express"},
+		{"multiple spaces", "too  many   spaces", "too-many-spaces"},
+		{"leading trailing", " -heading- ", "heading"},
+		{"unicode accents", "Résumé Overview", "résumé-overview"},
+		{"special chars", "Cost: $2,560/mo", "cost-2560mo"},
+		{"empty", "", ""},
+		{"only punctuation", "!@#$%", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := slugifyHeading(tt.input)
+			if got != tt.want {
+				t.Errorf("slugifyHeading(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
