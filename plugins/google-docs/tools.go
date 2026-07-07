@@ -811,7 +811,8 @@ func detectCode(doc *docs.Document) *CodeAnnotations {
 }
 
 // indentDepth converts a leading whitespace string to a nesting depth.
-// Per the markdown standard, each nesting level requires 4 spaces or 1 tab.
+// Each tab or 4-space group adds one level. A trailing group of 2-3
+// spaces also counts as one level, matching common markdown conventions.
 func indentDepth(indent string) int {
 	depth := 0
 	i := 0
@@ -824,7 +825,11 @@ func indentDepth(indent string) int {
 			depth++
 			i += 4
 		default:
-			i++
+			remaining := len(indent) - i
+			if remaining >= 2 {
+				depth++
+			}
+			i = len(indent)
 		}
 	}
 	return depth

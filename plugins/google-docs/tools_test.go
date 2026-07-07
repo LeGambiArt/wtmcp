@@ -43,16 +43,20 @@ func TestIndentDepth(t *testing.T) {
 		indent string
 		want   int
 	}{
-		{"no indent", "", 0},
-		{"one tab", "\t", 1},
-		{"two tabs", "\t\t", 2},
-		{"four spaces", "    ", 1},
-		{"eight spaces", "        ", 2},
-		{"mixed tab and spaces", "\t    ", 2},
-		{"three spaces (partial)", "   ", 0},
-		{"five spaces", "     ", 1},
+		{"empty", "", 0},
+		{"1 space", " ", 0},
+		{"2 spaces", "  ", 1},
+		{"3 spaces", "   ", 1},
+		{"4 spaces", "    ", 1},
+		{"5 spaces", "     ", 1},
+		{"6 spaces", "      ", 2},
+		{"7 spaces", "       ", 2},
+		{"8 spaces", "        ", 2},
+		{"tab", "\t", 1},
+		{"tab+2spaces", "\t  ", 2},
+		{"4spaces+tab", "    \t", 2},
+		{"4spaces+2spaces", "    " + "  ", 2},
 	}
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := indentDepth(tt.indent)
@@ -150,6 +154,31 @@ func TestParseMarkdownLists(t *testing.T) {
 			t.Errorf("max depth = %d, want 1", maxDepth)
 		}
 	})
+}
+
+func TestOrderedListWithNestedSubBullets(t *testing.T) {
+	md := "1. First\n   - sub-a\n   - sub-b\n1. Second\n1. Third"
+	segments := parseMarkdown(md)
+	merged := mergeSegments(segments)
+
+	for _, seg := range merged {
+		if seg.unorderedListItem && seg.listDepth == 0 {
+			t.Errorf("sub-bullet %q has depth 0, want depth >= 1", seg.text)
+		}
+	}
+
+	// Count ordered list items by newlines within merged ordered segments.
+	// mergeSegments combines adjacent segments with identical attributes,
+	// so "Second\nThird\n" is one segment containing two items.
+	orderedItems := 0
+	for _, seg := range merged {
+		if seg.orderedListItem && seg.listDepth == 0 {
+			orderedItems += strings.Count(seg.text, "\n")
+		}
+	}
+	if orderedItems != 3 {
+		t.Errorf("expected 3 top-level ordered items, got %d", orderedItems)
+	}
 }
 
 func TestParseStrikethrough(t *testing.T) {
