@@ -6511,3 +6511,66 @@ func TestToolWriteContentResolution(t *testing.T) {
 		}
 	})
 }
+
+func TestParseAnchorLink(t *testing.T) {
+	segments := parseSimpleFormatting("[Click here](#my-section)")
+	merged := mergeSegments(segments)
+
+	if len(merged) != 1 {
+		t.Fatalf("expected 1 segment, got %d: %+v", len(merged), merged)
+	}
+	seg := merged[0]
+	if seg.text != "Click here" {
+		t.Errorf("text = %q, want %q", seg.text, "Click here")
+	}
+	if seg.anchorSlug != "my-section" {
+		t.Errorf("anchorSlug = %q, want %q", seg.anchorSlug, "my-section")
+	}
+	if seg.linkURL != "" {
+		t.Errorf("linkURL = %q, want empty", seg.linkURL)
+	}
+}
+
+func TestParseAnchorLinkPreservesHttpLinks(t *testing.T) {
+	segments := parseSimpleFormatting("[Go](https://golang.org)")
+	merged := mergeSegments(segments)
+
+	if len(merged) != 1 {
+		t.Fatalf("expected 1 segment, got %d", len(merged))
+	}
+	if merged[0].linkURL != "https://golang.org" {
+		t.Errorf("linkURL = %q, want %q", merged[0].linkURL, "https://golang.org")
+	}
+	if merged[0].anchorSlug != "" {
+		t.Errorf("anchorSlug = %q, want empty", merged[0].anchorSlug)
+	}
+}
+
+func TestParseAnchorLinkRejectsOtherSchemes(t *testing.T) {
+	segments := parseSimpleFormatting("[evil](javascript:alert(1))")
+	merged := mergeSegments(segments)
+
+	fullText := ""
+	for _, seg := range merged {
+		fullText += seg.text
+	}
+	if !strings.Contains(fullText, "[") {
+		t.Error("expected raw bracket in output for rejected scheme")
+	}
+}
+
+func TestMergeSegmentsAnchorLink(t *testing.T) {
+	segments := []markdownSegment{
+		{text: "before "},
+		{text: "link text", anchorSlug: "heading"},
+		{text: " after"},
+	}
+	merged := mergeSegments(segments)
+
+	if len(merged) != 3 {
+		t.Fatalf("expected 3 segments (anchor prevents merging), got %d: %+v", len(merged), merged)
+	}
+	if merged[1].anchorSlug != "heading" {
+		t.Errorf("middle segment anchorSlug = %q, want %q", merged[1].anchorSlug, "heading")
+	}
+}

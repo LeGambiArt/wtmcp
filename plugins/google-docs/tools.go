@@ -663,6 +663,7 @@ type markdownSegment struct {
 	underline         bool
 	strikethrough     bool
 	linkURL           string
+	anchorSlug        string // heading anchor for intra-document links (e.g. "my-heading" from "#my-heading")
 	heading           int    // 0 for normal, 1-6 for heading levels
 	headingLineID     int    // unique ID per heading line, used to detect paragraph boundaries
 	orderedListItem   bool   // true if this is an ordered list item
@@ -1422,6 +1423,15 @@ func parseSimpleFormattingWithDepth(text string, depth int) []markdownSegment {
 				pos += linkMatch[1]
 				continue
 			}
+			// Anchor link — strip markdown syntax, defer resolution to heading bookmarks
+			if strings.HasPrefix(linkURL, "#") {
+				segments = append(segments, markdownSegment{
+					text:       linkText,
+					anchorSlug: linkURL[1:],
+				})
+				pos += linkMatch[1]
+				continue
+			}
 			// Rejected scheme — emit opening bracket as plain text and
 			// let the rest be parsed normally on subsequent iterations.
 		}
@@ -1472,6 +1482,7 @@ func mergeSegments(segments []markdownSegment) []markdownSegment {
 			curr.underline == prev.underline &&
 			curr.strikethrough == prev.strikethrough &&
 			curr.linkURL == prev.linkURL &&
+			curr.anchorSlug == prev.anchorSlug &&
 			curr.heading == prev.heading &&
 			curr.headingLineID == prev.headingLineID &&
 			curr.orderedListItem == prev.orderedListItem &&
