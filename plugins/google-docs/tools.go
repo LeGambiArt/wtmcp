@@ -1750,16 +1750,20 @@ func insertMarkdownWithTables(docID string, title string, segments []markdownSeg
 			totalReplies += len(resp.Replies)
 		}
 
-		resolveAnchorLinks(docID, allDeferredAnchors)
+		anchorWarnings := resolveAnchorLinks(docID, allDeferredAnchors)
 
-		return map[string]any{
+		result := map[string]any{
 			"document_id":  docID,
 			"title":        title,
 			"status":       "success",
 			"insert_index": insertIndex,
 			"replies":      totalReplies,
 			"tables":       tableCount,
-		}, nil
+		}
+		if len(anchorWarnings) > 0 {
+			result["unresolved_anchors"] = anchorWarnings
+		}
+		return result, nil
 	}
 
 	// No tables — single-batch insertion.
@@ -1770,16 +1774,20 @@ func insertMarkdownWithTables(docID string, title string, segments []markdownSeg
 		return nil, fmt.Errorf("batch update: %w", err)
 	}
 
-	resolveAnchorLinks(docID, deferredAnchors)
+	anchorWarnings := resolveAnchorLinks(docID, deferredAnchors)
 
-	return map[string]any{
+	result := map[string]any{
 		"document_id":  docID,
 		"title":        title,
 		"status":       "success",
 		"insert_index": insertIndex,
 		"replies":      len(resp.Replies),
 		"tables":       0,
-	}, nil
+	}
+	if len(anchorWarnings) > 0 {
+		result["unresolved_anchors"] = anchorWarnings
+	}
+	return result, nil
 }
 
 // collectTableCellRequests builds all cell-population requests for a table in
@@ -1996,8 +2004,10 @@ func populateTableCell(cell *tableCell, cellStartIndex int64) []*docs.Request {
 }
 
 type deferredAnchor struct {
-	text string
-	slug string
+	startIndex    int64
+	endIndex      int64
+	tabsAtCollect int64
+	slug          string
 }
 
 // convertMarkdownToRequests converts markdown segments to Google Docs API requests.
@@ -2529,8 +2539,10 @@ func convertMarkdownToRequests(segments []markdownSegment, startIndex int64, str
 			fields = []string{"weightedFontFamily", "bold", "italic", "underline", "strikethrough"}
 			if seg.anchorSlug != "" {
 				deferredAnchors = append(deferredAnchors, deferredAnchor{
-					text: seg.text,
-					slug: seg.anchorSlug,
+					startIndex:    currentIndex,
+					endIndex:      endIndex,
+					tabsAtCollect: tabsInserted,
+					slug:          seg.anchorSlug,
 				})
 			} else if seg.linkURL != "" {
 				textStyle.Link = &docs.Link{
@@ -2548,8 +2560,10 @@ func convertMarkdownToRequests(segments []markdownSegment, startIndex int64, str
 
 			if seg.anchorSlug != "" {
 				deferredAnchors = append(deferredAnchors, deferredAnchor{
-					text: seg.text,
-					slug: seg.anchorSlug,
+					startIndex:    currentIndex,
+					endIndex:      endIndex,
+					tabsAtCollect: tabsInserted,
+					slug:          seg.anchorSlug,
 				})
 			} else if seg.linkURL != "" {
 				textStyle.Link = &docs.Link{
@@ -2655,15 +2669,14 @@ func convertMarkdownToRequests(segments []markdownSegment, startIndex int64, str
 	return requests, currentIndex - tabsInserted, deferredAnchors
 }
 
-func resolveAnchorLinks(docID string, anchors []deferredAnchor) {
+func resolveAnchorLinks(docID string, anchors []deferredAnchor) []string {
 	if len(anchors) == 0 {
-		return
+		return nil
 	}
 
 	doc, err := docsSvc.Documents.Get(docID).Do()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "WARNING: resolveAnchorLinks: failed to read document for heading resolution: %v\n", err)
-		return
+		return []string{fmt.Sprintf("failed to read document for heading resolution: %v", err)}
 	}
 
 	headingMap := make(map[string]string)
@@ -2690,58 +2703,44 @@ func resolveAnchorLinks(docID string, anchors []deferredAnchor) {
 		}
 	}
 
+	var warnings []string
 	var requests []*docs.Request
 	for _, anchor := range anchors {
 		headingID, ok := headingMap[anchor.slug]
 		if !ok {
+			warnings = append(warnings, anchor.slug)
 			continue
 		}
-		for _, elem := range doc.Body.Content {
-			if elem.Paragraph == nil {
-				continue
-			}
-			for _, e := range elem.Paragraph.Elements {
-				if e.TextRun == nil || e.TextRun.Content == "" {
-					continue
-				}
-				idx := strings.Index(e.TextRun.Content, anchor.text)
-				if idx < 0 {
-					continue
-				}
-				startIdx := e.StartIndex + int64(idx)
-				endIdx := startIdx + int64(len(anchor.text))
-				requests = append(requests, &docs.Request{
-					UpdateTextStyle: &docs.UpdateTextStyleRequest{
-						Range: &docs.Range{
-							StartIndex: startIdx,
-							EndIndex:   endIdx,
+		adjustedStart := anchor.startIndex - anchor.tabsAtCollect
+		adjustedEnd := anchor.endIndex - anchor.tabsAtCollect
+		requests = append(requests, &docs.Request{
+			UpdateTextStyle: &docs.UpdateTextStyleRequest{
+				Range: &docs.Range{
+					StartIndex: adjustedStart,
+					EndIndex:   adjustedEnd,
+				},
+				TextStyle: &docs.TextStyle{
+					Link: &docs.Link{
+						Heading: &docs.HeadingLink{
+							Id: headingID,
 						},
-						TextStyle: &docs.TextStyle{
-							Link: &docs.Link{
-								Heading: &docs.HeadingLink{
-									Id: headingID,
-								},
-							},
-						},
-						Fields: "link",
 					},
-				})
-				goto nextAnchor
-			}
+				},
+				Fields: "link",
+			},
+		})
+	}
+
+	if len(requests) > 0 {
+		_, err = docsSvc.Documents.BatchUpdate(docID, &docs.BatchUpdateDocumentRequest{
+			Requests: requests,
+		}).Do()
+		if err != nil {
+			warnings = append(warnings, fmt.Sprintf("failed to apply heading links: %v", err))
 		}
-	nextAnchor:
 	}
 
-	if len(requests) == 0 {
-		return
-	}
-
-	_, err = docsSvc.Documents.BatchUpdate(docID, &docs.BatchUpdateDocumentRequest{
-		Requests: requests,
-	}).Do()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "WARNING: resolveAnchorLinks: failed to apply heading links: %v\n", err)
-	}
+	return warnings
 }
 
 const maxReadFileSize = 10 << 20 // 10 MB
