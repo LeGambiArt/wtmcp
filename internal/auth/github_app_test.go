@@ -80,7 +80,10 @@ func validateJWT(t *testing.T, r *http.Request, pubKey *rsa.PublicKey) jwt.MapCl
 	}
 	tokenStr := strings.TrimPrefix(auth, "Bearer ")
 
-	token, err := jwt.Parse(tokenStr, func(_ *jwt.Token) (any, error) {
+	token, err := jwt.Parse(tokenStr, func(t *jwt.Token) (any, error) {
+		if _, ok := t.Method.(*jwt.SigningMethodRSA); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
+		}
 		return pubKey, nil
 	})
 	if err != nil {
@@ -192,6 +195,14 @@ func TestGitHubAppConstructorValidation(t *testing.T) {
 			pem:            ecPEM,
 			transport:      http.DefaultTransport,
 			wantErr:        "parse private key",
+		},
+		{
+			name:           "non-numeric installationID",
+			appID:          "123",
+			installationID: "not-a-number",
+			pem:            validPEM,
+			transport:      http.DefaultTransport,
+			wantErr:        "installation_id must be numeric",
 		},
 		{
 			name:           "http baseURL",
@@ -654,6 +665,96 @@ func TestGitHubAppPKCS8Key(t *testing.T) {
 	}
 }
 
+func TestGitHubAppTrailingPEMData(t *testing.T) {
+	_, pemBytes := generateTestKey(t)
+	doubled := append(pemBytes, pemBytes...)
+
+	_, err := NewGitHubAppProvider("123", "456", doubled, "https://api.github.com", http.DefaultTransport)
+	if err == nil {
+		t.Fatal("expected error for trailing PEM data")
+	}
+	if !strings.Contains(err.Error(), "trailing data") {
+		t.Errorf("error = %q, want trailing data error", err)
+	}
+}
+
+func TestGitHubAppMalformedJSON(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(201)
+		_, _ = fmt.Fprint(w, "<html>Bad Gateway</html>")
+	}))
+	t.Cleanup(srv.Close)
+
+	_, pemBytes := generateTestKey(t)
+	pemCopy := make([]byte, len(pemBytes))
+	copy(pemCopy, pemBytes)
+
+	p, err := NewGitHubAppProvider("123", "456", pemCopy, srv.URL, srv.Client().Transport)
+	if err != nil {
+		t.Fatalf("NewGitHubAppProvider: %v", err)
+	}
+	p.client = srv.Client()
+
+	_, err = p.Authenticate(context.Background(), nil)
+	if err == nil {
+		t.Fatal("expected error on malformed JSON")
+	}
+	if !strings.Contains(err.Error(), "parse response") {
+		t.Errorf("error = %q", err)
+	}
+}
+
+func TestGitHubAppOversizedResponse(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(201)
+		_, _ = w.Write([]byte(`{"token":"`))
+		_, _ = w.Write([]byte(strings.Repeat("x", 2<<20)))
+		_, _ = w.Write([]byte(`","expires_at":"2026-01-01T00:00:00Z"}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	_, pemBytes := generateTestKey(t)
+	pemCopy := make([]byte, len(pemBytes))
+	copy(pemCopy, pemBytes)
+
+	p, err := NewGitHubAppProvider("123", "456", pemCopy, srv.URL, srv.Client().Transport)
+	if err != nil {
+		t.Fatalf("NewGitHubAppProvider: %v", err)
+	}
+	p.client = srv.Client()
+
+	_, err = p.Authenticate(context.Background(), nil)
+	if err == nil {
+		t.Fatal("expected error on oversized response")
+	}
+}
+
+func TestGitHubAppNegativeExpiryFloor(t *testing.T) {
+	_, pemBytes := generateTestKey(t)
+
+	srv := newGitHubTestServer(t, func(_ *http.Request) (any, int) {
+		return installationTokenResponse{ //nolint:gosec // test token
+			Token:     "ghs_past_expiry",
+			ExpiresAt: time.Now().Add(-10 * time.Minute).UTC().Format(time.RFC3339),
+		}, 201
+	})
+	p := newGitHubAppProvider(t, srv, pemBytes)
+
+	_, err := p.Authenticate(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+
+	p.mu.Lock()
+	remaining := time.Until(p.expiry)
+	p.mu.Unlock()
+
+	// Floor is 5 minutes × 0.9 = 4.5 minutes.
+	if remaining < 4*time.Minute || remaining > 5*time.Minute {
+		t.Errorf("expiry in %v, expected ~4.5min (floored)", remaining)
+	}
+}
+
 // --- Private key file loading tests ---
 
 func TestLoadPrivateKeyFile(t *testing.T) {
@@ -734,7 +835,7 @@ func TestPrivateKeyFileTakesPrecedence(t *testing.T) {
 	cfg := SingleAuthConfig{
 		Type:           "github_app",
 		AppID:          "app-from-file",
-		InstallationID: "inst",
+		InstallationID: "789",
 		PrivateKey:     "this-is-not-valid-pem",
 		PrivateKeyFile: path,
 		BaseURL:        "",

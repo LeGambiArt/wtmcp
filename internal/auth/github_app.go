@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"bytes"
 	"context"
 	"crypto/rsa"
 	"crypto/x509"
@@ -12,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -55,6 +57,9 @@ func NewGitHubAppProvider(appID, installationID string, privateKeyPEM []byte, ba
 	if installationID == "" {
 		return nil, fmt.Errorf("github_app: installation_id must not be empty")
 	}
+	if _, err := strconv.ParseInt(installationID, 10, 64); err != nil {
+		return nil, fmt.Errorf("github_app: installation_id must be numeric: %s", installationID)
+	}
 	if transport == nil {
 		return nil, fmt.Errorf("github_app: transport must not be nil")
 	}
@@ -88,9 +93,14 @@ func NewGitHubAppProvider(appID, installationID string, privateKeyPEM []byte, ba
 
 // parseRSAPrivateKey decodes a PEM block and tries PKCS1 then PKCS8.
 func parseRSAPrivateKey(pemBytes []byte) (*rsa.PrivateKey, error) {
-	block, _ := pem.Decode(pemBytes)
+	block, rest := pem.Decode(pemBytes)
 	if block == nil {
 		return nil, fmt.Errorf("no PEM block found in private key")
+	}
+	defer vault.ZeroBytes(block.Bytes)
+
+	if len(bytes.TrimSpace(rest)) > 0 {
+		return nil, fmt.Errorf("private key file contains trailing data after PEM block")
 	}
 
 	// Try PKCS1 first.
@@ -193,6 +203,9 @@ func (g *GitHubAppProvider) refreshLocked(ctx context.Context) error {
 	// Refresh at 90% of the remaining lifetime to avoid edge-case failures.
 	now := time.Now()
 	remaining := expiresAt.Sub(now)
+	if remaining < time.Minute {
+		remaining = 5 * time.Minute
+	}
 	g.accessToken = tok.Token
 	g.expiry = now.Add(time.Duration(float64(remaining) * 0.9))
 
