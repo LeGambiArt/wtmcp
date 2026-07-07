@@ -1625,6 +1625,7 @@ func insertMarkdownWithTables(docID string, title string, segments []markdownSeg
 		totalReplies := 0
 		var pendingSegments []markdownSegment
 		var tables []tableRecord
+		var allDeferredAnchors []deferredAnchor
 
 		// --- Phase 1: create document structure (text + empty tables) ---
 
@@ -1633,7 +1634,8 @@ func insertMarkdownWithTables(docID string, title string, segments []markdownSeg
 				// Flush preceding text via BatchUpdate; use the returned
 				// final index instead of a Documents.Get round-trip.
 				if len(pendingSegments) > 0 {
-					textReqs, finalIdx, _ := convertMarkdownToRequests(pendingSegments, currentIndex, false)
+					textReqs, finalIdx, anchors := convertMarkdownToRequests(pendingSegments, currentIndex, false)
+					allDeferredAnchors = append(allDeferredAnchors, anchors...)
 					if len(textReqs) > 0 {
 						resp, err := docsSvc.Documents.BatchUpdate(docID, &docs.BatchUpdateDocumentRequest{
 							Requests: textReqs,
@@ -1712,7 +1714,8 @@ func insertMarkdownWithTables(docID string, title string, segments []markdownSeg
 
 		// Flush any trailing text after the last table.
 		if len(pendingSegments) > 0 {
-			textReqs, _, _ := convertMarkdownToRequests(pendingSegments, currentIndex, true)
+			textReqs, _, anchors := convertMarkdownToRequests(pendingSegments, currentIndex, true)
+			allDeferredAnchors = append(allDeferredAnchors, anchors...)
 			if len(textReqs) > 0 {
 				resp, err := docsSvc.Documents.BatchUpdate(docID, &docs.BatchUpdateDocumentRequest{
 					Requests: textReqs,
@@ -1747,6 +1750,10 @@ func insertMarkdownWithTables(docID string, title string, segments []markdownSeg
 			totalReplies += len(resp.Replies)
 		}
 
+		if err := resolveAnchorLinks(docID, allDeferredAnchors); err != nil {
+			return nil, err
+		}
+
 		return map[string]any{
 			"document_id":  docID,
 			"title":        title,
@@ -1758,11 +1765,15 @@ func insertMarkdownWithTables(docID string, title string, segments []markdownSeg
 	}
 
 	// No tables — single-batch insertion.
-	requests, _, _ := convertMarkdownToRequests(segments, insertIndex, true)
+	requests, _, deferredAnchors := convertMarkdownToRequests(segments, insertIndex, true)
 	batchUpdateReq := &docs.BatchUpdateDocumentRequest{Requests: requests}
 	resp, err := docsSvc.Documents.BatchUpdate(docID, batchUpdateReq).Do()
 	if err != nil {
 		return nil, fmt.Errorf("batch update: %w", err)
+	}
+
+	if err := resolveAnchorLinks(docID, deferredAnchors); err != nil {
+		return nil, err
 	}
 
 	return map[string]any{
