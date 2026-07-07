@@ -1466,7 +1466,7 @@ func slugifyHeading(text string) string {
 	prevHyphen := false
 	for _, r := range lower {
 		switch {
-		case unicode.IsLetter(r) || unicode.IsDigit(r):
+		case unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_':
 			b.WriteRune(r)
 			prevHyphen = false
 		case r == ' ' || r == '-':
@@ -2525,6 +2525,15 @@ func convertMarkdownToRequests(segments []markdownSegment, startIndex int64, str
 		var textStyle *docs.TextStyle
 		var fields []string
 
+		if seg.anchorSlug != "" {
+			deferredAnchors = append(deferredAnchors, deferredAnchor{
+				startIndex:    currentIndex,
+				endIndex:      endIndex,
+				tabsAtCollect: tabsInserted,
+				slug:          seg.anchorSlug,
+			})
+		}
+
 		if seg.isInlineCode {
 			// Inline code: apply Courier New font, preserve bold/italic/underline
 			textStyle = &docs.TextStyle{
@@ -2537,14 +2546,7 @@ func convertMarkdownToRequests(segments []markdownSegment, startIndex int64, str
 				Strikethrough: seg.strikethrough,
 			}
 			fields = []string{"weightedFontFamily", "bold", "italic", "underline", "strikethrough"}
-			if seg.anchorSlug != "" {
-				deferredAnchors = append(deferredAnchors, deferredAnchor{
-					startIndex:    currentIndex,
-					endIndex:      endIndex,
-					tabsAtCollect: tabsInserted,
-					slug:          seg.anchorSlug,
-				})
-			} else if seg.linkURL != "" {
+			if seg.anchorSlug == "" && seg.linkURL != "" {
 				textStyle.Link = &docs.Link{
 					Url: seg.linkURL,
 				}
@@ -2558,14 +2560,7 @@ func convertMarkdownToRequests(segments []markdownSegment, startIndex int64, str
 				Strikethrough: seg.strikethrough,
 			}
 
-			if seg.anchorSlug != "" {
-				deferredAnchors = append(deferredAnchors, deferredAnchor{
-					startIndex:    currentIndex,
-					endIndex:      endIndex,
-					tabsAtCollect: tabsInserted,
-					slug:          seg.anchorSlug,
-				})
-			} else if seg.linkURL != "" {
+			if seg.anchorSlug == "" && seg.linkURL != "" {
 				textStyle.Link = &docs.Link{
 					Url: seg.linkURL,
 				}
@@ -2677,6 +2672,10 @@ func resolveAnchorLinks(docID string, anchors []deferredAnchor) []string {
 	doc, err := docsSvc.Documents.Get(docID).Do()
 	if err != nil {
 		return []string{fmt.Sprintf("failed to read document for heading resolution: %v", err)}
+	}
+
+	if doc.Body == nil {
+		return []string{"document body is empty, cannot resolve heading anchors"}
 	}
 
 	headingMap := make(map[string]string)

@@ -6591,6 +6591,7 @@ func TestSlugifyHeading(t *testing.T) {
 		{"unicode accents", "Résumé Overview", "résumé-overview"},
 		{"special chars", "Cost: $2,560/mo", "cost-2560mo"},
 		{"empty", "", ""},
+		{"underscores preserved", "My_Function_Name", "my_function_name"},
 		{"only punctuation", "!@#$%", ""},
 	}
 	for _, tt := range tests {
