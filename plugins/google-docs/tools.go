@@ -1633,7 +1633,7 @@ func insertMarkdownWithTables(docID string, title string, segments []markdownSeg
 				// Flush preceding text via BatchUpdate; use the returned
 				// final index instead of a Documents.Get round-trip.
 				if len(pendingSegments) > 0 {
-					textReqs, finalIdx := convertMarkdownToRequests(pendingSegments, currentIndex, false)
+					textReqs, finalIdx, _ := convertMarkdownToRequests(pendingSegments, currentIndex, false)
 					if len(textReqs) > 0 {
 						resp, err := docsSvc.Documents.BatchUpdate(docID, &docs.BatchUpdateDocumentRequest{
 							Requests: textReqs,
@@ -1712,7 +1712,7 @@ func insertMarkdownWithTables(docID string, title string, segments []markdownSeg
 
 		// Flush any trailing text after the last table.
 		if len(pendingSegments) > 0 {
-			textReqs, _ := convertMarkdownToRequests(pendingSegments, currentIndex, true)
+			textReqs, _, _ := convertMarkdownToRequests(pendingSegments, currentIndex, true)
 			if len(textReqs) > 0 {
 				resp, err := docsSvc.Documents.BatchUpdate(docID, &docs.BatchUpdateDocumentRequest{
 					Requests: textReqs,
@@ -1758,7 +1758,7 @@ func insertMarkdownWithTables(docID string, title string, segments []markdownSeg
 	}
 
 	// No tables — single-batch insertion.
-	requests, _ := convertMarkdownToRequests(segments, insertIndex, true)
+	requests, _, _ := convertMarkdownToRequests(segments, insertIndex, true)
 	batchUpdateReq := &docs.BatchUpdateDocumentRequest{Requests: requests}
 	resp, err := docsSvc.Documents.BatchUpdate(docID, batchUpdateReq).Do()
 	if err != nil {
@@ -1988,14 +1988,20 @@ func populateTableCell(cell *tableCell, cellStartIndex int64) []*docs.Request {
 	return requests
 }
 
+type deferredAnchor struct {
+	text string
+	slug string
+}
+
 // convertMarkdownToRequests converts markdown segments to Google Docs API requests.
 // When stripTrailingNewline is true, the trailing \n is removed from the last
 // text segment to avoid an unwanted empty paragraph at the document end.
 // Pass false when flushing mid-document text before a table.
-func convertMarkdownToRequests(segments []markdownSegment, startIndex int64, stripTrailingNewline bool) ([]*docs.Request, int64) {
+func convertMarkdownToRequests(segments []markdownSegment, startIndex int64, stripTrailingNewline bool) ([]*docs.Request, int64, []deferredAnchor) {
 	var requests []*docs.Request
 	currentIndex := startIndex
 	var tabsInserted int64
+	var deferredAnchors []deferredAnchor
 
 	// Merge consecutive segments with identical formatting to reduce API requests
 	segments = mergeSegments(segments)
@@ -2514,7 +2520,12 @@ func convertMarkdownToRequests(segments []markdownSegment, startIndex int64, str
 				Strikethrough: seg.strikethrough,
 			}
 			fields = []string{"weightedFontFamily", "bold", "italic", "underline", "strikethrough"}
-			if seg.linkURL != "" {
+			if seg.anchorSlug != "" {
+				deferredAnchors = append(deferredAnchors, deferredAnchor{
+					text: seg.text,
+					slug: seg.anchorSlug,
+				})
+			} else if seg.linkURL != "" {
 				textStyle.Link = &docs.Link{
 					Url: seg.linkURL,
 				}
@@ -2528,7 +2539,12 @@ func convertMarkdownToRequests(segments []markdownSegment, startIndex int64, str
 				Strikethrough: seg.strikethrough,
 			}
 
-			if seg.linkURL != "" {
+			if seg.anchorSlug != "" {
+				deferredAnchors = append(deferredAnchors, deferredAnchor{
+					text: seg.text,
+					slug: seg.anchorSlug,
+				})
+			} else if seg.linkURL != "" {
 				textStyle.Link = &docs.Link{
 					Url: seg.linkURL,
 				}
@@ -2539,7 +2555,7 @@ func convertMarkdownToRequests(segments []markdownSegment, startIndex int64, str
 			// monospace font (e.g. from an adjacent inline-code segment) is
 			// cleared and the document default font is restored.
 			fields = []string{"weightedFontFamily", "bold", "italic", "underline", "strikethrough"}
-			if seg.linkURL != "" {
+			if seg.linkURL != "" && seg.anchorSlug == "" {
 				fields = append(fields, "link")
 			}
 		}
@@ -2629,7 +2645,7 @@ func convertMarkdownToRequests(segments []markdownSegment, startIndex int64, str
 	// CreateParagraphBullets removes the leading tabs that were prepended
 	// for list nesting.  Subtract them so the returned index reflects the
 	// document state after the BatchUpdate executes.
-	return requests, currentIndex - tabsInserted
+	return requests, currentIndex - tabsInserted, deferredAnchors
 }
 
 const maxReadFileSize = 10 << 20 // 10 MB
