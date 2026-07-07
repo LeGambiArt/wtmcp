@@ -1750,9 +1750,7 @@ func insertMarkdownWithTables(docID string, title string, segments []markdownSeg
 			totalReplies += len(resp.Replies)
 		}
 
-		if err := resolveAnchorLinks(docID, allDeferredAnchors); err != nil {
-			return nil, err
-		}
+		resolveAnchorLinks(docID, allDeferredAnchors)
 
 		return map[string]any{
 			"document_id":  docID,
@@ -1772,9 +1770,7 @@ func insertMarkdownWithTables(docID string, title string, segments []markdownSeg
 		return nil, fmt.Errorf("batch update: %w", err)
 	}
 
-	if err := resolveAnchorLinks(docID, deferredAnchors); err != nil {
-		return nil, err
-	}
+	resolveAnchorLinks(docID, deferredAnchors)
 
 	return map[string]any{
 		"document_id":  docID,
@@ -2659,15 +2655,15 @@ func convertMarkdownToRequests(segments []markdownSegment, startIndex int64, str
 	return requests, currentIndex - tabsInserted, deferredAnchors
 }
 
-func resolveAnchorLinks(docID string, anchors []deferredAnchor) error {
+func resolveAnchorLinks(docID string, anchors []deferredAnchor) {
 	if len(anchors) == 0 {
-		return nil
+		return
 	}
 
 	doc, err := docsSvc.Documents.Get(docID).Do()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "WARNING: resolveAnchorLinks: failed to read document for heading resolution: %v\n", err)
-		return nil
+		return
 	}
 
 	headingMap := make(map[string]string)
@@ -2737,7 +2733,7 @@ func resolveAnchorLinks(docID string, anchors []deferredAnchor) error {
 	}
 
 	if len(requests) == 0 {
-		return nil
+		return
 	}
 
 	_, err = docsSvc.Documents.BatchUpdate(docID, &docs.BatchUpdateDocumentRequest{
@@ -2746,7 +2742,6 @@ func resolveAnchorLinks(docID string, anchors []deferredAnchor) error {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "WARNING: resolveAnchorLinks: failed to apply heading links: %v\n", err)
 	}
-	return nil
 }
 
 const maxReadFileSize = 10 << 20 // 10 MB
