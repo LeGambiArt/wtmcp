@@ -2648,6 +2648,96 @@ func convertMarkdownToRequests(segments []markdownSegment, startIndex int64, str
 	return requests, currentIndex - tabsInserted, deferredAnchors
 }
 
+func resolveAnchorLinks(docID string, anchors []deferredAnchor) error {
+	if len(anchors) == 0 {
+		return nil
+	}
+
+	doc, err := docsSvc.Documents.Get(docID).Do()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "WARNING: resolveAnchorLinks: failed to read document for heading resolution: %v\n", err)
+		return nil
+	}
+
+	headingMap := make(map[string]string)
+	for _, elem := range doc.Body.Content {
+		if elem.Paragraph == nil || elem.Paragraph.ParagraphStyle == nil {
+			continue
+		}
+		style := elem.Paragraph.ParagraphStyle
+		if !strings.HasPrefix(style.NamedStyleType, "HEADING_") || style.HeadingId == "" {
+			continue
+		}
+		var text strings.Builder
+		for _, e := range elem.Paragraph.Elements {
+			if e.TextRun != nil {
+				text.WriteString(e.TextRun.Content)
+			}
+		}
+		slug := slugifyHeading(strings.TrimSpace(text.String()))
+		if slug == "" {
+			continue
+		}
+		if _, exists := headingMap[slug]; !exists {
+			headingMap[slug] = style.HeadingId
+		}
+	}
+
+	var requests []*docs.Request
+	for _, anchor := range anchors {
+		headingID, ok := headingMap[anchor.slug]
+		if !ok {
+			continue
+		}
+		for _, elem := range doc.Body.Content {
+			if elem.Paragraph == nil {
+				continue
+			}
+			for _, e := range elem.Paragraph.Elements {
+				if e.TextRun == nil || e.TextRun.Content == "" {
+					continue
+				}
+				idx := strings.Index(e.TextRun.Content, anchor.text)
+				if idx < 0 {
+					continue
+				}
+				startIdx := e.StartIndex + int64(idx)
+				endIdx := startIdx + int64(len(anchor.text))
+				requests = append(requests, &docs.Request{
+					UpdateTextStyle: &docs.UpdateTextStyleRequest{
+						Range: &docs.Range{
+							StartIndex: startIdx,
+							EndIndex:   endIdx,
+						},
+						TextStyle: &docs.TextStyle{
+							Link: &docs.Link{
+								Heading: &docs.HeadingLink{
+									Id: headingID,
+								},
+							},
+						},
+						Fields: "link",
+					},
+				})
+				goto nextAnchor
+			}
+		}
+	nextAnchor:
+	}
+
+	if len(requests) == 0 {
+		return nil
+	}
+
+	_, err = docsSvc.Documents.BatchUpdate(docID, &docs.BatchUpdateDocumentRequest{
+		Requests: requests,
+	}).Do()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "WARNING: resolveAnchorLinks: failed to apply heading links: %v\n", err)
+	}
+	return nil
+}
+
 const maxReadFileSize = 10 << 20 // 10 MB
 
 func readFileForWrite(filePath string) ([]byte, error) {
