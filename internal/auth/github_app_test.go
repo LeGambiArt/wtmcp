@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -667,7 +668,7 @@ func TestGitHubAppPKCS8Key(t *testing.T) {
 
 func TestGitHubAppTrailingPEMData(t *testing.T) {
 	_, pemBytes := generateTestKey(t)
-	doubled := append(pemBytes, pemBytes...)
+	doubled := slices.Concat(pemBytes, pemBytes)
 
 	_, err := NewGitHubAppProvider("123", "456", doubled, "https://api.github.com", http.DefaultTransport)
 	if err == nil {

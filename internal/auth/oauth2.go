@@ -192,7 +192,7 @@ func loadToken(path string) (*oauth2.Token, error) {
 }
 
 func saveToken(path string, tok *oauth2.Token) error {
-	if _, err := os.Lstat(path); err == nil {
+	if _, err := os.Lstat(path); err == nil { //nolint:gosec // G703: path validated by resolveCredentialPath
 		if err := config.RejectSymlink(path); err != nil {
 			return fmt.Errorf("token save: %w", err)
 		}
