@@ -655,45 +655,31 @@ class TestCreatePullRequest:
 
     def test_missing_repo(self):
         with pytest.raises(ValueError, match="invalid repo"):
-            tools_write.create_pull_request(
-                {"title": "t", "head": "h", "base": "b"}
-            )
+            tools_write.create_pull_request({"title": "t", "head": "h", "base": "b"})
 
     def test_missing_title(self):
         with pytest.raises(ValueError, match="title is required"):
-            tools_write.create_pull_request(
-                {"repo": "org/repo", "head": "h", "base": "b"}
-            )
+            tools_write.create_pull_request({"repo": "org/repo", "head": "h", "base": "b"})
 
     def test_missing_head(self):
         with pytest.raises(ValueError, match="head is required"):
-            tools_write.create_pull_request(
-                {"repo": "org/repo", "title": "t", "base": "b"}
-            )
+            tools_write.create_pull_request({"repo": "org/repo", "title": "t", "base": "b"})
 
     def test_missing_base(self):
         with pytest.raises(ValueError, match="base is required"):
-            tools_write.create_pull_request(
-                {"repo": "org/repo", "title": "t", "head": "h"}
-            )
+            tools_write.create_pull_request({"repo": "org/repo", "title": "t", "head": "h"})
 
     def test_whitespace_head(self):
         with pytest.raises(ValueError, match="head is required"):
-            tools_write.create_pull_request(
-                {"repo": "org/repo", "title": "t", "head": "   ", "base": "b"}
-            )
+            tools_write.create_pull_request({"repo": "org/repo", "title": "t", "head": "   ", "base": "b"})
 
     def test_whitespace_base(self):
         with pytest.raises(ValueError, match="base is required"):
-            tools_write.create_pull_request(
-                {"repo": "org/repo", "title": "t", "head": "h", "base": "   "}
-            )
+            tools_write.create_pull_request({"repo": "org/repo", "title": "t", "head": "h", "base": "   "})
 
     def test_empty_title(self):
         with pytest.raises(ValueError, match="title is required"):
-            tools_write.create_pull_request(
-                {"repo": "org/repo", "title": "  ", "head": "h", "base": "b"}
-            )
+            tools_write.create_pull_request({"repo": "org/repo", "title": "  ", "head": "h", "base": "b"})
 
     def test_body_too_long(self):
         with pytest.raises(ValueError, match="character limit"):
@@ -709,9 +695,7 @@ class TestCreatePullRequest:
 
     def test_invalid_repo(self):
         with pytest.raises(ValueError, match="invalid repo"):
-            tools_write.create_pull_request(
-                {"repo": "bad", "title": "t", "head": "h", "base": "b"}
-            )
+            tools_write.create_pull_request({"repo": "bad", "title": "t", "head": "h", "base": "b"})
 
     def test_dry_run_does_not_call_api(self):
         with _mock_http(201, {}) as mock_http, _mock_invalidate() as inv:

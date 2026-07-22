@@ -105,7 +105,6 @@ func TestCreateMergeRequestDraftTitleAlreadyPrefixed(t *testing.T) {
 	}
 }
 
-
 func TestCreateMergeRequestDryRunPreview(t *testing.T) {
 	setupGitLabTest(t, func(w http.ResponseWriter, r *http.Request) {
 		t.Error("should not make any HTTP calls in dry run")
