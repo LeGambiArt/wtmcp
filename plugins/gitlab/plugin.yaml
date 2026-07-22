@@ -161,6 +161,8 @@ tools:
         description: "Username of author"
       labels:
         type: array
+        items:
+          type: string
       milestone:
         type: string
       search:
@@ -246,6 +248,8 @@ tools:
         description: "GitLab instance name (optional if only one configured)"
       labels:
         type: array
+        items:
+          type: string
         description: "Filter by labels"
       sort:
         type: string
@@ -282,6 +286,8 @@ tools:
         description: "Limit to a specific project"
       labels:
         type: array
+        items:
+          type: string
       milestone:
         type: string
       search:
@@ -329,6 +335,8 @@ tools:
         description: "MR description body"
       labels:
         type: array
+        items:
+          type: string
         description: "Labels to apply"
       remove_source_branch:
         type: boolean

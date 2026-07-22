@@ -209,12 +209,15 @@ type ParamDef struct {
 	Description string    `yaml:"description"`
 	Required    bool      `yaml:"required"`
 	Default     any       `yaml:"default"`
+	Enum        []any     `yaml:"enum,omitempty"`
 	Items       *ItemsDef `yaml:"items"`
 }
 
 // ItemsDef describes array item types.
 type ItemsDef struct {
-	Type string `yaml:"type"`
+	Type       string              `yaml:"type"`
+	Properties map[string]ParamDef `yaml:"properties,omitempty"`
+	Required   []string            `yaml:"required,omitempty"`
 }
 
 // IsEnabled returns whether the plugin is enabled (defaults to true).
@@ -335,6 +338,14 @@ func cloneTools(tools []ToolDef) []ToolDef {
 			for k, p := range t.Params {
 				if p.Items != nil {
 					items := *p.Items
+					if items.Properties != nil {
+						props := make(map[string]ParamDef, len(items.Properties))
+						for pk, pv := range items.Properties {
+							props[pk] = pv
+						}
+						items.Properties = props
+					}
+					items.Required = slices.Clone(items.Required)
 					p.Items = &items
 				}
 				if p.Default != nil {
@@ -417,7 +428,10 @@ func LoadManifest(path string) (*Manifest, error) {
 	return &m, nil
 }
 
-// Validate checks the manifest for correctness.
+// Validate checks the manifest for correctness and auto-fixes certain
+// schema issues (e.g., array params missing an items definition get a
+// default of {type: string} with a warning). Callers should expect
+// mutation of the manifest.
 func (m *Manifest) Validate() error {
 	if !pluginNamePattern.MatchString(m.Name) {
 		return fmt.Errorf("invalid plugin name %q: must match [a-z0-9][a-z0-9_-]{0,62}[a-z0-9]", m.Name)
@@ -550,6 +564,12 @@ func (m *Manifest) Validate() error {
 			if len(param.Description) > maxParamDescriptionLen {
 				return fmt.Errorf("tool %s param %s: description exceeds %d bytes", tool.Name, pname, maxParamDescriptionLen)
 			}
+			if param.Type == "array" && param.Items == nil {
+				fmt.Fprintf(os.Stderr, "WARN: tool %s param %s: array type missing "+
+					"items definition, defaulting to {type: string}\n", tool.Name, pname)
+				param.Items = &ItemsDef{Type: "string"}
+				tool.Params[pname] = param
+			}
 		}
 	}
 
@@ -585,8 +605,32 @@ func (t *ToolDef) ParamsSchema() map[string]any {
 		if p.Default != nil {
 			prop["default"] = p.Default
 		}
+		if len(p.Enum) > 0 {
+			prop["enum"] = p.Enum
+		}
 		if p.Type == "array" && p.Items != nil {
-			prop["items"] = map[string]any{"type": p.Items.Type}
+			itemSchema := map[string]any{"type": p.Items.Type}
+			if len(p.Items.Properties) > 0 {
+				itemProps := make(map[string]any, len(p.Items.Properties))
+				for pn, pp := range p.Items.Properties {
+					iprop := map[string]any{"type": pp.Type}
+					if pp.Description != "" {
+						iprop["description"] = pp.Description
+					}
+					if pp.Default != nil {
+						iprop["default"] = pp.Default
+					}
+					if len(pp.Enum) > 0 {
+						iprop["enum"] = pp.Enum
+					}
+					itemProps[pn] = iprop
+				}
+				itemSchema["properties"] = itemProps
+			}
+			if len(p.Items.Required) > 0 {
+				itemSchema["required"] = p.Items.Required
+			}
+			prop["items"] = itemSchema
 		}
 		properties[name] = prop
 		if p.Required {

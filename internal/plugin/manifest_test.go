@@ -336,6 +336,59 @@ func TestParamsSchema(t *testing.T) {
 	}
 }
 
+func TestParamsSchemaObjectItems(t *testing.T) {
+	tool := ToolDef{
+		Name: "test",
+		Params: map[string]ParamDef{
+			"comments": {
+				Type: "array",
+				Items: &ItemsDef{
+					Type: "object",
+					Properties: map[string]ParamDef{
+						"path": {Type: "string", Description: "File path"},
+						"line": {Type: "integer"},
+						"body": {Type: "string"},
+					},
+					Required: []string{"path", "line", "body"},
+				},
+			},
+		},
+	}
+
+	schema := tool.ParamsSchema()
+	props := schema["properties"].(map[string]any)
+	commentsProp := props["comments"].(map[string]any)
+	items := commentsProp["items"].(map[string]any)
+
+	if items["type"] != "object" {
+		t.Errorf("items type = %v, want object", items["type"])
+	}
+
+	itemProps, ok := items["properties"].(map[string]any)
+	if !ok {
+		t.Fatal("items properties missing")
+	}
+	if len(itemProps) != 3 {
+		t.Errorf("got %d item properties, want 3", len(itemProps))
+	}
+
+	pathProp := itemProps["path"].(map[string]any)
+	if pathProp["type"] != "string" {
+		t.Errorf("path type = %v", pathProp["type"])
+	}
+	if pathProp["description"] != "File path" {
+		t.Errorf("path description = %v", pathProp["description"])
+	}
+
+	itemRequired, ok := items["required"].([]string)
+	if !ok {
+		t.Fatal("items required missing")
+	}
+	if len(itemRequired) != 3 {
+		t.Errorf("items required = %v, want 3 entries", itemRequired)
+	}
+}
+
 func TestManifestAuthVariantOrder(t *testing.T) {
 	dir := t.TempDir()
 	handlerPath := filepath.Join(dir, "handler")
@@ -903,8 +956,18 @@ func TestManifestCloneIndependence(t *testing.T) {
 		Config:       map[string]string{"k": "v"},
 		Tools: []ToolDef{
 			{
-				Name:   "tool1",
-				Params: map[string]ParamDef{"p1": {Type: "string"}},
+				Name: "tool1",
+				Params: map[string]ParamDef{
+					"p1": {Type: "string"},
+					"arr": {
+						Type: "array",
+						Items: &ItemsDef{
+							Type:       "object",
+							Properties: map[string]ParamDef{"nested": {Type: "string"}},
+							Required:   []string{"nested"},
+						},
+					},
+				},
 			},
 		},
 		Services: ServiceConfig{
@@ -946,6 +1009,8 @@ func TestManifestCloneIndependence(t *testing.T) {
 	clone.ContextFiles[0] = "MUTATED"
 	clone.Config["k"] = "MUTATED"
 	clone.Tools[0].Params["p1"] = ParamDef{Type: "MUTATED"}
+	clone.Tools[0].Params["arr"].Items.Properties["nested"] = ParamDef{Type: "MUTATED"}
+	clone.Tools[0].Params["arr"].Items.Required[0] = "MUTATED"
 	clone.Services.Auth.Scopes[0] = "MUTATED"
 	clone.Services.Auth.VariantOrder[0] = "MUTATED"
 	clone.Services.Auth.Variants["v1"] = AuthServiceConfig{Scopes: []string{"MUTATED"}}
@@ -1305,4 +1370,69 @@ func FuzzValidatePluginName(f *testing.F) {
 				name, pluginNameRE.String())
 		}
 	})
+}
+
+func TestValidateArrayWithoutItemsAutoFix(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "handler"), []byte("#!/bin/bash\n"), 0o755); err != nil { //nolint:gosec // test needs executable
+		t.Fatal(err)
+	}
+	m := &Manifest{
+		Name:      "test",
+		Handler:   "handler",
+		Execution: "persistent",
+		Dir:       dir,
+		Tools: []ToolDef{
+			{
+				Name:        "test_tool",
+				Description: "d",
+				Params: map[string]ParamDef{
+					"tags": {Type: "array"},
+				},
+			},
+		},
+	}
+
+	if err := m.Validate(); err != nil {
+		t.Fatalf("Validate() returned error for array without items: %v", err)
+	}
+
+	param := m.Tools[0].Params["tags"]
+	if param.Items == nil {
+		t.Fatal("Items was not auto-injected")
+	}
+	if param.Items.Type != "string" {
+		t.Errorf("Items.Type = %q, want \"string\"", param.Items.Type)
+	}
+}
+
+func TestValidateArrayWithItemsUnchanged(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "handler"), []byte("#!/bin/bash\n"), 0o755); err != nil { //nolint:gosec // test needs executable
+		t.Fatal(err)
+	}
+	m := &Manifest{
+		Name:      "test",
+		Handler:   "handler",
+		Execution: "persistent",
+		Dir:       dir,
+		Tools: []ToolDef{
+			{
+				Name:        "test_tool",
+				Description: "d",
+				Params: map[string]ParamDef{
+					"ids": {Type: "array", Items: &ItemsDef{Type: "integer"}},
+				},
+			},
+		},
+	}
+
+	if err := m.Validate(); err != nil {
+		t.Fatalf("Validate() returned error for array with items: %v", err)
+	}
+
+	param := m.Tools[0].Params["ids"]
+	if param.Items.Type != "integer" {
+		t.Errorf("Items.Type = %q, want \"integer\" (should not be overwritten)", param.Items.Type)
+	}
 }
