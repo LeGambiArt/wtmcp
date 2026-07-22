@@ -265,6 +265,90 @@ tools:
         default: 0
         description: "Starting index for pagination"
 
+  - name: github_get_file_contents
+    access: read
+    description: >
+      Get file or directory contents from a repository. Returns decoded
+      text for files (capped at 50KB), or a list of entries for
+      directories (capped at 200). Use ref to read from a specific
+      branch or commit.
+    params:
+      repo:
+        type: string
+        required: true
+        description: "Repository as owner/repo"
+      path:
+        type: string
+        required: true
+        description: "Path to file or directory"
+      ref:
+        type: string
+        description: "Branch, tag, or commit SHA (default: repo default branch)"
+
+  - name: github_search_code
+    access: read
+    description: >
+      Search for code across repositories. Returns matching file paths
+      and repository names. Query uses GitHub code search syntax.
+    params:
+      query:
+        type: string
+        required: true
+        description: "Search query (GitHub code search syntax)"
+      max_results:
+        type: integer
+        default: 30
+
+  - name: github_search_repositories
+    access: read
+    description: >
+      Search for repositories by name, description, or topic. Returns
+      repository metadata including stars, language, and default branch.
+    params:
+      query:
+        type: string
+        required: true
+        description: "Search query"
+      max_results:
+        type: integer
+        default: 30
+
+  - name: github_list_pull_requests
+    access: read
+    description: >
+      List pull requests for a repository. Filter by state (open,
+      closed, all). Returns PR number, title, author, base/head
+      branches, and labels.
+    params:
+      repo:
+        type: string
+        required: true
+        description: "Repository as owner/repo"
+      state:
+        type: string
+        default: "open"
+        description: "Filter by state: open, closed, all"
+      max_results:
+        type: integer
+        default: 30
+
+  - name: github_list_commits
+    access: read
+    description: >
+      List commits for a repository. Optionally filter by branch, tag,
+      or SHA. Returns commit SHA, message, author, and date.
+    params:
+      repo:
+        type: string
+        required: true
+        description: "Repository as owner/repo"
+      sha:
+        type: string
+        description: "Branch name, tag, or SHA to list commits from (default: repo default branch)"
+      max_results:
+        type: integer
+        default: 20
+
   - name: github_create_review
     access: write
     description: >

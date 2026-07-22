@@ -1,5 +1,6 @@
 """Unit tests for GitHub plugin tools."""
 
+import base64
 from unittest.mock import patch
 
 import handler
@@ -401,3 +402,247 @@ class TestRateLimit:
         with _mock_cache_get(None), _mock_http(200, PR_RESPONSE, {"X-RateLimit-Remaining": "4999"}), _mock_cache_set():
             result = tools.get_pr({"repo": "org/repo", "pr_number": 42})
             assert "_rate_limit_remaining" not in result
+
+
+# --- github_get_file_contents ---
+
+
+FILE_RESPONSE = {
+    "name": "main.fmf",
+    "path": "tests/main.fmf",
+    "size": 42,
+    "type": "file",
+    "sha": "abc123",
+    "content": base64.b64encode(b"summary: Test plan\n").decode(),
+    "encoding": "base64",
+    "html_url": "https://github.com/org/repo/blob/main/tests/main.fmf",
+}
+
+DIR_RESPONSE = [
+    {"name": "file1.py", "type": "file", "path": "src/file1.py", "size": 100},
+    {"name": "file2.py", "type": "file", "path": "src/file2.py", "size": 200},
+]
+
+
+class TestGetFileContents:
+    def test_file_decoded(self):
+        with _mock_cache_get(None), _mock_http(200, FILE_RESPONSE), _mock_cache_set():
+            result = tools.get_file_contents({"repo": "org/repo", "path": "tests/main.fmf"})
+        assert result["content"] == "summary: Test plan\n"
+        assert result["name"] == "main.fmf"
+
+    def test_directory(self):
+        with _mock_cache_get(None), _mock_http(200, DIR_RESPONSE), _mock_cache_set():
+            result = tools.get_file_contents({"repo": "org/repo", "path": "src"})
+        assert result["type"] == "directory"
+        assert result["count"] == 2
+
+    def test_large_file_truncated(self):
+        big_content = base64.b64encode(b"x" * 60000).decode()
+        resp = {**FILE_RESPONSE, "content": big_content, "size": 60000}
+        with _mock_cache_get(None), _mock_http(200, resp), _mock_cache_set():
+            result = tools.get_file_contents({"repo": "org/repo", "path": "big.txt"})
+        assert "TRUNCATED" in result["content"]
+
+    def test_null_content(self):
+        resp = {**FILE_RESPONSE, "content": None, "size": 2000000}
+        with _mock_cache_get(None), _mock_http(200, resp), _mock_cache_set():
+            result = tools.get_file_contents({"repo": "org/repo", "path": "huge.bin"})
+        assert result["content_available"] is False
+
+    def test_binary_content(self):
+        binary = base64.b64encode(b"\x00\x01\x02binary").decode()
+        resp = {**FILE_RESPONSE, "content": binary, "size": 10}
+        with _mock_cache_get(None), _mock_http(200, resp), _mock_cache_set():
+            result = tools.get_file_contents({"repo": "org/repo", "path": "data.bin"})
+        assert result.get("binary") is True
+        assert result["content_available"] is False
+
+    def test_with_ref(self):
+        with _mock_cache_get(None), _mock_http(200, FILE_RESPONSE) as mock, _mock_cache_set():
+            tools.get_file_contents({"repo": "org/repo", "path": "f.txt", "ref": "feature-branch"})
+        call_args = mock.call_args
+        assert (
+            call_args[1].get("query", {}).get("ref") == "feature-branch"
+            or call_args[0][2].get("ref") == "feature-branch"
+        )
+
+    def test_missing_path(self):
+        import pytest
+
+        with pytest.raises(ValueError, match="path is required"):
+            tools.get_file_contents({"repo": "org/repo"})
+
+    def test_path_traversal_rejected(self):
+        import pytest
+
+        with pytest.raises(ValueError, match="path traversal"):
+            tools.get_file_contents({"repo": "org/repo", "path": "../../etc/passwd"})
+
+    def test_absolute_path_rejected(self):
+        import pytest
+
+        with pytest.raises(ValueError, match="absolute path"):
+            tools.get_file_contents({"repo": "org/repo", "path": "/etc/passwd"})
+
+    def test_invalid_repo(self):
+        import pytest
+
+        with pytest.raises(ValueError, match="invalid repo"):
+            tools.get_file_contents({"repo": "bad", "path": "f.txt"})
+
+    def test_http_error(self):
+        with _mock_cache_get(None), _mock_http(404, {"message": "Not Found"}):
+            result = tools.get_file_contents({"repo": "org/repo", "path": "missing.txt"})
+        assert "error" in result
+
+    def test_cache_hit(self):
+        cached = {"type": "file", "content": "cached"}
+        with _mock_cache_get(cached):
+            result = tools.get_file_contents({"repo": "org/repo", "path": "f.txt"})
+        assert result == cached
+
+
+# --- github_search_code ---
+
+
+class TestSearchCode:
+    def test_basic_search(self):
+        resp = {
+            "total_count": 1,
+            "items": [
+                {
+                    "name": "test.py",
+                    "path": "src/test.py",
+                    "sha": "a" * 40,
+                    "html_url": "url",
+                    "repository": {"full_name": "org/repo"},
+                }
+            ],
+        }
+        with _mock_cache_get(None), _mock_http(200, resp), _mock_cache_set():
+            result = tools.search_code({"query": "def test_login"})
+        assert result["total"] == 1
+        assert result["items"][0]["repo"] == "org/repo"
+
+    def test_empty_query(self):
+        import pytest
+
+        with pytest.raises(ValueError, match="query is required"):
+            tools.search_code({"query": ""})
+
+    def test_http_error(self):
+        with _mock_cache_get(None), _mock_http(422, {"message": "Validation Failed"}):
+            result = tools.search_code({"query": "x"})
+        assert "error" in result
+
+
+# --- github_search_repositories ---
+
+
+class TestSearchRepositories:
+    def test_basic_search(self):
+        resp = {
+            "total_count": 1,
+            "items": [
+                {
+                    "full_name": "org/tests",
+                    "description": "Test repo",
+                    "html_url": "url",
+                    "language": "Python",
+                    "stargazers_count": 5,
+                    "forks_count": 1,
+                    "updated_at": "2026-01-01",
+                    "default_branch": "main",
+                    "archived": False,
+                }
+            ],
+        }
+        with _mock_cache_get(None), _mock_http(200, resp), _mock_cache_set():
+            result = tools.search_repositories({"query": "clevis-tests"})
+        assert result["items"][0]["full_name"] == "org/tests"
+        assert result["items"][0]["stars"] == 5
+
+    def test_empty_query(self):
+        import pytest
+
+        with pytest.raises(ValueError, match="query is required"):
+            tools.search_repositories({"query": ""})
+
+
+# --- github_list_pull_requests ---
+
+
+class TestListPullRequests:
+    def test_basic_list(self):
+        resp = [
+            {
+                "number": 1,
+                "title": "PR 1",
+                "state": "open",
+                "draft": False,
+                "user": {"login": "alice"},
+                "base": {"ref": "main"},
+                "head": {"ref": "fix"},
+                "labels": [],
+                "created_at": "2026-01-01",
+                "updated_at": "2026-01-02",
+                "html_url": "url",
+            }
+        ]
+        with _mock_cache_get(None), _mock_http(200, resp), _mock_cache_set():
+            result = tools.list_pull_requests({"repo": "org/repo"})
+        assert result["count"] == 1
+        assert result["pull_requests"][0]["number"] == 1
+
+    def test_state_filter(self):
+        with _mock_cache_get(None), _mock_http(200, []) as mock, _mock_cache_set():
+            tools.list_pull_requests({"repo": "org/repo", "state": "closed"})
+        query = mock.call_args[1].get("query") or mock.call_args[0][2]
+        assert query["state"] == "closed"
+
+    def test_invalid_state(self):
+        import pytest
+
+        with pytest.raises(ValueError, match="invalid state"):
+            tools.list_pull_requests({"repo": "org/repo", "state": "merged"})
+
+
+# --- github_list_commits ---
+
+
+class TestListCommits:
+    def test_basic_list(self):
+        resp = [
+            {
+                "sha": "a" * 40,
+                "commit": {"message": "fix bug", "author": {"name": "Alice", "date": "2026-01-01"}},
+                "author": {"login": "alice"},
+                "html_url": "url",
+            }
+        ]
+        with _mock_cache_get(None), _mock_http(200, resp), _mock_cache_set():
+            result = tools.list_commits({"repo": "org/repo"})
+        assert result["count"] == 1
+        assert result["commits"][0]["sha"] == "a" * 12
+        assert result["commits"][0]["author"] == "alice"
+        assert "email" not in str(result)
+
+    def test_with_sha(self):
+        with _mock_cache_get(None), _mock_http(200, []) as mock, _mock_cache_set():
+            tools.list_commits({"repo": "org/repo", "sha": "feature-branch"})
+        query = mock.call_args[1].get("query") or mock.call_args[0][2]
+        assert query["sha"] == "feature-branch"
+
+    def test_fallback_to_commit_author_name(self):
+        resp = [
+            {
+                "sha": "b" * 40,
+                "commit": {"message": "msg", "author": {"name": "Bob", "date": "2026-01-01"}},
+                "author": None,
+                "html_url": "url",
+            }
+        ]
+        with _mock_cache_get(None), _mock_http(200, resp), _mock_cache_set():
+            result = tools.list_commits({"repo": "org/repo"})
+        assert result["commits"][0]["author"] == "Bob"
