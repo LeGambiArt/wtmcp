@@ -226,7 +226,6 @@ func toolGetMergeRequest(params, _ json.RawMessage) (any, error) {
 		"title":         mr.Title,
 		"description":   mr.Description,
 		"state":         mr.State,
-		"author":        mr.Author.Username,
 		"source_branch": mr.SourceBranch,
 		"target_branch": mr.TargetBranch,
 		"web_url":       mr.WebURL,
@@ -236,6 +235,9 @@ func toolGetMergeRequest(params, _ json.RawMessage) (any, error) {
 		"updated_at":    timeStr(mr.UpdatedAt),
 		"draft":         mr.Draft,
 		"comments":      comments,
+	}
+	if mr.Author != nil {
+		result["author"] = mr.Author.Username
 	}
 
 	if mr.DiffRefs.BaseSha != "" {
