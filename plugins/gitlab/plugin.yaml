@@ -324,7 +324,7 @@ tools:
         description: "Path to file in the repository"
       ref:
         type: string
-        description: "Branch, tag, or commit SHA (default: main)"
+        description: "Branch, tag, or commit SHA (default: project default branch)"
 
   - name: gitlab_search_projects
     access: read
@@ -404,6 +404,64 @@ tools:
         type: boolean
         default: false
         description: "Create as draft MR (prepends 'Draft: ' to title)"
+      dry_run:
+        type: boolean
+        default: true
+        description: "Preview without creating (default: true)"
+
+  - name: gitlab_create_branch
+    access: write
+    description: >
+      Create a new branch from a source branch. Validates branch name
+      against git check-ref-format rules. Defaults to dry_run=true.
+    params:
+      instance:
+        type: string
+      project_id:
+        type: string
+        required: true
+        description: "Project ID or path (e.g. 'group/project')"
+      branch_name:
+        type: string
+        required: true
+        description: "Name for the new branch"
+      source_branch:
+        type: string
+        default: "main"
+        description: "Branch to create from (default: main)"
+      dry_run:
+        type: boolean
+        default: true
+        description: "Preview without creating (default: true)"
+
+  - name: gitlab_create_or_update_file
+    access: write
+    description: >
+      Create or update a file in a repository. Checks if the file
+      exists to determine create vs update. Content is plain text.
+      Defaults to dry_run=true.
+    params:
+      instance:
+        type: string
+      project_id:
+        type: string
+        required: true
+        description: "Project ID or path (e.g. 'group/project')"
+      path:
+        type: string
+        required: true
+        description: "File path in the repository"
+      content:
+        type: string
+        required: true
+        description: "File content (plain text)"
+      message:
+        type: string
+        required: true
+        description: "Commit message"
+      branch:
+        type: string
+        description: "Target branch (default: project default branch)"
       dry_run:
         type: boolean
         default: true

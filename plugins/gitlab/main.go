@@ -38,6 +38,8 @@ func main() {
 
 	// Write tools
 	p.Handle("gitlab_create_merge_request", toolCreateMergeRequest)
+	p.Handle("gitlab_create_branch", toolCreateBranch)
+	p.Handle("gitlab_create_or_update_file", toolCreateOrUpdateFile)
 	p.Handle("gitlab_create_mr_discussion", toolCreateMRDiscussion)
 	p.Handle("gitlab_add_mr_note", toolAddMRNote)
 
