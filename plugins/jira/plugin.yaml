@@ -32,6 +32,7 @@ services:
 
 config:
   jira_url: "${JIRA_URL}"
+  auth_type: "${JIRA_AUTH_TYPE:-auto}"
 
 tools:
   - name: jira_get_myself

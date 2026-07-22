@@ -125,6 +125,49 @@ class TestDetectCloud:
             assert auth_ok is True
 
 
+class TestInitCloudShortcut:
+    """Test _init() cloud detection shortcut via config auth_type."""
+
+    def test_cloud_skips_detect(self):
+        """auth_type=cloud skips _detect_cloud() entirely."""
+        with (
+            patch.object(handler, "_detect_cloud") as mock_detect,
+            patch.object(handler, "_detect_sprint_field", return_value="sprint"),
+        ):
+            handler._init({"config": {"auth_type": "cloud"}})
+            mock_detect.assert_not_called()
+            assert handler.is_cloud is True
+
+    def test_auto_calls_detect(self):
+        """auth_type=auto (default) calls _detect_cloud()."""
+        with (
+            patch.object(handler, "_detect_cloud", return_value=(False, True)) as mock_detect,
+            patch.object(handler, "_detect_sprint_field", return_value="sprint"),
+        ):
+            handler._init({"config": {"auth_type": "auto"}})
+            mock_detect.assert_called_once()
+            assert handler.is_cloud is False
+
+    def test_missing_auth_type_calls_detect(self):
+        """No auth_type in config defaults to auto (calls _detect_cloud)."""
+        with (
+            patch.object(handler, "_detect_cloud", return_value=(True, True)) as mock_detect,
+            patch.object(handler, "_detect_sprint_field", return_value="sprint"),
+        ):
+            handler._init({"config": {}})
+            mock_detect.assert_called_once()
+
+    def test_server_token_calls_detect(self):
+        """auth_type=server-token still calls _detect_cloud() to preserve auth diagnostics."""
+        with (
+            patch.object(handler, "_detect_cloud", return_value=(False, True)) as mock_detect,
+            patch.object(handler, "_detect_sprint_field", return_value="sprint"),
+        ):
+            handler._init({"config": {"auth_type": "server-token"}})
+            mock_detect.assert_called_once()
+            assert handler.is_cloud is False
+
+
 class TestCacheDel:
     """Test cache_del() protocol message."""
 

@@ -319,15 +319,20 @@ def _init(msg):
     """Handle init message: store config, detect Cloud vs Server."""
     global config, is_cloud, sprint_field
     config = msg.get("config", {})
-    is_cloud, auth_ok = _detect_cloud()
-    if not auth_ok:
-        log(
-            "WARNING: authentication failed (HTTP 401/403). "
-            "If both JIRA_EMAIL and JIRA_TOKEN are set but this is "
-            "a Jira Server/DC instance, set JIRA_AUTH_TYPE=server-token "
-            "to use bearer auth instead of basic auth. "
-            "If this is Jira Cloud, verify your API token."
-        )
+    auth_type = config.get("auth_type", "auto")
+    if auth_type == "cloud":
+        is_cloud, auth_ok = True, True
+        log("init: JIRA_AUTH_TYPE=cloud, skipping cloud detection")
+    else:
+        is_cloud, auth_ok = _detect_cloud()
+        if not auth_ok:
+            log(
+                "WARNING: authentication failed (HTTP 401/403). "
+                "If both JIRA_EMAIL and JIRA_TOKEN are set but this is "
+                "a Jira Server/DC instance, set JIRA_AUTH_TYPE=server-token "
+                "to use bearer auth instead of basic auth. "
+                "If this is Jira Cloud, verify your API token."
+            )
     sprint_field = _detect_sprint_field()
     log(f"init: cloud={is_cloud}, sprint_field={sprint_field}, url={config.get('jira_url', '?')}")
 
