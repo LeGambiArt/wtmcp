@@ -91,7 +91,7 @@ def create_review(params):
 
     comments = [_validate_comment(c, i) for i, c in enumerate(comments_raw)]
 
-    if dry_run:
+    if dry_run is not False:
         preview = {
             "dry_run": True,
             "action": "github_create_review",
@@ -177,7 +177,7 @@ def add_pr_comment(params):
         if validated_start_line >= line:
             raise ValueError(f"start_line ({validated_start_line}) must be less than line ({line})")
 
-    if dry_run:
+    if dry_run is not False:
         preview = {
             "dry_run": True,
             "action": "github_add_pr_comment",
@@ -251,7 +251,7 @@ def add_comment(params):
     if len(body) > _MAX_BODY_LEN:
         raise ValueError(f"body exceeds {_MAX_BODY_LEN} character limit")
 
-    if dry_run:
+    if dry_run is not False:
         return {
             "dry_run": True,
             "action": "github_add_comment",
@@ -300,7 +300,7 @@ def create_pull_request(params):
     if body and len(body) > _MAX_BODY_LEN:
         raise ValueError(f"body exceeds {_MAX_BODY_LEN} character limit ({len(body)} chars)")
 
-    if dry_run:
+    if dry_run is not False:
         preview = {
             "dry_run": True,
             "action": "github_create_pull_request",

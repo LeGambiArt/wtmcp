@@ -229,8 +229,13 @@ func toolCreateMergeRequest(params, _ json.RawMessage) (any, error) {
 	}
 
 	title := p.Title
-	if p.Draft && !strings.HasPrefix(p.Title, "Draft: ") {
+	if p.Draft && !strings.HasPrefix(strings.ToLower(p.Title), "draft: ") {
 		title = "Draft: " + title
+	}
+
+	client, err := resolveInstance(p.Instance)
+	if err != nil {
+		return nil, err
 	}
 
 	if isDryRun(p.DryRun) {
@@ -252,12 +257,16 @@ func toolCreateMergeRequest(params, _ json.RawMessage) (any, error) {
 		if len(p.Labels) > 0 {
 			m["labels"] = p.Labels
 		}
+		if p.Draft {
+			m["draft"] = true
+		}
+		if p.RemoveSourceBranch != nil {
+			m["remove_source_branch"] = *p.RemoveSourceBranch
+		}
+		if p.Squash != nil {
+			m["squash"] = *p.Squash
+		}
 		return m, nil
-	}
-
-	client, err := resolveInstance(p.Instance)
-	if err != nil {
-		return nil, err
 	}
 
 	opts := &gogitlab.CreateMergeRequestOptions{
