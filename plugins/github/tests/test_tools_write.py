@@ -782,3 +782,155 @@ class TestCacheInvalidation:
                 }
             )
         inv.assert_not_called()
+
+
+# --- github_create_branch ---
+
+REF_RESPONSE = {"object": {"sha": "a" * 40, "type": "commit"}, "ref": "refs/heads/main"}
+CREATE_REF_RESPONSE = {"ref": "refs/heads/new-branch", "object": {"sha": "a" * 40}}
+
+
+class TestCreateBranch:
+    def test_dry_run(self):
+        with _mock_http(200, REF_RESPONSE), _mock_invalidate() as inv:
+            result = tools_write.create_branch(
+                {"repo": "org/repo", "branch_name": "feature-x", "source_branch": "main"}
+            )
+        assert result["dry_run"] is True
+        assert result["action"] == "github_create_branch"
+        assert result["source_sha"] == "a" * 12
+        inv.assert_not_called()
+
+    def test_success(self):
+        responses = [
+            (200, REF_RESPONSE, {}),
+            (201, CREATE_REF_RESPONSE, {}),
+        ]
+        with patch.object(handler, "http", side_effect=responses), _mock_invalidate() as inv:
+            result = tools_write.create_branch({"repo": "org/repo", "branch_name": "feature-x", "dry_run": False})
+        assert result["created"] is True
+        assert result["ref"] == "refs/heads/new-branch"
+        inv.assert_called_once()
+
+    def test_source_not_found(self):
+        with _mock_http(404, {"message": "Not Found"}):
+            result = tools_write.create_branch({"repo": "org/repo", "branch_name": "x", "source_branch": "nonexistent"})
+        assert "error" in result
+
+    def test_invalid_branch_double_dot(self):
+        with pytest.raises(ValueError, match="contains \\.\\. or //"):
+            tools_write.create_branch({"repo": "org/repo", "branch_name": "a..b"})
+
+    def test_invalid_branch_dot_lock(self):
+        with pytest.raises(ValueError, match="ends with \\.lock"):
+            tools_write.create_branch({"repo": "org/repo", "branch_name": "test.lock"})
+
+    def test_invalid_branch_dot_component(self):
+        with pytest.raises(ValueError, match="component starts with"):
+            tools_write.create_branch({"repo": "org/repo", "branch_name": "feature/.hidden"})
+
+    def test_invalid_repo(self):
+        with pytest.raises(ValueError, match="invalid repo"):
+            tools_write.create_branch({"repo": "bad", "branch_name": "x"})
+
+    def test_single_char_branch(self):
+        with _mock_http(200, REF_RESPONSE):
+            result = tools_write.create_branch({"repo": "org/repo", "branch_name": "v"})
+        assert result["dry_run"] is True
+
+    def test_error_does_not_invalidate(self):
+        responses = [
+            (200, REF_RESPONSE, {}),
+            (422, {"message": "Reference already exists"}, {}),
+        ]
+        with patch.object(handler, "http", side_effect=responses), _mock_invalidate() as inv:
+            result = tools_write.create_branch({"repo": "org/repo", "branch_name": "main", "dry_run": False})
+        assert "error" in result
+        inv.assert_not_called()
+
+
+# --- github_create_or_update_file ---
+
+
+class TestCreateOrUpdateFile:
+    def test_dry_run_new_file(self):
+        with patch.object(handler, "http", return_value=(404, {"message": "Not Found"}, {})), _mock_invalidate() as inv:
+            result = tools_write.create_or_update_file(
+                {"repo": "org/repo", "path": "test.py", "content": "print(1)", "message": "add test"}
+            )
+        assert result["dry_run"] is True
+        assert result["is_update"] is False
+        inv.assert_not_called()
+
+    def test_dry_run_existing_file(self):
+        with patch.object(handler, "http", return_value=(200, {"sha": "old_sha"}, {})):
+            result = tools_write.create_or_update_file(
+                {"repo": "org/repo", "path": "test.py", "content": "print(2)", "message": "update test"}
+            )
+        assert result["dry_run"] is True
+        assert result["is_update"] is True
+
+    def test_create_success(self):
+        responses = [
+            (404, {"message": "Not Found"}, {}),
+            (201, {"content": {"path": "test.py", "sha": "new_sha", "html_url": "url"}}, {}),
+        ]
+        with patch.object(handler, "http", side_effect=responses), _mock_invalidate() as inv:
+            result = tools_write.create_or_update_file(
+                {"repo": "org/repo", "path": "test.py", "content": "print(1)", "message": "add", "dry_run": False}
+            )
+        assert result["created"] is True
+        assert result["is_update"] is False
+        inv.assert_called_once()
+
+    def test_update_includes_sha(self):
+        responses = [
+            (200, {"sha": "old_sha_value"}, {}),
+            (200, {"content": {"path": "test.py", "sha": "new_sha", "html_url": "url"}}, {}),
+        ]
+        with patch.object(handler, "http", side_effect=responses) as mock_http, _mock_invalidate():
+            tools_write.create_or_update_file(
+                {"repo": "org/repo", "path": "test.py", "content": "updated", "message": "upd", "dry_run": False}
+            )
+        put_call = mock_http.call_args_list[1]
+        api_body = put_call[1].get("body") or put_call[0][3] if len(put_call[0]) > 3 else put_call[1]["body"]
+        assert api_body["sha"] == "old_sha_value"
+
+    def test_missing_message(self):
+        with pytest.raises(ValueError, match="message is required"):
+            tools_write.create_or_update_file({"repo": "org/repo", "path": "f.py", "content": "x"})
+
+    def test_missing_content(self):
+        with pytest.raises(ValueError, match="content is required"):
+            tools_write.create_or_update_file({"repo": "org/repo", "path": "f.py", "message": "m"})
+
+    def test_missing_path(self):
+        with pytest.raises(ValueError, match="path is required"):
+            tools_write.create_or_update_file({"repo": "org/repo", "content": "x", "message": "m"})
+
+    def test_path_traversal_rejected(self):
+        with pytest.raises(ValueError, match="path traversal"):
+            tools_write.create_or_update_file(
+                {"repo": "org/repo", "path": "../../etc/passwd", "content": "x", "message": "m"}
+            )
+
+    def test_http_error(self):
+        responses = [
+            (404, {"message": "Not Found"}, {}),
+            (422, {"message": "Validation Failed"}, {}),
+        ]
+        with patch.object(handler, "http", side_effect=responses), _mock_invalidate() as inv:
+            result = tools_write.create_or_update_file(
+                {"repo": "org/repo", "path": "f.py", "content": "x", "message": "m", "dry_run": False}
+            )
+        assert "error" in result
+        inv.assert_not_called()
+
+    def test_get_error_surfaces_not_swallowed(self):
+        """Non-404 GET errors should be returned, not silently treated as 'file missing'."""
+        with patch.object(handler, "http", return_value=(500, {"message": "Internal Server Error"}, {})):
+            result = tools_write.create_or_update_file(
+                {"repo": "org/repo", "path": "f.py", "content": "x", "message": "m", "dry_run": False}
+            )
+        assert "error" in result
+        assert "500" in str(result["error"])
