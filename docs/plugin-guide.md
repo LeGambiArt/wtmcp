@@ -1016,7 +1016,7 @@ def _validate_export_path(file_path):
     return resolved
 ```
 
-Under sandbox (`make build-sandbox`), `_session_dir` is in the
+Under sandbox (`make build`), `_session_dir` is in the
 sandbox's read paths and `_output_dir` is in the write paths.
 Attempting to access files outside these directories will fail with
 `EACCES`.
@@ -1024,9 +1024,9 @@ Attempting to access files outside these directories will fail with
 ## Security
 
 - Plugins are semi-trusted: without sandboxing they run with the
-  same OS privileges as the core. With sandbox enabled (`-tags
-  sandbox`), plugins are confined via Landlock, cgroups, and network
-  namespaces. Only install plugins you trust.
+  same OS privileges as the core. With sandbox enabled (the default
+  `make build`), plugins are confined via Landlock, cgroups, and
+  network namespaces. Only install plugins you trust.
 - **User plugins** (in `{workdir}/plugins/`) are disabled by default.
   Enable with `user_plugins: true` in `config.yaml`. User plugins
   cannot override system plugins, declare `provides.auth`, or claim
@@ -1060,7 +1060,7 @@ Attempting to access files outside these directories will fail with
   and DELETE are rejected with `method_not_allowed`.
 - Cache namespaces are isolated — plugins cannot read other plugins'
   cached data.
-- **Sandboxing** (optional, `make build-sandbox`): Landlock
+- **Sandboxing** (default `make build`; disable with `make nosandbox`): Landlock
   filesystem confinement restricts read/write to declared paths.
   cgroup v2 resource limits cap memory, CPU, PIDs, and file size
   per plugin. Network namespace isolation forces all traffic through

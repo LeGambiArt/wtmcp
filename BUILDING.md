@@ -32,7 +32,8 @@ from the `third_party/arapuca` submodule (requires a Rust toolchain).
 To build without sandbox support:
 
 ```bash
-make build-nosandbox
+make nosandbox
+WTMCP_UNSANDBOXED=1 ./wtmcp   # required at runtime
 ```
 
 ## Verify

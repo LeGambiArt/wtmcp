@@ -308,7 +308,7 @@ func Load(configPath, workdir string) (*Config, error) {
 		if sb, ok := raw["sandbox"].(map[string]any); ok {
 			if _, hasEnabled := sb["enabled"]; hasEnabled {
 				log.Printf("WARNING: sandbox.enabled was removed — sandbox is now always active "+
-					"when built with libarapuca; to build without sandbox use -tags nosandbox. "+
+					"when built with libarapuca; to build without sandbox use `make nosandbox`. "+
 					"Remove the field from %s to silence this warning.", configPath)
 			}
 		}

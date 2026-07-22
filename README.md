@@ -108,7 +108,7 @@ make build    # auto-detects system libarapuca or builds from submodule
 To build **without** sandbox (debug/development only):
 
 ```bash
-go build -tags nosandbox ./cmd/wtmcp
+make nosandbox
 WTMCP_UNSANDBOXED=1 ./wtmcp   # required at runtime
 ```
 

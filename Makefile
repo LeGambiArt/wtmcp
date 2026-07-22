@@ -1,4 +1,4 @@
-.PHONY: all build plugins test test-nosandbox lint fmt vet tidy clean help govulncheck
+.PHONY: all build nosandbox plugins test test-nosandbox lint fmt vet tidy clean help govulncheck
 
 # Go toolchain version — derived from go.mod to stay in sync with dependency bumps
 GO_TOOLCHAIN_VERSION := $(shell sed -n 's/^go //p' go.mod)
@@ -34,6 +34,16 @@ wtmcp: arapuca $(shell find cmd/wtmcp -name '*.go') $(shell find internal -name 
 wtmcpctl: arapuca $(shell find cmd/wtmcpctl -name '*.go') $(shell find internal -name '*.go')
 	@echo "Building wtmcpctl..."
 	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o wtmcpctl ./cmd/wtmcpctl
+
+# Build without arapuca sandbox (no libarapuca needed).
+# Requires WTMCP_UNSANDBOXED=1 at runtime.
+nosandbox: plugins
+	@echo "Building wtmcp (nosandbox)..."
+	go build -tags nosandbox $(GOFLAGS) -ldflags "$(LDFLAGS)" -o wtmcp ./cmd/wtmcp
+	@echo "Building wtmcpctl (nosandbox)..."
+	go build -tags nosandbox $(GOFLAGS) -ldflags "$(LDFLAGS)" -o wtmcpctl ./cmd/wtmcpctl
+	@echo ""
+	@echo "Built without sandbox. Run with: WTMCP_UNSANDBOXED=1 ./wtmcp"
 
 # Build all plugins that have a Makefile
 plugins:
@@ -137,6 +147,7 @@ help:
 	@echo "Available targets:"
 	@echo "  all            - Build everything (default)"
 	@echo "  build          - Build all binaries and plugins"
+	@echo "  nosandbox      - Build without arapuca sandbox (no libarapuca needed)"
 	@echo "  arapuca        - Build libarapuca (auto-detected: system or submodule)"
 	@echo "  wtmcp          - Build wtmcp binary"
 	@echo "  wtmcpctl       - Build wtmcpctl binary"

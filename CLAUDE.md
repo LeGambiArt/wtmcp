@@ -4,6 +4,7 @@
 
 ```bash
 make build       # Build wtmcp, wtmcpctl, and all plugins
+make nosandbox   # Build without arapuca sandbox (WTMCP_UNSANDBOXED=1 at runtime)
 make test        # go test -v -race ./... (requires libarapuca)
 make lint        # golangci-lint run ./...
 make fmt         # gofmt -l -w .
