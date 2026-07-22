@@ -235,7 +235,7 @@ def testing_farm_about(_params):
 
     status, body, _ = http("GET", f"/{API_VERSION}/about")
     if status != 200:
-        raise Exception(f"API error (HTTP {status}): {body}")
+        raise ApiError(status, body)
 
     cache_set("tf:about", body, ttl=3600)
     return body
@@ -249,7 +249,7 @@ def testing_farm_whoami(_params):
 
     status, body, _ = http("GET", f"/{API_VERSION}/me")
     if status != 200:
-        raise Exception(f"API error (HTTP {status}): {body}")
+        raise ApiError(status, body)
 
     cache_set("tf:whoami", body, ttl=3600)
     return body
@@ -278,7 +278,7 @@ def testing_farm_list_requests(params):
 
     status, body, _ = http("GET", f"/{API_VERSION}/requests", query=query)
     if status != 200:
-        raise Exception(f"API error (HTTP {status}): {body}")
+        raise ApiError(status, body)
 
     if not isinstance(body, list):
         return body
@@ -464,7 +464,7 @@ def testing_farm_list_composes(_params):
 
     status, body, _ = http("GET", f"/{API_VERSION}/composes")
     if status != 200:
-        raise Exception(f"API error (HTTP {status}): {body}")
+        raise ApiError(status, body)
 
     # Trim to compose names only — the raw response includes metadata
     # (allowed_arches, tags, etc.) that wastes LLM context tokens.
@@ -494,7 +494,7 @@ def testing_farm_list_reservations(params):
 
     status, body, _ = http("GET", f"/{API_VERSION}/requests", query=query)
     if status != 200:
-        raise Exception(f"API error (HTTP {status}): {body}")
+        raise ApiError(status, body)
 
     if not isinstance(body, list):
         return body
@@ -878,7 +878,7 @@ def testing_farm_reserve(params):
         "environments": [environment],
     }
 
-    if dry_run:
+    if dry_run is not False:
         return {
             "dry_run": True,
             "message": "Preview — set dry_run=false to submit",
@@ -888,7 +888,7 @@ def testing_farm_reserve(params):
 
     status, body, _ = http("POST", f"/{API_VERSION}/requests", body=payload)
     if status not in (200, 201):
-        raise Exception(f"API error (HTTP {status}): {body}")
+        raise ApiError(status, body)
 
     return {
         "id": body.get("id", ""),
@@ -938,7 +938,7 @@ def testing_farm_submit_test(params):
     if timeout:
         payload["settings"] = {"pipeline": {"timeout": int(timeout) * 60}}
 
-    if dry_run:
+    if dry_run is not False:
         return {
             "dry_run": True,
             "message": "Preview — set dry_run=false to submit",
@@ -947,7 +947,7 @@ def testing_farm_submit_test(params):
 
     status, body, _ = http("POST", f"/{API_VERSION}/requests", body=payload)
     if status not in (200, 201):
-        raise Exception(f"API error (HTTP {status}): {body}")
+        raise ApiError(status, body)
 
     return {
         "id": body.get("id", ""),
@@ -962,7 +962,7 @@ def testing_farm_cancel(params):
     _validate_request_id(request_id)
     dry_run = params.get("dry_run", True)
 
-    if dry_run:
+    if dry_run is not False:
         status, body, _ = http("GET", f"/{API_VERSION}/requests/{request_id}")
         if status != 200:
             raise Exception(f"Cannot fetch request {request_id} (HTTP {status}): {body}")
@@ -976,7 +976,7 @@ def testing_farm_cancel(params):
 
     status, body, _ = http("DELETE", f"/{API_VERSION}/requests/{request_id}")
     if status not in (200, 204):
-        raise Exception(f"API error (HTTP {status}): {body}")
+        raise ApiError(status, body)
 
     # Invalidate cached data for this request.
     for prefix in ("tf:raw:", "tf:ssh:", "tf:results:"):
