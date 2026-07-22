@@ -552,3 +552,161 @@ func TestToolGetMergeRequest(t *testing.T) {
 		t.Errorf("comment body = %v", comments[0]["body"])
 	}
 }
+
+// --- gitlab_get_file_contents ---
+
+func TestToolGetFileContents(t *testing.T) {
+	setupGitLabTest(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/repository/files/") {
+			// Content is base64-encoded "summary: Test plan\n"
+			jsonResponse(w, `{
+				"file_name": "main.fmf",
+				"file_path": "tests/main.fmf",
+				"size": 19,
+				"encoding": "base64",
+				"ref": "main",
+				"blob_id": "abc123",
+				"last_commit_id": "def456",
+				"content": "c3VtbWFyeTogVGVzdCBwbGFuCg=="
+			}`)
+			return
+		}
+		http.NotFound(w, r)
+	})
+
+	result, err := toolGetFileContents(mustJSON(t, map[string]any{
+		"project_id": "team/proj",
+		"path":       "tests/main.fmf",
+	}), nil)
+	if err != nil {
+		t.Fatalf("toolGetFileContents: %v", err)
+	}
+
+	m := result.(map[string]any)
+	if m["file_name"] != "main.fmf" {
+		t.Errorf("file_name = %v", m["file_name"])
+	}
+	content, ok := m["content"].(string)
+	if !ok {
+		t.Fatalf("content type = %T", m["content"])
+	}
+	if !strings.Contains(content, "summary: Test plan") {
+		t.Errorf("content = %q, want to contain 'summary: Test plan'", content)
+	}
+}
+
+func TestToolGetFileContentsRequiresProjectAndPath(t *testing.T) {
+	_, err := toolGetFileContents(mustJSON(t, map[string]any{
+		"project_id": "team/proj",
+	}), nil)
+	if err == nil {
+		t.Fatal("expected error for missing path")
+	}
+	if !strings.Contains(err.Error(), "path is required") {
+		t.Errorf("error = %v, want 'path is required'", err)
+	}
+
+	_, err = toolGetFileContents(mustJSON(t, map[string]any{
+		"path": "file.txt",
+	}), nil)
+	if err == nil {
+		t.Fatal("expected error for missing project_id")
+	}
+}
+
+// --- gitlab_search_projects ---
+
+func TestToolSearchProjects(t *testing.T) {
+	setupGitLabTest(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v4/projects" && r.URL.Query().Get("search") != "" {
+			jsonResponse(w, `[{
+				"id": 42,
+				"path_with_namespace": "team/tests",
+				"description": "Test repo",
+				"web_url": "https://gitlab.example.com/team/tests",
+				"default_branch": "main",
+				"archived": false,
+				"star_count": 5,
+				"forks_count": 1
+			}]`)
+			return
+		}
+		http.NotFound(w, r)
+	})
+
+	result, err := toolSearchProjects(mustJSON(t, map[string]any{
+		"query": "tests",
+	}), nil)
+	if err != nil {
+		t.Fatalf("toolSearchProjects: %v", err)
+	}
+
+	m := result.(map[string]any)
+	if m["count"] != 1 {
+		t.Errorf("count = %v, want 1", m["count"])
+	}
+	items := m["items"].([]map[string]any)
+	if items[0]["path_with_namespace"] != "team/tests" {
+		t.Errorf("path = %v", items[0]["path_with_namespace"])
+	}
+}
+
+func TestToolSearchProjectsRequiresQuery(t *testing.T) {
+	_, err := toolSearchProjects(mustJSON(t, map[string]any{}), nil)
+	if err == nil {
+		t.Fatal("expected error for missing query")
+	}
+}
+
+// --- gitlab_search_code ---
+
+func TestToolSearchCode(t *testing.T) {
+	setupGitLabTest(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/search") && r.URL.Query().Get("scope") == "blobs" {
+			jsonResponse(w, `[{
+				"basename": "test",
+				"data": "def test_login():",
+				"path": "tests/test_auth.py",
+				"filename": "test_auth.py",
+				"ref": "main",
+				"startline": 42,
+				"project_id": 1
+			}]`)
+			return
+		}
+		http.NotFound(w, r)
+	})
+
+	result, err := toolSearchCode(mustJSON(t, map[string]any{
+		"project_id": "team/proj",
+		"query":      "test_login",
+	}), nil)
+	if err != nil {
+		t.Fatalf("toolSearchCode: %v", err)
+	}
+
+	m := result.(map[string]any)
+	if m["count"] != 1 {
+		t.Errorf("count = %v, want 1", m["count"])
+	}
+	items := m["items"].([]map[string]any)
+	if items[0]["filename"] != "test_auth.py" {
+		t.Errorf("filename = %v", items[0]["filename"])
+	}
+}
+
+func TestToolSearchCodeRequiresProjectAndQuery(t *testing.T) {
+	_, err := toolSearchCode(mustJSON(t, map[string]any{
+		"project_id": "p",
+	}), nil)
+	if err == nil {
+		t.Fatal("expected error for missing query")
+	}
+
+	_, err = toolSearchCode(mustJSON(t, map[string]any{
+		"query": "test",
+	}), nil)
+	if err == nil {
+		t.Fatal("expected error for missing project_id")
+	}
+}

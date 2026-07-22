@@ -306,6 +306,62 @@ tools:
         type: integer
         default: 20
 
+  - name: gitlab_get_file_contents
+    access: read
+    description: >
+      Get file contents from a repository. Returns decoded text for
+      files (capped at 50KB) or metadata only for large/binary files.
+    params:
+      instance:
+        type: string
+      project_id:
+        type: string
+        required: true
+        description: "Project ID or path (e.g. 'group/project')"
+      path:
+        type: string
+        required: true
+        description: "Path to file in the repository"
+      ref:
+        type: string
+        description: "Branch, tag, or commit SHA (default: main)"
+
+  - name: gitlab_search_projects
+    access: read
+    description: >
+      Search for projects by name or description. Returns project
+      metadata including path, default branch, and activity.
+    params:
+      instance:
+        type: string
+      query:
+        type: string
+        required: true
+        description: "Search query"
+      max_results:
+        type: integer
+        default: 30
+
+  - name: gitlab_search_code
+    access: read
+    description: >
+      Search for code within a project. Returns matching file paths,
+      line numbers, and code snippets.
+    params:
+      instance:
+        type: string
+      project_id:
+        type: string
+        required: true
+        description: "Project ID or path (e.g. 'group/project')"
+      query:
+        type: string
+        required: true
+        description: "Search query"
+      max_results:
+        type: integer
+        default: 30
+
   - name: gitlab_create_merge_request
     access: write
     description: >

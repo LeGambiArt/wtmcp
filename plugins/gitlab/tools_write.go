@@ -3,12 +3,50 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"regexp"
 	"strings"
 
 	gogitlab "gitlab.com/gitlab-org/api/client-go"
 )
 
 const maxBodyLen = 65000
+
+var validBranch = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9._/-]*[a-zA-Z0-9])?$`)
+
+func validateBranch(name string) error {
+	if strings.TrimSpace(name) == "" {
+		return fmt.Errorf("branch name is required")
+	}
+	if !validBranch.MatchString(name) {
+		return fmt.Errorf("invalid branch name: %q", name)
+	}
+	if strings.Contains(name, "..") || strings.Contains(name, "//") {
+		return fmt.Errorf("invalid branch name: %q (contains .. or //)", name)
+	}
+	if strings.HasSuffix(name, ".lock") {
+		return fmt.Errorf("invalid branch name: %q (ends with .lock)", name)
+	}
+	if strings.Contains(name, "/.") {
+		return fmt.Errorf("invalid branch name: %q (component starts with '.')", name)
+	}
+	return nil
+}
+
+func validatePath(path string) error {
+	if strings.TrimSpace(path) == "" {
+		return fmt.Errorf("path is required")
+	}
+	for _, seg := range strings.Split(path, "/") {
+		if seg == ".." {
+			return fmt.Errorf("path traversal in path: %q", path)
+		}
+	}
+	if strings.HasPrefix(path, "/") {
+		return fmt.Errorf("absolute path not allowed: %q", path)
+	}
+	return nil
+}
 
 func isDryRun(v *bool) bool {
 	return v == nil || *v
@@ -154,6 +192,11 @@ func toolAddMRNote(params, _ json.RawMessage) (any, error) {
 		return nil, fmt.Errorf("body exceeds %d character limit (%d chars)", maxBodyLen, len([]rune(p.Body)))
 	}
 
+	client, err := resolveInstance(p.Instance)
+	if err != nil {
+		return nil, err
+	}
+
 	if isDryRun(p.DryRun) {
 		runes := []rune(p.Body)
 		if len(runes) > 200 {
@@ -166,11 +209,6 @@ func toolAddMRNote(params, _ json.RawMessage) (any, error) {
 			"mr_iid":       p.MrIID,
 			"body_preview": string(runes),
 		}, nil
-	}
-
-	client, err := resolveInstance(p.Instance)
-	if err != nil {
-		return nil, err
 	}
 
 	note, _, err := client.Notes.CreateMergeRequestNote(
@@ -302,6 +340,170 @@ func toolCreateMergeRequest(params, _ json.RawMessage) (any, error) {
 		"source_branch": mr.SourceBranch,
 		"target_branch": mr.TargetBranch,
 		"created":       true,
+	}, nil
+}
+
+// --- gitlab_create_branch ---
+
+type createBranchParams struct {
+	instanceParam
+	ProjectID    string `json:"project_id"`
+	BranchName   string `json:"branch_name"`
+	SourceBranch string `json:"source_branch"`
+	DryRun       *bool  `json:"dry_run"`
+}
+
+func toolCreateBranch(params, _ json.RawMessage) (any, error) {
+	var p createBranchParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("parse params: %w", err)
+	}
+	if p.ProjectID == "" {
+		return nil, fmt.Errorf("project_id is required")
+	}
+	if err := validateBranch(p.BranchName); err != nil {
+		return nil, err
+	}
+	if p.SourceBranch == "" {
+		p.SourceBranch = "main"
+	}
+	if err := validateBranch(p.SourceBranch); err != nil {
+		return nil, fmt.Errorf("source_branch: %w", err)
+	}
+
+	client, err := resolveInstance(p.Instance)
+	if err != nil {
+		return nil, err
+	}
+
+	if isDryRun(p.DryRun) {
+		return map[string]any{
+			"dry_run":       true,
+			"action":        "gitlab_create_branch",
+			"project_id":    p.ProjectID,
+			"branch_name":   p.BranchName,
+			"source_branch": p.SourceBranch,
+		}, nil
+	}
+
+	branch, _, err := client.Branches.CreateBranch(p.ProjectID, &gogitlab.CreateBranchOptions{
+		Branch: &p.BranchName,
+		Ref:    &p.SourceBranch,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create branch: %w", err)
+	}
+
+	result := map[string]any{
+		"name":       branch.Name,
+		"web_url":    branch.WebURL,
+		"created":    true,
+		"project_id": p.ProjectID,
+	}
+	if branch.Commit != nil {
+		result["commit_id"] = branch.Commit.ShortID
+	}
+	return result, nil
+}
+
+// --- gitlab_create_or_update_file ---
+
+type createOrUpdateFileParams struct {
+	instanceParam
+	ProjectID     string `json:"project_id"`
+	Path          string `json:"path"`
+	Content       string `json:"content"`
+	CommitMessage string `json:"message"`
+	Branch        string `json:"branch"`
+	DryRun        *bool  `json:"dry_run"`
+}
+
+func toolCreateOrUpdateFile(params, _ json.RawMessage) (any, error) {
+	var p createOrUpdateFileParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("parse params: %w", err)
+	}
+	if p.ProjectID == "" {
+		return nil, fmt.Errorf("project_id is required")
+	}
+	if err := validatePath(p.Path); err != nil {
+		return nil, err
+	}
+	if p.Content == "" {
+		return nil, fmt.Errorf("content is required")
+	}
+	if len(p.Content) > 1_000_000 {
+		return nil, fmt.Errorf("content exceeds 1MB limit (%d bytes)", len(p.Content))
+	}
+	if strings.TrimSpace(p.CommitMessage) == "" {
+		return nil, fmt.Errorf("message is required")
+	}
+	client, err := resolveInstance(p.Instance)
+	if err != nil {
+		return nil, err
+	}
+
+	getOpts := &gogitlab.GetFileOptions{}
+	if p.Branch != "" {
+		getOpts.Ref = &p.Branch
+	}
+	_, getResp, getErr := client.RepositoryFiles.GetFile(p.ProjectID, p.Path, getOpts)
+	isUpdate := getErr == nil
+	if getErr != nil {
+		is404 := getResp != nil && getResp.StatusCode == http.StatusNotFound
+		if !is404 {
+			return nil, fmt.Errorf("check if file exists: %w", getErr)
+		}
+	}
+
+	if isDryRun(p.DryRun) {
+		m := map[string]any{
+			"dry_run":         true,
+			"action":          "gitlab_create_or_update_file",
+			"project_id":      p.ProjectID,
+			"path":            p.Path,
+			"branch":          p.Branch,
+			"is_update":       isUpdate,
+			"message_preview": p.CommitMessage,
+		}
+		if len(p.CommitMessage) > 200 {
+			m["message_preview"] = p.CommitMessage[:200]
+		}
+		return m, nil
+	}
+
+	updateOpts := &gogitlab.UpdateFileOptions{
+		Content:       &p.Content,
+		CommitMessage: &p.CommitMessage,
+	}
+	createOpts := &gogitlab.CreateFileOptions{
+		Content:       &p.Content,
+		CommitMessage: &p.CommitMessage,
+	}
+	if p.Branch != "" {
+		updateOpts.Branch = &p.Branch
+		createOpts.Branch = &p.Branch
+	}
+
+	if isUpdate {
+		_, _, err = client.RepositoryFiles.UpdateFile(p.ProjectID, p.Path, updateOpts)
+	} else {
+		_, _, err = client.RepositoryFiles.CreateFile(p.ProjectID, p.Path, createOpts)
+	}
+	if err != nil {
+		action := "create"
+		if isUpdate {
+			action = "update"
+		}
+		return nil, fmt.Errorf("%s file: %w", action, err)
+	}
+
+	return map[string]any{
+		"file_path":  p.Path,
+		"branch":     p.Branch,
+		"is_update":  isUpdate,
+		"project_id": p.ProjectID,
+		"created":    true,
 	}, nil
 }
 

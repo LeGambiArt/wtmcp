@@ -32,6 +32,9 @@ func main() {
 	p.Handle("gitlab_my_issues", toolMyIssues)
 	p.Handle("gitlab_get_todos", toolGetTodos)
 	p.Handle("gitlab_list_merge_requests", toolListMergeRequests)
+	p.Handle("gitlab_get_file_contents", toolGetFileContents)
+	p.Handle("gitlab_search_projects", toolSearchProjects)
+	p.Handle("gitlab_search_code", toolSearchCode)
 
 	// Write tools
 	p.Handle("gitlab_create_merge_request", toolCreateMergeRequest)

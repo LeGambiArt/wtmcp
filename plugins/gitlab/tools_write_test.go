@@ -775,3 +775,189 @@ func TestFetchDiffRefsEmptySHAs(t *testing.T) {
 		t.Errorf("error = %q, want to contain 'has no diff refs'", err.Error())
 	}
 }
+
+// --- gitlab_create_branch ---
+
+func TestCreateBranchDryRun(t *testing.T) {
+	setupGitLabTest(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Error("should not make any HTTP calls in dry run")
+		http.NotFound(w, r)
+	})
+
+	result, err := toolCreateBranch(mustJSON(t, map[string]any{
+		"project_id":    "team/proj",
+		"branch_name":   "feature-x",
+		"source_branch": "main",
+	}), nil)
+	if err != nil {
+		t.Fatalf("toolCreateBranch: %v", err)
+	}
+
+	m := result.(map[string]any)
+	if m["dry_run"] != true {
+		t.Errorf("dry_run = %v, want true", m["dry_run"])
+	}
+	if m["action"] != "gitlab_create_branch" {
+		t.Errorf("action = %v", m["action"])
+	}
+}
+
+func TestCreateBranchExecute(t *testing.T) {
+	setupGitLabTest(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/repository/branches") {
+			jsonResponse(w, `{
+				"name": "feature-x",
+				"web_url": "https://gitlab.example.com/team/proj/-/tree/feature-x",
+				"commit": {"short_id": "abc123"}
+			}`)
+			return
+		}
+		http.NotFound(w, r)
+	})
+
+	dryRun := false
+	result, err := toolCreateBranch(mustJSON(t, map[string]any{
+		"project_id":  "team/proj",
+		"branch_name": "feature-x",
+		"dry_run":     dryRun,
+	}), nil)
+	if err != nil {
+		t.Fatalf("toolCreateBranch: %v", err)
+	}
+
+	m := result.(map[string]any)
+	if m["created"] != true {
+		t.Errorf("created = %v, want true", m["created"])
+	}
+	if m["name"] != "feature-x" {
+		t.Errorf("name = %v", m["name"])
+	}
+}
+
+func TestCreateBranchValidation(t *testing.T) {
+	tests := []struct {
+		name   string
+		params map[string]any
+		errMsg string
+	}{
+		{"missing project_id", map[string]any{"branch_name": "x"}, "project_id is required"},
+		{"missing branch_name", map[string]any{"project_id": "p"}, "branch name is required"},
+		{"double dot", map[string]any{"project_id": "p", "branch_name": "a..b"}, "contains .. or //"},
+		{"dot lock", map[string]any{"project_id": "p", "branch_name": "test.lock"}, "ends with .lock"},
+		{"dot component", map[string]any{"project_id": "p", "branch_name": "feat/.hidden"}, "component starts with"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := toolCreateBranch(mustJSON(t, tc.params), nil)
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !strings.Contains(err.Error(), tc.errMsg) {
+				t.Errorf("error = %q, want to contain %q", err.Error(), tc.errMsg)
+			}
+		})
+	}
+}
+
+func TestCreateBranchSingleChar(t *testing.T) {
+	setupGitLabTest(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Error("should not make HTTP calls in dry run")
+		http.NotFound(w, r)
+	})
+
+	result, err := toolCreateBranch(mustJSON(t, map[string]any{
+		"project_id":  "team/proj",
+		"branch_name": "v",
+	}), nil)
+	if err != nil {
+		t.Fatalf("single-char branch should be valid: %v", err)
+	}
+	m := result.(map[string]any)
+	if m["dry_run"] != true {
+		t.Errorf("dry_run = %v", m["dry_run"])
+	}
+}
+
+// --- gitlab_create_or_update_file ---
+
+func TestCreateOrUpdateFileDryRunNew(t *testing.T) {
+	setupGitLabTest(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/repository/files/") {
+			w.WriteHeader(404)
+			jsonResponse(w, `{"message": "404 File Not Found"}`)
+			return
+		}
+		t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+	})
+
+	result, err := toolCreateOrUpdateFile(mustJSON(t, map[string]any{
+		"project_id": "team/proj",
+		"path":       "tests/new.py",
+		"content":    "print(1)",
+		"message":    "add test",
+	}), nil)
+	if err != nil {
+		t.Fatalf("toolCreateOrUpdateFile: %v", err)
+	}
+
+	m := result.(map[string]any)
+	if m["dry_run"] != true {
+		t.Errorf("dry_run = %v, want true", m["dry_run"])
+	}
+	if m["is_update"] != false {
+		t.Errorf("is_update = %v, want false (new file)", m["is_update"])
+	}
+}
+
+func TestCreateOrUpdateFileDryRunUpdate(t *testing.T) {
+	setupGitLabTest(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/repository/files/") {
+			jsonResponse(w, `{"file_name": "existing.py", "content": "old", "encoding": "base64"}`)
+			return
+		}
+		t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+	})
+
+	result, err := toolCreateOrUpdateFile(mustJSON(t, map[string]any{
+		"project_id": "team/proj",
+		"path":       "existing.py",
+		"content":    "updated",
+		"message":    "update",
+	}), nil)
+	if err != nil {
+		t.Fatalf("toolCreateOrUpdateFile: %v", err)
+	}
+
+	m := result.(map[string]any)
+	if m["is_update"] != true {
+		t.Errorf("is_update = %v, want true", m["is_update"])
+	}
+}
+
+func TestCreateOrUpdateFileValidation(t *testing.T) {
+	tests := []struct {
+		name   string
+		params map[string]any
+		errMsg string
+	}{
+		{"missing project_id", map[string]any{"path": "f", "content": "x", "message": "m"}, "project_id is required"},
+		{"missing path", map[string]any{"project_id": "p", "content": "x", "message": "m"}, "path is required"},
+		{"path traversal", map[string]any{"project_id": "p", "path": "../../etc/passwd", "content": "x", "message": "m"}, "path traversal"},
+		{"absolute path", map[string]any{"project_id": "p", "path": "/etc/passwd", "content": "x", "message": "m"}, "absolute path"},
+		{"missing content", map[string]any{"project_id": "p", "path": "f", "message": "m"}, "content is required"},
+		{"missing message", map[string]any{"project_id": "p", "path": "f", "content": "x"}, "message is required"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := toolCreateOrUpdateFile(mustJSON(t, tc.params), nil)
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !strings.Contains(err.Error(), tc.errMsg) {
+				t.Errorf("error = %q, want to contain %q", err.Error(), tc.errMsg)
+			}
+		})
+	}
+}

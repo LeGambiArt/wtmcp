@@ -1,9 +1,11 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	gogitlab "gitlab.com/gitlab-org/api/client-go"
@@ -930,4 +932,207 @@ func timeStr(t *time.Time) string {
 		return ""
 	}
 	return t.Format(time.RFC3339)
+}
+
+// --- gitlab_get_file_contents ---
+
+const maxFileContentBytes = 50000
+
+type getFileContentsParams struct {
+	instanceParam
+	ProjectID string `json:"project_id"`
+	Path      string `json:"path"`
+	Ref       string `json:"ref"`
+}
+
+func toolGetFileContents(params, _ json.RawMessage) (any, error) {
+	var p getFileContentsParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("parse params: %w", err)
+	}
+	if p.ProjectID == "" {
+		return nil, fmt.Errorf("project_id is required")
+	}
+	if err := validatePath(p.Path); err != nil {
+		return nil, err
+	}
+
+	client, err := resolveInstance(p.Instance)
+	if err != nil {
+		return nil, err
+	}
+
+	opts := &gogitlab.GetFileOptions{}
+	if p.Ref != "" {
+		opts.Ref = &p.Ref
+	}
+
+	file, _, err := client.RepositoryFiles.GetFile(p.ProjectID, p.Path, opts)
+	if err != nil {
+		return nil, fmt.Errorf("get file: %w", err)
+	}
+
+	result := map[string]any{
+		"file_name":      file.FileName,
+		"file_path":      file.FilePath,
+		"size":           file.Size,
+		"encoding":       file.Encoding,
+		"ref":            file.Ref,
+		"blob_id":        file.BlobID,
+		"last_commit_id": file.LastCommitID,
+	}
+
+	if file.Size > maxFileContentBytes {
+		result["content_available"] = false
+		return result, nil
+	}
+
+	if file.Encoding == "base64" && file.Content != "" {
+		decoded, decodeErr := io.ReadAll(io.LimitReader(
+			base64.NewDecoder(base64.StdEncoding, strings.NewReader(file.Content)),
+			maxFileContentBytes+1,
+		))
+		if decodeErr != nil {
+			result["content_available"] = false
+			return result, nil //nolint:nilerr // graceful degradation for undecodable content
+		}
+		for _, b := range decoded[:min(len(decoded), 1024)] {
+			if b == 0 {
+				result["content_available"] = false
+				result["binary"] = true
+				return result, nil
+			}
+		}
+		text := string(decoded)
+		if len(decoded) > maxFileContentBytes {
+			text = strings.ToValidUTF8(text[:maxFileContentBytes], "") + fmt.Sprintf("\n[TRUNCATED at %dKB]", maxFileContentBytes/1000)
+		}
+		result["content"] = text
+	} else {
+		result["content"] = file.Content
+	}
+
+	return result, nil
+}
+
+// --- gitlab_search_projects ---
+
+type searchProjectsParams struct {
+	instanceParam
+	Query      string `json:"query"`
+	MaxResults int    `json:"max_results"`
+}
+
+func toolSearchProjects(params, _ json.RawMessage) (any, error) {
+	var p searchProjectsParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("parse params: %w", err)
+	}
+	if p.Query == "" {
+		return nil, fmt.Errorf("query is required")
+	}
+	if p.MaxResults == 0 {
+		p.MaxResults = 30
+	}
+
+	client, err := resolveInstance(p.Instance)
+	if err != nil {
+		return nil, err
+	}
+
+	perPage := int64(p.MaxResults)
+	if perPage > 100 {
+		perPage = 100
+	}
+
+	projects, _, err := client.Projects.ListProjects(&gogitlab.ListProjectsOptions{
+		Search:      &p.Query,
+		ListOptions: gogitlab.ListOptions{PerPage: perPage},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("search projects: %w", err)
+	}
+
+	var items []map[string]any
+	for _, proj := range projects {
+		m := map[string]any{
+			"id":                  proj.ID,
+			"path_with_namespace": proj.PathWithNamespace,
+			"description":         proj.Description,
+			"web_url":             proj.WebURL,
+			"default_branch":      proj.DefaultBranch,
+			"archived":            proj.Archived,
+			"star_count":          proj.StarCount,
+			"forks_count":         proj.ForksCount,
+		}
+		if proj.LastActivityAt != nil {
+			m["last_activity_at"] = proj.LastActivityAt.Format(time.RFC3339)
+		}
+		items = append(items, m)
+	}
+
+	return map[string]any{
+		"count": len(items),
+		"items": items,
+	}, nil
+}
+
+// --- gitlab_search_code ---
+
+type searchCodeParams struct {
+	instanceParam
+	ProjectID  string `json:"project_id"`
+	Query      string `json:"query"`
+	MaxResults int    `json:"max_results"`
+}
+
+func toolSearchCode(params, _ json.RawMessage) (any, error) {
+	var p searchCodeParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("parse params: %w", err)
+	}
+	if p.ProjectID == "" {
+		return nil, fmt.Errorf("project_id is required")
+	}
+	if p.Query == "" {
+		return nil, fmt.Errorf("query is required")
+	}
+	if p.MaxResults == 0 {
+		p.MaxResults = 30
+	}
+
+	client, err := resolveInstance(p.Instance)
+	if err != nil {
+		return nil, err
+	}
+
+	perPage := int64(p.MaxResults)
+	if perPage > 100 {
+		perPage = 100
+	}
+
+	blobs, _, err := client.Search.BlobsByProject(p.ProjectID, p.Query, &gogitlab.SearchOptions{
+		ListOptions: gogitlab.ListOptions{PerPage: perPage},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("search code: %w", err)
+	}
+
+	var items []map[string]any
+	for _, blob := range blobs {
+		items = append(items, map[string]any{
+			"basename":   blob.Basename,
+			"data":       blob.Data,
+			"path":       blob.Path,
+			"filename":   blob.Filename,
+			"ref":        blob.Ref,
+			"startline":  blob.Startline,
+			"project_id": blob.ProjectID,
+		})
+	}
+
+	return map[string]any{
+		"count": len(items),
+		"items": items,
+	}, nil
 }
