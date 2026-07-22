@@ -16,6 +16,7 @@ import os
 import re
 import stat
 import sys
+import time
 import xml.etree.ElementTree as ET
 
 _next_id = 0
@@ -28,6 +29,15 @@ API_VERSION = "v0.1"
 
 TERMINAL_STATES = {"complete", "error", "canceled"}
 NON_TERMINAL_STATES = {"new", "queued", "running", "cancel-requested"}
+
+
+class ApiError(Exception):
+    """HTTP error from the Testing Farm API with a structured status code."""
+
+    def __init__(self, status, body):
+        self.status = status
+        super().__init__(f"API error (HTTP {status}): {body}")
+
 
 _UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
@@ -203,7 +213,7 @@ def _fetch_request(request_id):
 
     status, body, _ = http("GET", f"/{API_VERSION}/requests/{request_id}")
     if status != 200:
-        raise Exception(f"API error (HTTP {status}): {body}")
+        raise ApiError(status, body)
 
     state = body.get("state", "")
     if state in TERMINAL_STATES:
@@ -352,6 +362,98 @@ def testing_farm_get_request(params):
         out["summary"] = summary
 
     return out
+
+
+_CALL_BUDGET = 45
+_POLL_INTERVAL = 30
+_MAX_CONSECUTIVE_ERRORS = 5
+_TRANSIENT_STATUSES = {0, 429, 500, 502, 503, 504}
+
+
+def testing_farm_wait_for_result(params):
+    """Block until a request reaches a terminal state, polling periodically.
+
+    Returns the same format as testing_farm_get_request with additional
+    fields: waited, completed, poll_count. Respects the core's tool-call
+    timeout by returning before the 45-second call budget expires.
+    """
+    request_id = params["request_id"]
+    _validate_request_id(request_id)
+    timeout_minutes = max(1, min(int(params.get("timeout_minutes", 60)), 120))
+
+    start = time.monotonic()
+    deadline = start + timeout_minutes * 60
+    call_deadline = start + _CALL_BUDGET
+    poll_count = 0
+    consecutive_errors = 0
+    last_state = ""
+
+    while True:
+        now = time.monotonic()
+        if now >= deadline:
+            try:
+                result = testing_farm_get_request({"request_id": request_id})
+            except Exception:
+                result = {"id": request_id, "state": last_state or "unknown"}
+            result["waited"] = True
+            result["completed"] = False
+            result["timeout"] = True
+            result["poll_count"] = poll_count
+            result["message"] = (
+                f"Timed out after {timeout_minutes} minutes. "
+                f"Current state: {result.get('state', 'unknown')}. "
+                "The test may still complete -- use testing_farm_get_request to check."
+            )
+            return result
+
+        if now >= call_deadline:
+            try:
+                result = testing_farm_get_request({"request_id": request_id})
+            except Exception:
+                result = {"id": request_id, "state": last_state or "unknown"}
+            result["waited"] = True
+            result["completed"] = False
+            result["poll_count"] = poll_count
+            elapsed = (time.monotonic() - start) / 60
+            result["elapsed_minutes"] = round(elapsed, 1)
+            result["message"] = "Re-invoke to continue waiting."
+            return result
+
+        try:
+            body = _fetch_request(request_id)
+            consecutive_errors = 0
+            poll_count += 1
+            last_state = body.get("state", "")
+        except ApiError as e:
+            if e.status not in _TRANSIENT_STATUSES:
+                raise
+            consecutive_errors += 1
+            log(f"wait: transient error polling {request_id} ({consecutive_errors}/{_MAX_CONSECUTIVE_ERRORS}): {e}")
+            if consecutive_errors >= _MAX_CONSECUTIVE_ERRORS:
+                raise Exception(
+                    f"Aborting after {consecutive_errors} consecutive poll failures "
+                    f"(waited {round((time.monotonic() - start) / 60, 1)} min). Last error: {e}"
+                ) from e
+            for _ in range(_POLL_INTERVAL):
+                if time.monotonic() >= call_deadline or time.monotonic() >= deadline:
+                    break
+                time.sleep(1)
+            continue
+
+        if last_state in TERMINAL_STATES:
+            try:
+                result = testing_farm_get_request({"request_id": request_id})
+            except Exception:
+                result = {"id": request_id, "state": last_state or "unknown"}
+            result["waited"] = True
+            result["completed"] = True
+            result["poll_count"] = poll_count
+            return result
+
+        for _ in range(_POLL_INTERVAL):
+            if time.monotonic() >= call_deadline or time.monotonic() >= deadline:
+                break
+            time.sleep(1)
 
 
 def testing_farm_list_composes(_params):
@@ -896,6 +998,7 @@ TOOLS = {
     "testing_farm_whoami": testing_farm_whoami,
     "testing_farm_list_requests": testing_farm_list_requests,
     "testing_farm_get_request": testing_farm_get_request,
+    "testing_farm_wait_for_result": testing_farm_wait_for_result,
     "testing_farm_list_composes": testing_farm_list_composes,
     "testing_farm_list_reservations": testing_farm_list_reservations,
     "testing_farm_get_ssh": testing_farm_get_ssh,

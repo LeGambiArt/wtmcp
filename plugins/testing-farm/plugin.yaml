@@ -83,6 +83,27 @@ tools:
         required: true
         description: "Request ID (UUID)"
 
+  - name: testing_farm_wait_for_result
+    access: read
+    visibility: primary
+    description: >
+      Block until a test request reaches a terminal state (complete,
+      error, canceled), polling every 30 seconds. Returns the same
+      format as testing_farm_get_request plus waited/completed fields.
+      Each invocation blocks for up to 45 seconds (within the core's
+      tool-call timeout); re-invoke to continue waiting if the request
+      has not completed. Use this instead of manually polling
+      testing_farm_get_request in a loop.
+    params:
+      request_id:
+        type: string
+        required: true
+        description: "Request ID (UUID)"
+      timeout_minutes:
+        type: integer
+        default: 60
+        description: "Maximum time to wait in minutes (1-120, default 60)"
+
   - name: testing_farm_list_composes
     access: read
     description: >

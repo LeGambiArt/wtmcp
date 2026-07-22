@@ -835,3 +835,152 @@ class TestGetSsh:
                 assert False, "Should have raised"
             except Exception as e:
                 assert "artifacts" in str(e).lower()
+
+
+# --- testing_farm_wait_for_result ---
+
+RUNNING_REQUEST = {
+    **SAMPLE_REQUEST,
+    "state": "running",
+    "result": {"overall": "unknown"},
+}
+
+
+class TestWaitForResult:
+    def test_already_complete(self):
+        """Request in terminal state on first check returns immediately."""
+        with _mock_cache_get(None), _mock_http(200, SAMPLE_REQUEST), _mock_cache_set():
+            result = handler.testing_farm_wait_for_result({"request_id": REQ_ID})
+        assert result["waited"] is True
+        assert result["completed"] is True
+        assert result["poll_count"] == 1
+        assert result["state"] == "complete"
+
+    def test_polls_until_complete(self):
+        """Non-terminal then terminal: polls until complete."""
+        responses = [
+            (200, RUNNING_REQUEST, {}),
+            (200, SAMPLE_REQUEST, {}),
+            (200, SAMPLE_REQUEST, {}),
+        ]
+        with (
+            _mock_cache_get(None),
+            patch.object(handler, "http", side_effect=responses),
+            _mock_cache_set(),
+            patch("time.monotonic", return_value=0.0),
+            patch("time.sleep"),
+        ):
+            result = handler.testing_farm_wait_for_result({"request_id": REQ_ID})
+        assert result["completed"] is True
+        assert result["poll_count"] >= 2
+
+    def test_call_budget_exceeded(self):
+        """Returns completed=False when call budget runs out."""
+        call_count = 0
+
+        def fake_monotonic():
+            nonlocal call_count
+            call_count += 1
+            if call_count <= 2:
+                return 0.0
+            return 50.0
+
+        with (
+            _mock_cache_get(None),
+            _mock_http(200, RUNNING_REQUEST),
+            _mock_cache_set(),
+            patch("time.monotonic", side_effect=fake_monotonic),
+            patch("time.sleep"),
+        ):
+            result = handler.testing_farm_wait_for_result({"request_id": REQ_ID})
+        assert result["waited"] is True
+        assert result["completed"] is False
+        assert "Re-invoke" in result.get("message", "")
+
+    def test_timeout(self):
+        """Returns timeout=True when deadline expires before call budget."""
+        call_count = 0
+
+        def fake_monotonic():
+            nonlocal call_count
+            call_count += 1
+            if call_count <= 3:
+                return 0.0
+            return 70.0
+
+        responses = [
+            (200, RUNNING_REQUEST, {}),
+            (200, RUNNING_REQUEST, {}),
+            (200, RUNNING_REQUEST, {}),
+        ]
+        with (
+            _mock_cache_get(None),
+            patch.object(handler, "http", side_effect=responses),
+            _mock_cache_set(),
+            patch("time.monotonic", side_effect=fake_monotonic),
+            patch("time.sleep"),
+        ):
+            result = handler.testing_farm_wait_for_result({"request_id": REQ_ID, "timeout_minutes": 1})
+        assert result["waited"] is True
+        assert result["completed"] is False
+        assert result.get("timeout") is True
+
+    def test_transient_error_retry(self):
+        """Transient HTTP error is retried, next poll succeeds."""
+        responses = [
+            (502, {"error": "Bad Gateway"}, {}),
+            (502, {"error": "Bad Gateway"}, {}),
+            (200, SAMPLE_REQUEST, {}),
+            (200, SAMPLE_REQUEST, {}),
+        ]
+        with (
+            _mock_cache_get(None),
+            patch.object(handler, "http", side_effect=responses),
+            _mock_cache_set(),
+            patch("time.monotonic", return_value=0.0),
+            patch("time.sleep"),
+        ):
+            result = handler.testing_farm_wait_for_result({"request_id": REQ_ID})
+        assert result["completed"] is True
+
+    def test_consecutive_errors_abort(self):
+        """5 consecutive transient errors abort the wait."""
+        with (
+            _mock_cache_get(None),
+            _mock_http(502, {"error": "Bad Gateway"}),
+            _mock_cache_set(),
+            patch("time.monotonic", return_value=0.0),
+            patch("time.sleep"),
+        ):
+            try:
+                handler.testing_farm_wait_for_result({"request_id": REQ_ID})
+                assert False, "Should have raised"
+            except Exception as e:
+                assert "consecutive poll failures" in str(e)
+
+    def test_non_transient_error_propagates_immediately(self):
+        """HTTP 404 is NOT retried -- propagates immediately."""
+        with _mock_cache_get(None), _mock_http(404, {"error": "Not found"}):
+            try:
+                handler.testing_farm_wait_for_result({"request_id": REQ_ID})
+                assert False, "Should have raised"
+            except handler.ApiError as e:
+                assert e.status == 404
+                assert "consecutive" not in str(e)
+
+    def test_invalid_request_id(self):
+        """Invalid UUID raises immediately."""
+        try:
+            handler.testing_farm_wait_for_result({"request_id": "not-a-uuid"})
+            assert False, "Should have raised"
+        except Exception:
+            pass
+
+    def test_delegates_formatting(self):
+        """Terminal state result has same fields as get_request."""
+        with _mock_cache_get(None), _mock_http(200, SAMPLE_REQUEST), _mock_cache_set():
+            wait_result = handler.testing_farm_wait_for_result({"request_id": REQ_ID})
+        with _mock_cache_get(None), _mock_http(200, SAMPLE_REQUEST), _mock_cache_set():
+            get_result = handler.testing_farm_get_request({"request_id": REQ_ID})
+        for key in get_result:
+            assert key in wait_result, f"Missing key {key} in wait_for_result output"
