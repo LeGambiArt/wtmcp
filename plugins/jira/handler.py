@@ -196,8 +196,8 @@ def invalidate_cache(*_issue_keys):
     """
     try:
         cache_flush()
-    except Exception:
-        pass  # best-effort — don't mask a successful write
+    except Exception as e:
+        log(f"cache invalidation failed (best-effort): {e}")
 
 
 def file_write(path, content, encoding="text", permissions="0600", mkdir=True):

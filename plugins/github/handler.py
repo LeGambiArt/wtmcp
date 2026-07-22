@@ -105,8 +105,8 @@ def invalidate_cache():
     """Flush plugin cache after a write operation (best-effort)."""
     try:
         cache_flush()
-    except Exception:
-        pass
+    except Exception as e:
+        log(f"cache invalidation failed (best-effort): {e}")
 
 
 def _discover_username():
