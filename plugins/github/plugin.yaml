@@ -382,6 +382,44 @@ tools:
         default: true
         description: "Preview without posting (default: true)"
 
+  - name: github_create_pull_request
+    access: write
+    description: >
+      Create a new pull request. Defaults to dry_run=true which returns a
+      preview without creating. Set dry_run=false to create.
+    params:
+      repo:
+        type: string
+        required: true
+        description: "Repository as owner/repo"
+      title:
+        type: string
+        required: true
+        description: "PR title"
+      head:
+        type: string
+        required: true
+        description: "Source branch (e.g. 'mybranch' or 'owner:mybranch' for forks)"
+      base:
+        type: string
+        required: true
+        description: "Target branch to merge into"
+      body:
+        type: string
+        description: "PR description body (markdown)"
+      draft:
+        type: boolean
+        default: false
+        description: "Create as draft PR"
+      maintainer_can_modify:
+        type: boolean
+        default: true
+        description: "Allow maintainers to push to the head branch"
+      dry_run:
+        type: boolean
+        default: true
+        description: "Preview without creating (default: true)"
+
 setup:
   credentials:
     GITHUB_TOKEN:

@@ -29,6 +29,272 @@ func TestIsDryRunFalse(t *testing.T) {
 	}
 }
 
+// --- gitlab_create_merge_request ---
+
+func TestCreateMergeRequestDryRun(t *testing.T) {
+	setupGitLabTest(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Error("should not make any HTTP calls in dry run")
+		http.NotFound(w, r)
+	})
+
+	result, err := toolCreateMergeRequest(mustJSON(t, map[string]any{
+		"project_id":    "team/proj",
+		"source_branch": "feature-x",
+		"target_branch": "main",
+		"title":         "Add feature X",
+	}), nil)
+	if err != nil {
+		t.Fatalf("toolCreateMergeRequest: %v", err)
+	}
+
+	m := result.(map[string]any)
+	if m["dry_run"] != true {
+		t.Errorf("dry_run = %v, want true", m["dry_run"])
+	}
+	if m["action"] != "gitlab_create_merge_request" {
+		t.Errorf("action = %v", m["action"])
+	}
+	if m["title"] != "Add feature X" {
+		t.Errorf("title = %v", m["title"])
+	}
+}
+
+func TestCreateMergeRequestDraftTitle(t *testing.T) {
+	setupGitLabTest(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Error("should not make any HTTP calls in dry run")
+		http.NotFound(w, r)
+	})
+
+	result, err := toolCreateMergeRequest(mustJSON(t, map[string]any{
+		"project_id":    "team/proj",
+		"source_branch": "wip",
+		"target_branch": "main",
+		"title":         "Work in progress",
+		"draft":         true,
+	}), nil)
+	if err != nil {
+		t.Fatalf("toolCreateMergeRequest: %v", err)
+	}
+
+	m := result.(map[string]any)
+	if m["title"] != "Draft: Work in progress" {
+		t.Errorf("title = %q, want 'Draft: Work in progress'", m["title"])
+	}
+}
+
+func TestCreateMergeRequestDraftTitleAlreadyPrefixed(t *testing.T) {
+	setupGitLabTest(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Error("should not make any HTTP calls in dry run")
+		http.NotFound(w, r)
+	})
+
+	result, err := toolCreateMergeRequest(mustJSON(t, map[string]any{
+		"project_id":    "team/proj",
+		"source_branch": "wip",
+		"target_branch": "main",
+		"title":         "Draft: Already prefixed",
+		"draft":         true,
+	}), nil)
+	if err != nil {
+		t.Fatalf("toolCreateMergeRequest: %v", err)
+	}
+
+	m := result.(map[string]any)
+	if m["title"] != "Draft: Already prefixed" {
+		t.Errorf("title = %q, want no double prefix", m["title"])
+	}
+}
+
+
+func TestCreateMergeRequestDryRunPreview(t *testing.T) {
+	setupGitLabTest(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Error("should not make any HTTP calls in dry run")
+		http.NotFound(w, r)
+	})
+
+	result, err := toolCreateMergeRequest(mustJSON(t, map[string]any{
+		"project_id":    "team/proj",
+		"source_branch": "feat",
+		"target_branch": "main",
+		"title":         "My MR",
+		"description":   "A detailed description",
+		"labels":        []string{"bug", "help wanted"},
+	}), nil)
+	if err != nil {
+		t.Fatalf("toolCreateMergeRequest: %v", err)
+	}
+
+	m := result.(map[string]any)
+	if m["description_preview"] != "A detailed description" {
+		t.Errorf("description_preview = %v", m["description_preview"])
+	}
+	labels, ok := m["labels"].([]string)
+	if !ok || len(labels) != 2 {
+		t.Errorf("labels = %v", m["labels"])
+	}
+}
+
+func TestCreateMergeRequestExecute(t *testing.T) {
+	var gotBody map[string]any
+	setupGitLabTest(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/merge_requests") {
+			if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+				t.Errorf("decode request body: %v", err)
+			}
+			jsonResponse(w, `{
+				"iid": 42,
+				"title": "Add feature X",
+				"web_url": "https://gitlab.com/team/proj/-/merge_requests/42",
+				"state": "opened",
+				"source_branch": "feature-x",
+				"target_branch": "main"
+			}`)
+			return
+		}
+		http.NotFound(w, r)
+	})
+
+	dryRun := false
+	result, err := toolCreateMergeRequest(mustJSON(t, map[string]any{
+		"project_id":    "team/proj",
+		"source_branch": "feature-x",
+		"target_branch": "main",
+		"title":         "Add feature X",
+		"description":   "Implements the X feature",
+		"dry_run":       dryRun,
+	}), nil)
+	if err != nil {
+		t.Fatalf("toolCreateMergeRequest: %v", err)
+	}
+
+	m := result.(map[string]any)
+	if m["iid"] != int64(42) {
+		t.Errorf("iid = %v (%T), want 42", m["iid"], m["iid"])
+	}
+	if m["state"] != "opened" {
+		t.Errorf("state = %v, want opened", m["state"])
+	}
+	if m["web_url"] == "" {
+		t.Error("web_url should not be empty")
+	}
+
+	if gotBody == nil {
+		t.Fatal("expected POST body to be captured")
+	}
+	if m["created"] != true {
+		t.Errorf("created = %v, want true", m["created"])
+	}
+	if m["project_id"] != "team/proj" {
+		t.Errorf("project_id = %v, want team/proj", m["project_id"])
+	}
+	if gotBody["description"] != "Implements the X feature" {
+		t.Errorf("posted description = %v", gotBody["description"])
+	}
+	if gotBody["title"] != "Add feature X" {
+		t.Errorf("posted title = %v", gotBody["title"])
+	}
+}
+
+func TestCreateMergeRequestExecuteDraft(t *testing.T) {
+	var gotTitle string
+	setupGitLabTest(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/merge_requests") {
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode request body: %v", err)
+			}
+			gotTitle, _ = body["title"].(string)
+			jsonResponse(w, `{
+				"iid": 7,
+				"title": "Draft: My feature",
+				"web_url": "https://gitlab.com/team/proj/-/merge_requests/7",
+				"state": "opened",
+				"source_branch": "feat",
+				"target_branch": "main"
+			}`)
+			return
+		}
+		http.NotFound(w, r)
+	})
+
+	dryRun := false
+	_, err := toolCreateMergeRequest(mustJSON(t, map[string]any{
+		"project_id":    "team/proj",
+		"source_branch": "feat",
+		"target_branch": "main",
+		"title":         "My feature",
+		"draft":         true,
+		"dry_run":       dryRun,
+	}), nil)
+	if err != nil {
+		t.Fatalf("toolCreateMergeRequest: %v", err)
+	}
+	if gotTitle != "Draft: My feature" {
+		t.Errorf("sent title = %q, want 'Draft: My feature'", gotTitle)
+	}
+}
+
+func TestCreateMergeRequestValidation(t *testing.T) {
+	tests := []struct {
+		name   string
+		params map[string]any
+		errMsg string
+	}{
+		{
+			name:   "missing project_id",
+			params: map[string]any{"source_branch": "feat", "target_branch": "main", "title": "t"},
+			errMsg: "project_id is required",
+		},
+		{
+			name:   "missing source_branch",
+			params: map[string]any{"project_id": "p", "target_branch": "main", "title": "t"},
+			errMsg: "source_branch is required",
+		},
+		{
+			name:   "missing target_branch",
+			params: map[string]any{"project_id": "p", "source_branch": "feat", "title": "t"},
+			errMsg: "target_branch is required",
+		},
+		{
+			name:   "missing title",
+			params: map[string]any{"project_id": "p", "source_branch": "feat", "target_branch": "main"},
+			errMsg: "title is required",
+		},
+		{
+			name:   "whitespace title",
+			params: map[string]any{"project_id": "p", "source_branch": "feat", "target_branch": "main", "title": "   "},
+			errMsg: "title is required",
+		},
+		{
+			name:   "whitespace source_branch",
+			params: map[string]any{"project_id": "p", "source_branch": "   ", "target_branch": "main", "title": "t"},
+			errMsg: "source_branch is required",
+		},
+		{
+			name:   "whitespace target_branch",
+			params: map[string]any{"project_id": "p", "source_branch": "feat", "target_branch": "   ", "title": "t"},
+			errMsg: "target_branch is required",
+		},
+		{
+			name:   "description too long",
+			params: map[string]any{"project_id": "p", "source_branch": "feat", "target_branch": "main", "title": "t", "description": strings.Repeat("x", maxBodyLen+1)},
+			errMsg: "description exceeds",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := toolCreateMergeRequest(mustJSON(t, tc.params), nil)
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !strings.Contains(err.Error(), tc.errMsg) {
+				t.Errorf("error = %q, want to contain %q", err.Error(), tc.errMsg)
+			}
+		})
+	}
+}
+
 // --- gitlab_create_mr_discussion ---
 
 func TestCreateMRDiscussionDryRun(t *testing.T) {

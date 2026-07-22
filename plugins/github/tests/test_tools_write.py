@@ -535,6 +535,211 @@ class TestAddComment:
             )
 
 
+# --- github_create_pull_request ---
+
+
+class TestCreatePullRequest:
+    def test_dry_run_default(self):
+        result = tools_write.create_pull_request(
+            {
+                "repo": "org/repo",
+                "title": "Add new feature",
+                "head": "feature-branch",
+                "base": "main",
+                "body": "This PR adds a new feature.",
+            }
+        )
+        assert result["dry_run"] is True
+        assert result["action"] == "github_create_pull_request"
+        assert result["head"] == "feature-branch"
+        assert result["base"] == "main"
+        assert result["title"] == "Add new feature"
+        assert result["body_preview"] == "This PR adds a new feature."
+        assert result["draft"] is False
+        assert result["maintainer_can_modify"] is True
+
+    def test_dry_run_no_body(self):
+        result = tools_write.create_pull_request(
+            {
+                "repo": "org/repo",
+                "title": "Fix bug",
+                "head": "fix-branch",
+                "base": "main",
+            }
+        )
+        assert result["dry_run"] is True
+        assert "body_preview" not in result
+
+    def test_dry_run_draft(self):
+        result = tools_write.create_pull_request(
+            {
+                "repo": "org/repo",
+                "title": "WIP: new feature",
+                "head": "wip-branch",
+                "base": "main",
+                "draft": True,
+            }
+        )
+        assert result["dry_run"] is True
+        assert result["draft"] is True
+
+    def test_dry_run_body_truncated(self):
+        result = tools_write.create_pull_request(
+            {
+                "repo": "org/repo",
+                "title": "t",
+                "head": "h",
+                "base": "b",
+                "body": "x" * 300,
+            }
+        )
+        assert len(result["body_preview"]) == 200
+
+    def test_success(self):
+        pr_response = {
+            "id": 1234567,
+            "number": 42,
+            "html_url": "https://github.com/org/repo/pull/42",
+            "state": "open",
+            "draft": False,
+        }
+        with _mock_http(201, pr_response) as mock_http, _mock_invalidate() as inv:
+            result = tools_write.create_pull_request(
+                {
+                    "repo": "org/repo",
+                    "title": "Add feature",
+                    "head": "feature-branch",
+                    "base": "main",
+                    "body": "Description here",
+                    "dry_run": False,
+                }
+            )
+        assert result["id"] is not None
+        assert result["number"] == 42
+        assert result["html_url"] == "https://github.com/org/repo/pull/42"
+        assert result["state"] == "open"
+        inv.assert_called_once()
+        _, kwargs = mock_http.call_args
+        assert kwargs["body"]["title"] == "Add feature"
+        assert kwargs["body"]["head"] == "feature-branch"
+        assert kwargs["body"]["base"] == "main"
+        assert kwargs["body"]["body"] == "Description here"
+
+    def test_success_no_body(self):
+        pr_response = {"number": 7, "html_url": "url", "state": "open", "draft": False}
+        with _mock_http(201, pr_response), _mock_invalidate():
+            result = tools_write.create_pull_request(
+                {
+                    "repo": "org/repo",
+                    "title": "Fix bug",
+                    "head": "fix-branch",
+                    "base": "main",
+                    "dry_run": False,
+                }
+            )
+        assert result["number"] == 7
+
+    def test_http_error(self):
+        with _mock_http(422, {"message": "Validation Failed"}):
+            result = tools_write.create_pull_request(
+                {
+                    "repo": "org/repo",
+                    "title": "t",
+                    "head": "h",
+                    "base": "b",
+                    "dry_run": False,
+                }
+            )
+        assert "error" in result
+        assert "422" in result["error"]
+
+    def test_missing_repo(self):
+        with pytest.raises(ValueError, match="invalid repo"):
+            tools_write.create_pull_request(
+                {"title": "t", "head": "h", "base": "b"}
+            )
+
+    def test_missing_title(self):
+        with pytest.raises(ValueError, match="title is required"):
+            tools_write.create_pull_request(
+                {"repo": "org/repo", "head": "h", "base": "b"}
+            )
+
+    def test_missing_head(self):
+        with pytest.raises(ValueError, match="head is required"):
+            tools_write.create_pull_request(
+                {"repo": "org/repo", "title": "t", "base": "b"}
+            )
+
+    def test_missing_base(self):
+        with pytest.raises(ValueError, match="base is required"):
+            tools_write.create_pull_request(
+                {"repo": "org/repo", "title": "t", "head": "h"}
+            )
+
+    def test_whitespace_head(self):
+        with pytest.raises(ValueError, match="head is required"):
+            tools_write.create_pull_request(
+                {"repo": "org/repo", "title": "t", "head": "   ", "base": "b"}
+            )
+
+    def test_whitespace_base(self):
+        with pytest.raises(ValueError, match="base is required"):
+            tools_write.create_pull_request(
+                {"repo": "org/repo", "title": "t", "head": "h", "base": "   "}
+            )
+
+    def test_empty_title(self):
+        with pytest.raises(ValueError, match="title is required"):
+            tools_write.create_pull_request(
+                {"repo": "org/repo", "title": "  ", "head": "h", "base": "b"}
+            )
+
+    def test_body_too_long(self):
+        with pytest.raises(ValueError, match="character limit"):
+            tools_write.create_pull_request(
+                {
+                    "repo": "org/repo",
+                    "title": "t",
+                    "head": "h",
+                    "base": "b",
+                    "body": "x" * 65001,
+                }
+            )
+
+    def test_invalid_repo(self):
+        with pytest.raises(ValueError, match="invalid repo"):
+            tools_write.create_pull_request(
+                {"repo": "bad", "title": "t", "head": "h", "base": "b"}
+            )
+
+    def test_dry_run_does_not_call_api(self):
+        with _mock_http(201, {}) as mock_http, _mock_invalidate() as inv:
+            tools_write.create_pull_request(
+                {
+                    "repo": "org/repo",
+                    "title": "t",
+                    "head": "h",
+                    "base": "b",
+                }
+            )
+        mock_http.assert_not_called()
+        inv.assert_not_called()
+
+    def test_error_does_not_invalidate(self):
+        with _mock_http(422, {"message": "err"}), _mock_invalidate() as inv:
+            tools_write.create_pull_request(
+                {
+                    "repo": "org/repo",
+                    "title": "t",
+                    "head": "h",
+                    "base": "b",
+                    "dry_run": False,
+                }
+            )
+        inv.assert_not_called()
+
+
 # --- Cache invalidation ---
 
 

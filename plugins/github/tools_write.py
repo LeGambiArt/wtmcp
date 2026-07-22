@@ -277,8 +277,77 @@ def add_comment(params):
     return result
 
 
+def create_pull_request(params):
+    """Create a new pull request."""
+    repo = params.get("repo", "")
+    title = params.get("title", "")
+    head = params.get("head", "")
+    base = params.get("base", "")
+    body = params.get("body", "")
+    draft = params.get("draft", False)
+    maintainer_can_modify = params.get("maintainer_can_modify", True)
+    dry_run = params.get("dry_run", True)
+
+    _validate_repo(repo)
+    owner, name = _split_repo(repo)
+
+    if not title or not title.strip():
+        raise ValueError("title is required and must be non-empty")
+    if not head or not head.strip():
+        raise ValueError("head is required and must be non-empty")
+    if not base or not base.strip():
+        raise ValueError("base is required and must be non-empty")
+    if body and len(body) > _MAX_BODY_LEN:
+        raise ValueError(f"body exceeds {_MAX_BODY_LEN} character limit ({len(body)} chars)")
+
+    if dry_run:
+        preview = {
+            "dry_run": True,
+            "action": "github_create_pull_request",
+            "repo": repo,
+            "head": head,
+            "base": base,
+            "title": title,
+            "draft": draft,
+            "maintainer_can_modify": maintainer_can_modify,
+        }
+        if body:
+            preview["body_preview"] = body[:200]
+        return preview
+
+    api_body = {
+        "title": title,
+        "head": head,
+        "base": base,
+        "draft": draft,
+        "maintainer_can_modify": maintainer_can_modify,
+    }
+    if body:
+        api_body["body"] = body
+
+    status, resp, headers = handler.http(
+        "POST",
+        f"/repos/{owner}/{name}/pulls",
+        body=api_body,
+    )
+    if status < 200 or status >= 300:
+        return _http_error(status, resp)
+
+    handler.invalidate_cache()
+    result = {
+        "id": resp.get("id") if isinstance(resp, dict) else None,
+        "number": resp.get("number") if isinstance(resp, dict) else None,
+        "html_url": resp.get("html_url") if isinstance(resp, dict) else None,
+        "state": resp.get("state") if isinstance(resp, dict) else None,
+        "draft": resp.get("draft") if isinstance(resp, dict) else None,
+    }
+    _check_rate_limit(headers, result)
+    return result
+
+
 WRITE_TOOLS = {
     "github_create_review": create_review,
     "github_add_pr_comment": add_pr_comment,
     "github_add_comment": add_comment,
+    "github_create_pull_request": create_pull_request,
 }

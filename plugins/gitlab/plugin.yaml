@@ -300,6 +300,51 @@ tools:
         type: integer
         default: 20
 
+  - name: gitlab_create_merge_request
+    access: write
+    description: >
+      Create a new merge request. Defaults to dry_run=true which returns a
+      preview without creating. Set dry_run=false to create.
+    params:
+      instance:
+        type: string
+      project_id:
+        type: string
+        required: true
+        description: "Project ID or path (e.g. 'group/project')"
+      source_branch:
+        type: string
+        required: true
+        description: "Branch to merge from"
+      target_branch:
+        type: string
+        required: true
+        description: "Branch to merge into"
+      title:
+        type: string
+        required: true
+        description: "MR title"
+      description:
+        type: string
+        description: "MR description body"
+      labels:
+        type: array
+        description: "Labels to apply"
+      remove_source_branch:
+        type: boolean
+        description: "Delete source branch on merge"
+      squash:
+        type: boolean
+        description: "Squash commits on merge"
+      draft:
+        type: boolean
+        default: false
+        description: "Create as draft MR (prepends 'Draft: ' to title)"
+      dry_run:
+        type: boolean
+        default: true
+        description: "Preview without creating (default: true)"
+
   - name: gitlab_create_mr_discussion
     access: write
     description: >

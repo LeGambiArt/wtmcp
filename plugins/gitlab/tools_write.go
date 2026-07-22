@@ -191,6 +191,111 @@ func toolAddMRNote(params, _ json.RawMessage) (any, error) {
 	}, nil
 }
 
+// --- gitlab_create_merge_request ---
+
+type createMergeRequestParams struct {
+	instanceParam
+	ProjectID          string   `json:"project_id"`
+	SourceBranch       string   `json:"source_branch"`
+	TargetBranch       string   `json:"target_branch"`
+	Title              string   `json:"title"`
+	Description        string   `json:"description"`
+	Labels             []string `json:"labels"`
+	RemoveSourceBranch *bool    `json:"remove_source_branch"`
+	Squash             *bool    `json:"squash"`
+	Draft              bool     `json:"draft"`
+	DryRun             *bool    `json:"dry_run"`
+}
+
+func toolCreateMergeRequest(params, _ json.RawMessage) (any, error) {
+	var p createMergeRequestParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("parse params: %w", err)
+	}
+	if p.ProjectID == "" {
+		return nil, fmt.Errorf("project_id is required")
+	}
+	if strings.TrimSpace(p.SourceBranch) == "" {
+		return nil, fmt.Errorf("source_branch is required")
+	}
+	if strings.TrimSpace(p.TargetBranch) == "" {
+		return nil, fmt.Errorf("target_branch is required")
+	}
+	if strings.TrimSpace(p.Title) == "" {
+		return nil, fmt.Errorf("title is required")
+	}
+	if len([]rune(p.Description)) > maxBodyLen {
+		return nil, fmt.Errorf("description exceeds %d character limit (%d chars)", maxBodyLen, len([]rune(p.Description)))
+	}
+
+	title := p.Title
+	if p.Draft && !strings.HasPrefix(p.Title, "Draft: ") {
+		title = "Draft: " + title
+	}
+
+	if isDryRun(p.DryRun) {
+		m := map[string]any{
+			"dry_run":       true,
+			"action":        "gitlab_create_merge_request",
+			"project_id":    p.ProjectID,
+			"source_branch": p.SourceBranch,
+			"target_branch": p.TargetBranch,
+			"title":         title,
+		}
+		if p.Description != "" {
+			runes := []rune(p.Description)
+			if len(runes) > 200 {
+				runes = runes[:200]
+			}
+			m["description_preview"] = string(runes)
+		}
+		if len(p.Labels) > 0 {
+			m["labels"] = p.Labels
+		}
+		return m, nil
+	}
+
+	client, err := resolveInstance(p.Instance)
+	if err != nil {
+		return nil, err
+	}
+
+	opts := &gogitlab.CreateMergeRequestOptions{
+		Title:        &title,
+		SourceBranch: &p.SourceBranch,
+		TargetBranch: &p.TargetBranch,
+	}
+	if p.RemoveSourceBranch != nil {
+		opts.RemoveSourceBranch = p.RemoveSourceBranch
+	}
+	if p.Squash != nil {
+		opts.Squash = p.Squash
+	}
+	if p.Description != "" {
+		opts.Description = &p.Description
+	}
+	if len(p.Labels) > 0 {
+		labels := gogitlab.LabelOptions(p.Labels)
+		opts.Labels = &labels
+	}
+
+	mr, _, err := client.MergeRequests.CreateMergeRequest(p.ProjectID, opts)
+	if err != nil {
+		return nil, fmt.Errorf("create merge request: %w", err)
+	}
+
+	return map[string]any{
+		"iid":           mr.IID,
+		"project_id":    p.ProjectID,
+		"title":         mr.Title,
+		"web_url":       mr.WebURL,
+		"state":         mr.State,
+		"source_branch": mr.SourceBranch,
+		"target_branch": mr.TargetBranch,
+		"created":       true,
+	}, nil
+}
+
 // --- helpers ---
 
 func fetchDiffRefs(client *gogitlab.Client, pid string, mrIID int64) (baseSHA, headSHA, startSHA string, err error) {
