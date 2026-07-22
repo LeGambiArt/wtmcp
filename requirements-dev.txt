@@ -1,4 +1,4 @@
 pytest==9.1.1
 ty==0.0.60
 ruff==0.15.21
-pre-commit==4.6.0
+pre-commit==4.6.1
