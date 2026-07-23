@@ -316,9 +316,13 @@ func toolGetPipelineJobs(params, _ json.RawMessage) (any, error) {
 
 		if p.IncludeLogs && j.Status == "failed" {
 			trace, _, traceErr := client.Jobs.GetTraceFile(p.ProjectID, j.ID)
-			if traceErr == nil && trace != nil {
-				data, readErr := io.ReadAll(trace)
-				if readErr == nil && len(data) > 0 {
+			if traceErr != nil {
+				jd["logs_error"] = traceErr.Error()
+			} else if trace != nil {
+				data, readErr := io.ReadAll(io.LimitReader(trace, int64(maxLogBytes)+1))
+				if readErr != nil {
+					jd["logs_error"] = readErr.Error()
+				} else if len(data) > 0 {
 					logStr := string(data)
 					if len(logStr) > maxLogBytes {
 						logStr = logStr[:maxLogBytes] + "\n... [TRUNCATED]"
