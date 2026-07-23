@@ -274,6 +274,13 @@ class TestGetPr:
         except ValueError:
             pass
 
+    def test_path_traversal_repo_rejected(self):
+        try:
+            tools.get_pr({"repo": "../..", "pr_number": 1})
+            assert False, "should have raised"
+        except ValueError as e:
+            assert "path traversal" in str(e)
+
 
 # --- github_get_issue ---
 

@@ -40,11 +40,15 @@ def _check_rate_limit(headers, result):
 def _validate_org(org):
     if org and not _VALID_ORG.match(org):
         raise ValueError(f"invalid org name: {org!r}")
+    if org == "..":
+        raise ValueError(f"invalid org name: {org!r}")
 
 
 def _validate_repo(repo):
     if not _VALID_REPO.match(repo):
         raise ValueError(f"invalid repo format: {repo!r} (expected owner/repo)")
+    if ".." in repo.split("/"):
+        raise ValueError(f"invalid repo format: {repo!r} (path traversal)")
 
 
 def _validate_path(path):
