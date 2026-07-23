@@ -279,6 +279,9 @@ tools:
         description: "created_by_me or assigned_to_me"
       author_username:
         type: string
+      assignee_username:
+        type: string
+        description: "Filter by assignee username"
       reviewer_username:
         type: string
       project_id:

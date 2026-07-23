@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"time"
 
 	gogitlab "gitlab.com/gitlab-org/api/client-go"
@@ -802,6 +803,13 @@ func listProjectMRs(client *gogitlab.Client, p listMergeRequestsParams, perPage 
 	if p.AuthorUsername != "" {
 		opts.AuthorUsername = &p.AuthorUsername
 	}
+	if p.AssigneeUsername != "" {
+		uid, err := resolveUserID(client, p.AssigneeUsername)
+		if err != nil {
+			return nil, err
+		}
+		opts.AssigneeID = gogitlab.AssigneeID(uid)
+	}
 	if p.ReviewerUsername != "" {
 		opts.ReviewerUsername = &p.ReviewerUsername
 	}
@@ -841,6 +849,13 @@ func listGlobalMRs(client *gogitlab.Client, p listMergeRequestsParams, perPage i
 	}
 	if p.AuthorUsername != "" {
 		opts.AuthorUsername = &p.AuthorUsername
+	}
+	if p.AssigneeUsername != "" {
+		uid, err := resolveUserID(client, p.AssigneeUsername)
+		if err != nil {
+			return nil, err
+		}
+		opts.AssigneeID = gogitlab.AssigneeID(uid)
 	}
 	if p.ReviewerUsername != "" {
 		opts.ReviewerUsername = &p.ReviewerUsername
@@ -931,6 +946,25 @@ func parseTime(s string) *time.Time {
 		}
 	}
 	return nil
+}
+
+var userIDCache sync.Map
+
+func resolveUserID(client *gogitlab.Client, username string) (int64, error) {
+	if id, ok := userIDCache.Load(username); ok {
+		return id.(int64), nil
+	}
+	users, _, err := client.Users.ListUsers(&gogitlab.ListUsersOptions{
+		Username: &username,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("lookup user %q: %w", username, err)
+	}
+	if len(users) == 0 {
+		return 0, fmt.Errorf("user %q not found", username)
+	}
+	userIDCache.Store(username, users[0].ID)
+	return users[0].ID, nil
 }
 
 func timeStr(t *time.Time) string {
