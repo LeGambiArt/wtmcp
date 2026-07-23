@@ -43,7 +43,7 @@ func toolGetCommits(params, _ json.RawMessage) (any, error) {
 	if p.RefName == "" {
 		p.RefName = "main"
 	}
-	if p.MaxResults == 0 {
+	if p.MaxResults <= 0 {
 		p.MaxResults = 20
 	}
 
@@ -62,10 +62,18 @@ func toolGetCommits(params, _ json.RawMessage) (any, error) {
 		ListOptions: gogitlab.ListOptions{PerPage: perPage},
 	}
 	if p.Since != "" {
-		opts.Since = parseTime(p.Since)
+		t, err := parseTime(p.Since)
+		if err != nil {
+			return nil, fmt.Errorf("invalid since: %w", err)
+		}
+		opts.Since = t
 	}
 	if p.Until != "" {
-		opts.Until = parseTime(p.Until)
+		t, err := parseTime(p.Until)
+		if err != nil {
+			return nil, fmt.Errorf("invalid until: %w", err)
+		}
+		opts.Until = t
 	}
 	if p.Path != "" {
 		opts.Path = &p.Path
@@ -119,7 +127,7 @@ func toolGetCommitDiff(params, _ json.RawMessage) (any, error) {
 	if p.Format == "" {
 		p.Format = "json"
 	}
-	if p.MaxFiles == 0 {
+	if p.MaxFiles <= 0 {
 		p.MaxFiles = 20
 	}
 
@@ -133,7 +141,8 @@ func toolGetCommitDiff(params, _ json.RawMessage) (any, error) {
 		return nil, fmt.Errorf("get commit diff: %w", err)
 	}
 
-	truncatedFiles := len(diffs) > p.MaxFiles
+	totalFiles := len(diffs)
+	truncatedFiles := totalFiles > p.MaxFiles
 	if truncatedFiles {
 		diffs = diffs[:p.MaxFiles]
 	}
@@ -162,7 +171,7 @@ func toolGetCommitDiff(params, _ json.RawMessage) (any, error) {
 		"commit_id":   p.CommitSHA,
 		"format":      p.Format,
 		"diffs":       diffList,
-		"total_files": len(diffs),
+		"total_files": totalFiles,
 	}
 	if truncatedFiles {
 		result["files_truncated"] = true
@@ -362,7 +371,7 @@ func toolGetProjectPipelines(params, _ json.RawMessage) (any, error) {
 	if p.ProjectID == "" {
 		return nil, fmt.Errorf("project_id is required")
 	}
-	if p.MaxResults == 0 {
+	if p.MaxResults <= 0 {
 		p.MaxResults = 10
 	}
 
@@ -437,7 +446,7 @@ func toolGetProjectIssues(params, _ json.RawMessage) (any, error) {
 	if p.ProjectID == "" {
 		return nil, fmt.Errorf("project_id is required")
 	}
-	if p.MaxResults == 0 {
+	if p.MaxResults <= 0 {
 		p.MaxResults = 20
 	}
 	if p.OrderBy == "" {
@@ -482,16 +491,32 @@ func toolGetProjectIssues(params, _ json.RawMessage) (any, error) {
 		opts.Search = &p.Search
 	}
 	if p.CreatedAfter != "" {
-		opts.CreatedAfter = parseTime(p.CreatedAfter)
+		t, err := parseTime(p.CreatedAfter)
+		if err != nil {
+			return nil, fmt.Errorf("invalid created_after: %w", err)
+		}
+		opts.CreatedAfter = t
 	}
 	if p.CreatedBefore != "" {
-		opts.CreatedBefore = parseTime(p.CreatedBefore)
+		t, err := parseTime(p.CreatedBefore)
+		if err != nil {
+			return nil, fmt.Errorf("invalid created_before: %w", err)
+		}
+		opts.CreatedBefore = t
 	}
 	if p.UpdatedAfter != "" {
-		opts.UpdatedAfter = parseTime(p.UpdatedAfter)
+		t, err := parseTime(p.UpdatedAfter)
+		if err != nil {
+			return nil, fmt.Errorf("invalid updated_after: %w", err)
+		}
+		opts.UpdatedAfter = t
 	}
 	if p.UpdatedBefore != "" {
-		opts.UpdatedBefore = parseTime(p.UpdatedBefore)
+		t, err := parseTime(p.UpdatedBefore)
+		if err != nil {
+			return nil, fmt.Errorf("invalid updated_before: %w", err)
+		}
+		opts.UpdatedBefore = t
 	}
 
 	issues, _, err := client.Issues.ListProjectIssues(p.ProjectID, opts)
@@ -574,7 +599,7 @@ func toolMyIssues(params, _ json.RawMessage) (any, error) {
 	if err := json.Unmarshal(params, &p); err != nil {
 		return nil, fmt.Errorf("parse params: %w", err)
 	}
-	if p.MaxResults == 0 {
+	if p.MaxResults <= 0 {
 		p.MaxResults = 30
 	}
 	if p.OrderBy == "" {
@@ -642,7 +667,7 @@ func toolGetTodos(params, _ json.RawMessage) (any, error) {
 	if p.State == "" {
 		p.State = "pending"
 	}
-	if p.MaxResults == 0 {
+	if p.MaxResults <= 0 {
 		p.MaxResults = 20
 	}
 	if p.Page < 1 {
@@ -764,7 +789,7 @@ func toolListMergeRequests(params, _ json.RawMessage) (any, error) {
 	if p.State == "" {
 		p.State = "opened"
 	}
-	if p.MaxResults == 0 {
+	if p.MaxResults <= 0 {
 		p.MaxResults = 20
 	}
 	if p.OrderBy == "" {
@@ -939,13 +964,16 @@ func issueToMap(i *gogitlab.Issue) map[string]any {
 	return m
 }
 
-func parseTime(s string) *time.Time {
+func parseTime(s string) (*time.Time, error) {
+	if s == "" {
+		return nil, nil
+	}
 	for _, layout := range []string{time.RFC3339, "2006-01-02"} {
 		if t, err := time.Parse(layout, s); err == nil {
-			return &t
+			return &t, nil
 		}
 	}
-	return nil
+	return nil, fmt.Errorf("invalid date format %q (expected RFC3339 or YYYY-MM-DD)", s)
 }
 
 var userIDCache sync.Map
@@ -1071,7 +1099,7 @@ func toolSearchProjects(params, _ json.RawMessage) (any, error) {
 	if p.Query == "" {
 		return nil, fmt.Errorf("query is required")
 	}
-	if p.MaxResults == 0 {
+	if p.MaxResults <= 0 {
 		p.MaxResults = 30
 	}
 
@@ -1137,7 +1165,7 @@ func toolSearchCode(params, _ json.RawMessage) (any, error) {
 	if p.Query == "" {
 		return nil, fmt.Errorf("query is required")
 	}
-	if p.MaxResults == 0 {
+	if p.MaxResults <= 0 {
 		p.MaxResults = 30
 	}
 

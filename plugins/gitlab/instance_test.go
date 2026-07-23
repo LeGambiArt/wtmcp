@@ -161,13 +161,16 @@ func TestResolveInstanceUnknown(t *testing.T) {
 }
 
 func TestParseTime(t *testing.T) {
-	if pt := parseTime("2026-03-10T14:00:00Z"); pt == nil {
-		t.Error("parseTime(RFC3339) returned nil")
+	if pt, err := parseTime("2026-03-10T14:00:00Z"); pt == nil || err != nil {
+		t.Errorf("parseTime(RFC3339) = %v, %v", pt, err)
 	}
-	if pt := parseTime("2026-03-10"); pt == nil {
-		t.Error("parseTime(date) returned nil")
+	if pt, err := parseTime("2026-03-10"); pt == nil || err != nil {
+		t.Errorf("parseTime(date) = %v, %v", pt, err)
 	}
-	if pt := parseTime("not-a-date"); pt != nil {
-		t.Error("parseTime(invalid) should return nil")
+	if pt, err := parseTime("not-a-date"); pt != nil || err == nil {
+		t.Error("parseTime(invalid) should return nil and error")
+	}
+	if pt, err := parseTime(""); pt != nil || err != nil {
+		t.Errorf("parseTime(empty) = %v, %v; want nil, nil", pt, err)
 	}
 }
