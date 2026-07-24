@@ -220,6 +220,12 @@ type SandboxResourceLimits struct {
 	MaxFileSizeMB uint64 `yaml:"max_file_size_mb"`
 }
 
+// Transport values for ServerConfig.Transport.
+const (
+	TransportStdio          = "stdio"
+	TransportStreamableHTTP = "streamable-http"
+)
+
 // ServerConfig controls the MCP transport layer.
 type ServerConfig struct {
 	Transport string `yaml:"transport"`
@@ -286,7 +292,7 @@ func DefaultConfig() *Config {
 			},
 		},
 		Server: ServerConfig{
-			Transport: "stdio",
+			Transport: TransportStdio,
 			Host:      "localhost",
 			Port:      8080,
 		},
@@ -356,12 +362,16 @@ func Load(configPath, workdir string) (*Config, error) {
 		return nil, fmt.Errorf("stats.retention_days must be >= 0, got %d", cfg.Stats.RetentionDays)
 	}
 
-	if cfg.Server.Transport != "stdio" && cfg.Server.Transport != "streamable-http" {
+	if cfg.Server.Transport != TransportStdio && cfg.Server.Transport != TransportStreamableHTTP {
 		return nil, fmt.Errorf("server.transport must be 'stdio' or 'streamable-http', got %q", cfg.Server.Transport)
 	}
 
 	if cfg.Server.Port < 1 || cfg.Server.Port > 65535 {
 		return nil, fmt.Errorf("server.port must be 1-65535, got %d", cfg.Server.Port)
+	}
+
+	if cfg.Server.Transport == TransportStreamableHTTP && cfg.Server.Host == "" {
+		return nil, fmt.Errorf("server.host must not be empty when transport is streamable-http")
 	}
 
 	if err := ValidateVaultIDConfigs(cfg.Secrets.VaultIDs); err != nil {

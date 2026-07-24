@@ -641,3 +641,24 @@ func TestLoadConfigServerInvalidPort(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadConfigServerEmptyHost(t *testing.T) {
+	dir := t.TempDir()
+	cfgFile := filepath.Join(dir, "config.yaml")
+	cfgYAML := `
+server:
+  transport: streamable-http
+  host: ""
+`
+	if err := os.WriteFile(cfgFile, []byte(cfgYAML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Load(cfgFile, dir)
+	if err == nil {
+		t.Fatal("expected error for empty host with streamable-http")
+	}
+	if !strings.Contains(err.Error(), "server.host") {
+		t.Errorf("error should mention server.host, got: %v", err)
+	}
+}
