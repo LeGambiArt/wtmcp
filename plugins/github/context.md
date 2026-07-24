@@ -17,8 +17,9 @@ Once you find an item of interest:
 2. See what changed: `github_get_pr_files` (diffs per file)
 3. Read reviews: `github_get_pr_reviews` (approval status)
 4. Read inline comments: `github_get_pr_review_comments`
-5. Read conversation: `github_get_comments`
-6. See commits: `github_get_pr_commits`
+5. Reply to inline comments: `github_reply_to_review_comment`
+6. Read conversation: `github_get_comments`
+7. See commits: `github_get_pr_commits`
 
 For issues, use `github_get_issue` then `github_get_comments`.
 

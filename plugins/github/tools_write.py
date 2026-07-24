@@ -253,6 +253,53 @@ def add_pr_comment(params):
     return result
 
 
+def reply_to_review_comment(params):
+    """Reply to an existing inline review comment thread on a PR."""
+    repo = params.get("repo", "")
+    pr_number = int(params.get("pr_number", 0))
+    comment_id = int(params.get("comment_id", 0))
+    body = params.get("body", "")
+    dry_run = params.get("dry_run", True)
+
+    _validate_repo(repo)
+    owner, name = _split_repo(repo)
+
+    if pr_number <= 0:
+        raise ValueError("pr_number must be a positive integer")
+    if comment_id <= 0:
+        raise ValueError("comment_id must be a positive integer")
+    if not body or not body.strip():
+        raise ValueError("body is required and must be non-empty")
+    if len(body) > _MAX_BODY_LEN:
+        raise ValueError(f"body exceeds {_MAX_BODY_LEN} character limit")
+
+    if dry_run is not False:
+        return {
+            "dry_run": True,
+            "action": "github_reply_to_review_comment",
+            "repo": repo,
+            "pr_number": pr_number,
+            "comment_id": comment_id,
+            "body_preview": body[:200],
+        }
+
+    status, resp, headers = handler.http(
+        "POST",
+        f"/repos/{owner}/{name}/pulls/{pr_number}/comments/{comment_id}/replies",
+        body={"body": body},
+    )
+    if status < 200 or status >= 300:
+        return _http_error(status, resp)
+
+    handler.invalidate_cache()
+    result = {
+        "id": resp.get("id") if isinstance(resp, dict) else None,
+        "html_url": resp.get("html_url") if isinstance(resp, dict) else None,
+    }
+    _check_rate_limit(headers, result)
+    return result
+
+
 def add_comment(params):
     """Post a conversation comment on an issue or PR."""
     repo = params.get("repo", "")
@@ -613,6 +660,7 @@ def commit_files(params):
 WRITE_TOOLS = {
     "github_create_review": create_review,
     "github_add_pr_comment": add_pr_comment,
+    "github_reply_to_review_comment": reply_to_review_comment,
     "github_add_comment": add_comment,
     "github_create_pull_request": create_pull_request,
     "github_create_branch": create_branch,

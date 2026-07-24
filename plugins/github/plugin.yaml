@@ -16,7 +16,7 @@ env:
   #   Read-only tools (get_issue, get_pr, search, my_work, etc.):
   #     Classic PAT: repo:read (or public_repo for public repos only)
   #     Fine-grained: Contents (read), Issues (read), Pull requests (read)
-  #   Write tools (add_comment, create_review, add_pr_comment):
+  #   Write tools (add_comment, create_review, add_pr_comment, reply_to_review_comment):
   #     Classic PAT: repo
   #     Fine-grained: Issues (write), Pull requests (write)
   #   Notifications (my_notifications):
@@ -437,6 +437,37 @@ tools:
         type: string
         default: "RIGHT"
         description: "Diff side: LEFT (deletion) or RIGHT (addition)"
+      dry_run:
+        type: boolean
+        default: true
+        description: "Preview without posting (default: true)"
+
+  - name: github_reply_to_review_comment
+    access: write
+    description: >
+      Reply to an existing inline review comment thread on a PR.
+      The comment must be a top-level review comment, not an existing
+      reply. Replies to replies are not supported by the GitHub API.
+      Defaults to dry_run=true.
+    params:
+      repo:
+        type: string
+        required: true
+        description: "Repository as owner/repo"
+      pr_number:
+        type: integer
+        required: true
+        description: "Pull request number"
+      comment_id:
+        type: integer
+        required: true
+        description: >
+          ID of a top-level review comment from get_pr_review_comments
+          (where in_reply_to_id is null). Must not be a reply itself.
+      body:
+        type: string
+        required: true
+        description: "Reply text (markdown)"
       dry_run:
         type: boolean
         default: true
