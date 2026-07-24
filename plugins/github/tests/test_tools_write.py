@@ -535,6 +535,154 @@ class TestAddComment:
             )
 
 
+# --- github_reply_to_review_comment ---
+
+
+class TestReplyToReviewComment:
+    def test_dry_run_default(self):
+        with patch.object(handler, "http") as http_mock:
+            result = tools_write.reply_to_review_comment(
+                {
+                    "repo": "org/repo",
+                    "pr_number": 42,
+                    "comment_id": 100,
+                    "body": "Thanks, fixed!",
+                }
+            )
+        http_mock.assert_not_called()
+        assert result["dry_run"] is True
+        assert result["action"] == "github_reply_to_review_comment"
+        assert result["repo"] == "org/repo"
+        assert result["pr_number"] == 42
+        assert result["comment_id"] == 100
+        assert result["body_preview"] == "Thanks, fixed!"
+
+    def test_success(self):
+        with (
+            patch.object(
+                handler,
+                "http",
+                return_value=(
+                    201,
+                    {"id": 200, "html_url": "https://github.com/org/repo/pull/42#discussion_r200"},
+                    {},
+                ),
+            ) as http_mock,
+            _mock_invalidate() as inv,
+        ):
+            result = tools_write.reply_to_review_comment(
+                {
+                    "repo": "org/repo",
+                    "pr_number": 42,
+                    "comment_id": 100,
+                    "body": "Done.",
+                    "dry_run": False,
+                }
+            )
+        assert result["id"] == 200
+        assert result["html_url"] == "https://github.com/org/repo/pull/42#discussion_r200"
+        http_mock.assert_called_once_with(
+            "POST",
+            "/repos/org/repo/pulls/42/comments/100/replies",
+            body={"body": "Done."},
+        )
+        inv.assert_called_once()
+
+    def test_registered(self):
+        assert tools_write.WRITE_TOOLS["github_reply_to_review_comment"] is tools_write.reply_to_review_comment
+
+    def test_empty_body(self):
+        with pytest.raises(ValueError, match="body is required"):
+            tools_write.reply_to_review_comment(
+                {
+                    "repo": "org/repo",
+                    "pr_number": 42,
+                    "comment_id": 100,
+                    "body": "",
+                }
+            )
+
+    def test_whitespace_only_body(self):
+        with pytest.raises(ValueError, match="body is required"):
+            tools_write.reply_to_review_comment(
+                {
+                    "repo": "org/repo",
+                    "pr_number": 42,
+                    "comment_id": 100,
+                    "body": "   ",
+                }
+            )
+
+    def test_body_too_long(self):
+        with pytest.raises(ValueError, match="character limit"):
+            tools_write.reply_to_review_comment(
+                {
+                    "repo": "org/repo",
+                    "pr_number": 42,
+                    "comment_id": 100,
+                    "body": "x" * 65001,
+                }
+            )
+
+    def test_invalid_repo(self):
+        with pytest.raises(ValueError, match="invalid repo"):
+            tools_write.reply_to_review_comment(
+                {
+                    "repo": "bad",
+                    "pr_number": 42,
+                    "comment_id": 100,
+                    "body": "x",
+                }
+            )
+
+    def test_invalid_pr_number(self):
+        with pytest.raises(ValueError, match="pr_number must be a positive integer"):
+            tools_write.reply_to_review_comment(
+                {
+                    "repo": "org/repo",
+                    "pr_number": 0,
+                    "comment_id": 100,
+                    "body": "x",
+                }
+            )
+
+    def test_invalid_comment_id_zero(self):
+        with pytest.raises(ValueError, match="comment_id must be a positive integer"):
+            tools_write.reply_to_review_comment(
+                {
+                    "repo": "org/repo",
+                    "pr_number": 42,
+                    "comment_id": 0,
+                    "body": "x",
+                }
+            )
+
+    def test_invalid_comment_id_negative(self):
+        with pytest.raises(ValueError, match="comment_id must be a positive integer"):
+            tools_write.reply_to_review_comment(
+                {
+                    "repo": "org/repo",
+                    "pr_number": 42,
+                    "comment_id": -5,
+                    "body": "x",
+                }
+            )
+
+    def test_http_error(self):
+        with _mock_http(404, {"message": "Not Found"}):
+            result = tools_write.reply_to_review_comment(
+                {
+                    "repo": "org/repo",
+                    "pr_number": 42,
+                    "comment_id": 100,
+                    "body": "x",
+                    "dry_run": False,
+                }
+            )
+        assert "error" in result
+        assert "404" in result["error"]
+
+
 # --- github_create_pull_request ---
 
 
@@ -779,6 +927,44 @@ class TestCacheInvalidation:
                     "repo": "org/repo",
                     "issue_number": 1,
                     "body": "x",
+                }
+            )
+        inv.assert_not_called()
+
+    def test_reply_to_review_comment_invalidates_on_success(self):
+        with _mock_http(201, {"id": 1, "html_url": "url"}), _mock_invalidate() as inv:
+            tools_write.reply_to_review_comment(
+                {
+                    "repo": "org/repo",
+                    "pr_number": 42,
+                    "comment_id": 100,
+                    "body": "x",
+                    "dry_run": False,
+                }
+            )
+        inv.assert_called_once()
+
+    def test_reply_to_review_comment_dry_run_does_not_invalidate(self):
+        with _mock_invalidate() as inv:
+            tools_write.reply_to_review_comment(
+                {
+                    "repo": "org/repo",
+                    "pr_number": 42,
+                    "comment_id": 100,
+                    "body": "x",
+                }
+            )
+        inv.assert_not_called()
+
+    def test_reply_to_review_comment_error_does_not_invalidate(self):
+        with _mock_http(404, {"message": "Not Found"}), _mock_invalidate() as inv:
+            tools_write.reply_to_review_comment(
+                {
+                    "repo": "org/repo",
+                    "pr_number": 42,
+                    "comment_id": 100,
+                    "body": "x",
+                    "dry_run": False,
                 }
             )
         inv.assert_not_called()
