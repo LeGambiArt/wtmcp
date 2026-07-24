@@ -979,7 +979,8 @@ func parseTime(s string) (*time.Time, error) {
 var userIDCache sync.Map
 
 func resolveUserID(client *gogitlab.Client, username string) (int64, error) {
-	if id, ok := userIDCache.Load(username); ok {
+	cacheKey := client.BaseURL().Host + "/" + username
+	if id, ok := userIDCache.Load(cacheKey); ok {
 		return id.(int64), nil
 	}
 	users, _, err := client.Users.ListUsers(&gogitlab.ListUsersOptions{
@@ -991,7 +992,7 @@ func resolveUserID(client *gogitlab.Client, username string) (int64, error) {
 	if len(users) == 0 {
 		return 0, fmt.Errorf("user %q not found", username)
 	}
-	userIDCache.Store(username, users[0].ID)
+	userIDCache.Store(cacheKey, users[0].ID)
 	return users[0].ID, nil
 }
 
