@@ -10,7 +10,6 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"os"
 	"time"
 
 	mcpserver "github.com/mark3labs/mcp-go/server"
@@ -75,7 +74,7 @@ func listenHTTP(ctx context.Context, srv *mcpserver.MCPServer, cfg *config.Serve
 	}()
 
 	listenURL := fmt.Sprintf("http://%s/mcp", addr)
-	fmt.Fprintf(os.Stderr, "wtmcp listening on %s\n", listenURL)
+	logger.Info("wtmcp listening", "url", listenURL)
 
 	select {
 	case err := <-errCh:
@@ -84,7 +83,7 @@ func listenHTTP(ctx context.Context, srv *mcpserver.MCPServer, cfg *config.Serve
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer cancel()
 		if err := httpSrv.Shutdown(shutdownCtx); err != nil {
-			log.Printf("http shutdown error: %v", err)
+			logger.Error("http shutdown error", "err", err)
 		}
 		return nil
 	}

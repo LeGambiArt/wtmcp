@@ -212,6 +212,23 @@ func TestListenAndServeHTTPMCPEndpoint(t *testing.T) {
 	}
 }
 
+func TestListenAndServeUnsupportedTransport(t *testing.T) {
+	srv := newTestMCPServer()
+	cfg := &config.ServerConfig{
+		Transport: "websocket",
+		Host:      "localhost",
+		Port:      8080,
+	}
+
+	err := ListenAndServe(context.Background(), srv, cfg, slog.Default(), nil, nil)
+	if err == nil {
+		t.Fatal("expected error for unsupported transport")
+	}
+	if !strings.Contains(err.Error(), "unsupported transport") {
+		t.Errorf("error should mention unsupported transport, got: %v", err)
+	}
+}
+
 func TestListenURL(t *testing.T) {
 	if got := ListenURL(&config.ServerConfig{Transport: config.TransportStdio}); got != "stdio" {
 		t.Errorf("ListenURL(stdio) = %q, want stdio", got)
