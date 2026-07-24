@@ -425,6 +425,8 @@ def create_or_update_file(params):
     _validate_repo(repo)
     owner, name = _split_repo(repo)
     _validate_path(path)
+    if branch:
+        _validate_branch(branch)
 
     if not content:
         raise ValueError("content is required")

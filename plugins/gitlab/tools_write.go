@@ -438,6 +438,11 @@ func toolCreateOrUpdateFile(params, _ json.RawMessage) (any, error) {
 	if strings.TrimSpace(p.CommitMessage) == "" {
 		return nil, fmt.Errorf("message is required")
 	}
+	if p.Branch != "" {
+		if err := validateBranch(p.Branch); err != nil {
+			return nil, fmt.Errorf("branch: %w", err)
+		}
+	}
 	client, err := resolveInstance(p.Instance)
 	if err != nil {
 		return nil, err
