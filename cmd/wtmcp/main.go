@@ -293,23 +293,6 @@ func run(forceStdio bool) error {
 		log.Printf("all plugins loaded (%d)", len(mgr.LoadedPlugins()))
 	}()
 
-	// Start control directory watcher for external reload triggers
-	controlWatcher := server.NewControlWatcher(wd, srv, mgr, cfg, index, collector, auditor, pluginRL, framer, toolOwners)
-	if err := controlWatcher.Start(); err != nil {
-		log.Printf("control watcher disabled: %v", err)
-	}
-
-	// Non-plugin cleanup runs on context cancellation.
-	go func() {
-		<-ctx.Done()
-		controlWatcher.Stop()
-		cacheStore.Close() //nolint:errcheck,gosec // best-effort on shutdown
-		if collector != nil {
-			collector.Close()
-		}
-		auditor.Close() //nolint:errcheck,gosec // best-effort on shutdown
-	}()
-
 	// Apply CLI flag overrides for serve command.
 	if !forceStdio {
 		if transportFlag != "" {
@@ -324,6 +307,25 @@ func run(forceStdio bool) error {
 	} else {
 		cfg.Server.Transport = config.TransportStdio
 	}
+
+	// Start control directory watcher for external reload triggers.
+	// Must come after CLI flag overrides so listenURL reflects the actual transport.
+	listenURL := transport.ListenURL(&cfg.Server)
+	controlWatcher := server.NewControlWatcher(wd, srv, mgr, cfg, index, collector, auditor, pluginRL, framer, toolOwners, listenURL)
+	if err := controlWatcher.Start(); err != nil {
+		log.Printf("control watcher disabled: %v", err)
+	}
+
+	// Non-plugin cleanup runs on context cancellation.
+	go func() {
+		<-ctx.Done()
+		controlWatcher.Stop()
+		cacheStore.Close() //nolint:errcheck,gosec // best-effort on shutdown
+		if collector != nil {
+			collector.Close()
+		}
+		auditor.Close() //nolint:errcheck,gosec // best-effort on shutdown
+	}()
 
 	log.Printf("wtmcp %s starting (workdir: %s, transport: %s)", Version, wd, cfg.Server.Transport)
 

@@ -37,12 +37,13 @@ type ControlWatcher struct {
 	rateLimiter *ratelimit.Registry
 	framer      *OutputFramer
 	toolOwners  *ToolOwnerMap
+	listenURL   string
 	stop        chan struct{}
 	done        chan struct{}
 }
 
 // NewControlWatcher creates a control watcher for the given workdir.
-func NewControlWatcher(workdir string, srv *mcpserver.MCPServer, mgr *plugin.Manager, cfg *config.Config, index *ToolIndex, collector *stats.Collector, auditor *audit.Logger, rateLimiter *ratelimit.Registry, framer *OutputFramer, toolOwners *ToolOwnerMap) *ControlWatcher {
+func NewControlWatcher(workdir string, srv *mcpserver.MCPServer, mgr *plugin.Manager, cfg *config.Config, index *ToolIndex, collector *stats.Collector, auditor *audit.Logger, rateLimiter *ratelimit.Registry, framer *OutputFramer, toolOwners *ToolOwnerMap, listenURL string) *ControlWatcher {
 	controlDir := filepath.Join(workdir, "control")
 	return &ControlWatcher{
 		commandsDir: filepath.Join(controlDir, "commands"),
@@ -58,6 +59,7 @@ func NewControlWatcher(workdir string, srv *mcpserver.MCPServer, mgr *plugin.Man
 		rateLimiter: rateLimiter,
 		framer:      framer,
 		toolOwners:  toolOwners,
+		listenURL:   listenURL,
 		stop:        make(chan struct{}),
 		done:        make(chan struct{}),
 	}
@@ -221,6 +223,7 @@ func (w *ControlWatcher) writePIDFile() error {
 		"pid":        os.Getpid(),
 		"started_at": time.Now().UTC().Format(time.RFC3339),
 		"plugins":    len(w.mgr.Manifests()),
+		"listen_url": w.listenURL,
 	}
 	data, _ := json.MarshalIndent(info, "", "  ")
 	return os.WriteFile(w.infoFile, data, 0o600)
