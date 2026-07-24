@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -13,8 +14,6 @@ import (
 	"syscall"
 
 	"github.com/spf13/cobra"
-
-	mcpserver "github.com/mark3labs/mcp-go/server"
 
 	"github.com/LeGambiArt/wtmcp/internal/audit"
 	"github.com/LeGambiArt/wtmcp/internal/auth"
@@ -27,6 +26,7 @@ import (
 	"github.com/LeGambiArt/wtmcp/internal/sandbox"
 	"github.com/LeGambiArt/wtmcp/internal/server"
 	"github.com/LeGambiArt/wtmcp/internal/stats"
+	"github.com/LeGambiArt/wtmcp/internal/transport"
 )
 
 // Version and BuildDate are set via ldflags at build time.
@@ -40,6 +40,10 @@ var (
 	configPath string
 	workdir    string
 	readOnly   bool
+
+	transportFlag string
+	hostFlag      string
+	portFlag      int
 )
 
 var rootCmd = &cobra.Command{
@@ -50,7 +54,7 @@ var rootCmd = &cobra.Command{
 	SilenceErrors: true,
 	// Default action: run the server (backward compatible with MCP clients).
 	RunE: func(_ *cobra.Command, _ []string) error {
-		return run()
+		return run(true)
 	},
 }
 
@@ -58,7 +62,7 @@ var serveCmd = &cobra.Command{
 	Use:   "serve",
 	Short: "Start MCP server (default)",
 	RunE: func(_ *cobra.Command, _ []string) error {
-		return run()
+		return run(false)
 	},
 }
 
@@ -99,6 +103,10 @@ func init() {
 		fmt.Sprintf("wtmcp %s (built %s)\n", Version, BuildDate))
 	rootCmd.DisableAutoGenTag = true
 
+	serveCmd.Flags().StringVar(&transportFlag, "transport", "", "Transport: stdio, streamable-http")
+	serveCmd.Flags().StringVar(&hostFlag, "host", "", "Bind address (default: localhost)")
+	serveCmd.Flags().IntVar(&portFlag, "port", 0, "Listen port (default: 8080)")
+
 	rootCmd.AddCommand(serveCmd, checkCmd, versionCmd)
 }
 
@@ -109,7 +117,7 @@ func main() {
 	}
 }
 
-func run() error {
+func run(forceStdio bool) error {
 	// Capture the caller's CWD for file I/O before anything changes it.
 	sessionDir, err := os.Getwd()
 	if err != nil || !filepath.IsAbs(sessionDir) {
@@ -291,6 +299,7 @@ func run() error {
 		log.Printf("control watcher disabled: %v", err)
 	}
 
+	// Non-plugin cleanup runs on context cancellation.
 	go func() {
 		<-ctx.Done()
 		controlWatcher.Stop()
@@ -299,23 +308,34 @@ func run() error {
 			collector.Close()
 		}
 		auditor.Close() //nolint:errcheck,gosec // best-effort on shutdown
-		log.Println("shutting down plugins...")
-		mgr.WaitLoaded()
-		mgr.ShutdownAll(context.Background())
 	}()
 
-	log.Printf("wtmcp %s starting (workdir: %s)", Version, wd)
-
-	stdioSrv := mcpserver.NewStdioServer(srv)
-	stdioSrv.SetErrorLogger(log.Default())
-
-	err = stdioSrv.Listen(ctx, os.Stdin, os.Stdout)
-	os.Stdin.Close() //nolint:errcheck,gosec // best-effort cleanup at shutdown
-
-	// Signal-initiated shutdown is not an error.
-	if err != nil && ctx.Err() != nil {
-		return nil
+	// Apply CLI flag overrides for serve command.
+	if !forceStdio {
+		if transportFlag != "" {
+			cfg.Server.Transport = transportFlag
+		}
+		if hostFlag != "" {
+			cfg.Server.Host = hostFlag
+		}
+		if portFlag != 0 {
+			cfg.Server.Port = portFlag
+		}
+	} else {
+		cfg.Server.Transport = config.TransportStdio
 	}
+
+	log.Printf("wtmcp %s starting (workdir: %s, transport: %s)", Version, wd, cfg.Server.Transport)
+
+	logger := slog.New(slog.NewTextHandler(log.Writer(), &slog.HandlerOptions{Level: slog.LevelInfo}))
+	err = transport.ListenAndServe(ctx, srv, &cfg.Server, logger, os.Stdin, os.Stdout)
+
+	// Plugins shut down after transport stops — ensures in-flight
+	// HTTP requests complete before plugin processes are killed.
+	log.Println("shutting down plugins...")
+	mgr.WaitLoaded()
+	mgr.ShutdownAll(context.Background())
+
 	return err
 }
 
