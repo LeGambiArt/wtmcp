@@ -37,6 +37,7 @@ type Config struct {
 	Sandbox        SandboxConfig   `yaml:"sandbox"`
 	Providers      ProvidersConfig `yaml:"providers"`
 	Secrets        SecretsConfig   `yaml:"secrets"`
+	Server         ServerConfig    `yaml:"server"`
 }
 
 // HTTPConfig controls the HTTP proxy behavior.
@@ -219,6 +220,13 @@ type SandboxResourceLimits struct {
 	MaxFileSizeMB uint64 `yaml:"max_file_size_mb"`
 }
 
+// ServerConfig controls the MCP transport layer.
+type ServerConfig struct {
+	Transport string `yaml:"transport"`
+	Host      string `yaml:"host"`
+	Port      int    `yaml:"port"`
+}
+
 // ProvidersConfig controls which auth providers are active.
 type ProvidersConfig struct {
 	Disabled []string `yaml:"disabled"`
@@ -276,6 +284,11 @@ func DefaultConfig() *Config {
 				MaxPIDs:       64,
 				MaxFileSizeMB: 100,
 			},
+		},
+		Server: ServerConfig{
+			Transport: "stdio",
+			Host:      "localhost",
+			Port:      8080,
 		},
 	}
 }
@@ -341,6 +354,14 @@ func Load(configPath, workdir string) (*Config, error) {
 	}
 	if cfg.Stats.RetentionDays < 0 {
 		return nil, fmt.Errorf("stats.retention_days must be >= 0, got %d", cfg.Stats.RetentionDays)
+	}
+
+	if cfg.Server.Transport != "stdio" && cfg.Server.Transport != "streamable-http" {
+		return nil, fmt.Errorf("server.transport must be 'stdio' or 'streamable-http', got %q", cfg.Server.Transport)
+	}
+
+	if cfg.Server.Port < 1 || cfg.Server.Port > 65535 {
+		return nil, fmt.Errorf("server.port must be 1-65535, got %d", cfg.Server.Port)
 	}
 
 	if err := ValidateVaultIDConfigs(cfg.Secrets.VaultIDs); err != nil {
