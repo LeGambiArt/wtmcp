@@ -687,7 +687,13 @@ func ReloadPlugin(ctx context.Context, srv *mcpserver.MCPServer, mgr *plugin.Man
 		collector.RemovePluginResources(name)
 	}
 
-	// Acquire reload lock to wait for in-flight tool calls to complete.
+	// Acquire the reload write lock on the current handle to wait for
+	// in-flight tool calls to complete before tearing it down. The defer
+	// unlocks the OLD handle after Reload replaces it — this is safe
+	// because (a) the ControlWatcher serializes reload commands, and
+	// (b) srv.AddTool atomically replaces tool handlers, so new calls
+	// route to the new handle (with its own fresh mutex) only after
+	// it is fully initialized.
 	if handle := mgr.Handle(name); handle != nil {
 		handle.ReloadLock()
 		defer handle.ReloadUnlock()
