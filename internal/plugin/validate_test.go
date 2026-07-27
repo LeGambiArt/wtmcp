@@ -189,6 +189,50 @@ func TestCompileBadSchema_ReturnsError(t *testing.T) {
 	})
 }
 
+func TestCompileSchemaWithUntypedProperty(t *testing.T) {
+	tool := ToolDef{
+		Name: "test",
+		Params: map[string]ParamDef{
+			"custom_fields": {
+				Type: "array",
+				Items: &ItemsDef{
+					Type: "object",
+					Properties: map[string]ParamDef{
+						"field_id": {Type: "string", Description: "field ID"},
+						"value":    {Description: "depends on field_type"},
+					},
+					Required: []string{"field_id", "value"},
+				},
+			},
+		},
+	}
+
+	cs, err := CompileParamsSchema("test", tool)
+	if err != nil {
+		t.Fatalf("compile should succeed for untyped property: %v", err)
+	}
+	if cs == nil {
+		t.Fatal("expected compiled schema")
+	}
+
+	valid := []struct {
+		name   string
+		params string
+	}{
+		{"string value", `{"custom_fields":[{"field_id":"cf_1","value":"text"}]}`},
+		{"numeric value", `{"custom_fields":[{"field_id":"cf_2","value":42}]}`},
+		{"object value", `{"custom_fields":[{"field_id":"cf_3","value":{"name":"x"}}]}`},
+		{"null value", `{"custom_fields":[{"field_id":"cf_4","value":null}]}`},
+	}
+	for _, tt := range valid {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := cs.Validate(json.RawMessage(tt.params)); err != nil {
+				t.Errorf("should accept %s: %v", tt.name, err)
+			}
+		})
+	}
+}
+
 func TestValidateNilSchema(t *testing.T) {
 	var cs *CompiledSchema
 	if err := cs.Validate(json.RawMessage(`{"anything":"goes"}`)); err != nil {

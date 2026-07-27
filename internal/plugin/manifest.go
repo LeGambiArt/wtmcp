@@ -598,7 +598,10 @@ func (t *ToolDef) ParamsSchema() map[string]any {
 	var required []string
 
 	for name, p := range t.Params {
-		prop := map[string]any{"type": p.Type}
+		prop := make(map[string]any)
+		if p.Type != "" {
+			prop["type"] = p.Type
+		}
 		if p.Description != "" {
 			prop["description"] = p.Description
 		}
@@ -609,11 +612,17 @@ func (t *ToolDef) ParamsSchema() map[string]any {
 			prop["enum"] = p.Enum
 		}
 		if p.Type == "array" && p.Items != nil {
-			itemSchema := map[string]any{"type": p.Items.Type}
+			itemSchema := make(map[string]any)
+			if p.Items.Type != "" {
+				itemSchema["type"] = p.Items.Type
+			}
 			if len(p.Items.Properties) > 0 {
 				itemProps := make(map[string]any, len(p.Items.Properties))
 				for pn, pp := range p.Items.Properties {
-					iprop := map[string]any{"type": pp.Type}
+					iprop := make(map[string]any)
+					if pp.Type != "" {
+						iprop["type"] = pp.Type
+					}
 					if pp.Description != "" {
 						iprop["description"] = pp.Description
 					}

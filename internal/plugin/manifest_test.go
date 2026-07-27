@@ -389,6 +389,86 @@ func TestParamsSchemaObjectItems(t *testing.T) {
 	}
 }
 
+func TestParamsSchemaOmitsEmptyType(t *testing.T) {
+	t.Run("top-level param without type", func(t *testing.T) {
+		tool := ToolDef{
+			Name: "test",
+			Params: map[string]ParamDef{
+				"value": {Description: "accepts any type"},
+			},
+		}
+		schema := tool.ParamsSchema()
+		props := schema["properties"].(map[string]any)
+		valueProp := props["value"].(map[string]any)
+		if _, hasType := valueProp["type"]; hasType {
+			t.Errorf("expected no 'type' key for untyped param, got %v", valueProp["type"])
+		}
+		if valueProp["description"] != "accepts any type" {
+			t.Errorf("description = %v", valueProp["description"])
+		}
+	})
+
+	t.Run("array items without type", func(t *testing.T) {
+		tool := ToolDef{
+			Name: "test",
+			Params: map[string]ParamDef{
+				"things": {
+					Type: "array",
+					Items: &ItemsDef{
+						Properties: map[string]ParamDef{
+							"name": {Type: "string"},
+						},
+					},
+				},
+			},
+		}
+		schema := tool.ParamsSchema()
+		props := schema["properties"].(map[string]any)
+		thingsProp := props["things"].(map[string]any)
+		items := thingsProp["items"].(map[string]any)
+		if _, hasType := items["type"]; hasType {
+			t.Errorf("expected no 'type' key for untyped items, got %v", items["type"])
+		}
+	})
+
+	t.Run("item property without type", func(t *testing.T) {
+		tool := ToolDef{
+			Name: "test",
+			Params: map[string]ParamDef{
+				"custom_fields": {
+					Type: "array",
+					Items: &ItemsDef{
+						Type: "object",
+						Properties: map[string]ParamDef{
+							"field_id": {Type: "string"},
+							"value":    {Description: "depends on field_type"},
+						},
+						Required: []string{"field_id", "value"},
+					},
+				},
+			},
+		}
+		schema := tool.ParamsSchema()
+		props := schema["properties"].(map[string]any)
+		cfProp := props["custom_fields"].(map[string]any)
+		items := cfProp["items"].(map[string]any)
+		itemProps := items["properties"].(map[string]any)
+
+		fieldIDProp := itemProps["field_id"].(map[string]any)
+		if fieldIDProp["type"] != "string" {
+			t.Errorf("field_id type = %v, want string", fieldIDProp["type"])
+		}
+
+		valueProp := itemProps["value"].(map[string]any)
+		if _, hasType := valueProp["type"]; hasType {
+			t.Errorf("expected no 'type' key for untyped item property, got %v", valueProp["type"])
+		}
+		if valueProp["description"] != "depends on field_type" {
+			t.Errorf("value description = %v", valueProp["description"])
+		}
+	})
+}
+
 func TestManifestAuthVariantOrder(t *testing.T) {
 	dir := t.TempDir()
 	handlerPath := filepath.Join(dir, "handler")
