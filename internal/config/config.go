@@ -233,6 +233,20 @@ type ServerConfig struct {
 	Port      int    `yaml:"port"`
 }
 
+// Validate checks that ServerConfig fields are within valid ranges.
+func (s *ServerConfig) Validate() error {
+	if s.Transport != TransportStdio && s.Transport != TransportStreamableHTTP {
+		return fmt.Errorf("server.transport must be '%s' or '%s', got %q", TransportStdio, TransportStreamableHTTP, s.Transport)
+	}
+	if s.Port < 1 || s.Port > 65535 {
+		return fmt.Errorf("server.port must be 1-65535, got %d", s.Port)
+	}
+	if s.Transport == TransportStreamableHTTP && s.Host == "" {
+		return fmt.Errorf("server.host must not be empty when transport is %s", TransportStreamableHTTP)
+	}
+	return nil
+}
+
 // ProvidersConfig controls which auth providers are active.
 type ProvidersConfig struct {
 	Disabled []string `yaml:"disabled"`
@@ -362,16 +376,8 @@ func Load(configPath, workdir string) (*Config, error) {
 		return nil, fmt.Errorf("stats.retention_days must be >= 0, got %d", cfg.Stats.RetentionDays)
 	}
 
-	if cfg.Server.Transport != TransportStdio && cfg.Server.Transport != TransportStreamableHTTP {
-		return nil, fmt.Errorf("server.transport must be 'stdio' or 'streamable-http', got %q", cfg.Server.Transport)
-	}
-
-	if cfg.Server.Port < 1 || cfg.Server.Port > 65535 {
-		return nil, fmt.Errorf("server.port must be 1-65535, got %d", cfg.Server.Port)
-	}
-
-	if cfg.Server.Transport == TransportStreamableHTTP && cfg.Server.Host == "" {
-		return nil, fmt.Errorf("server.host must not be empty when transport is streamable-http")
+	if err := cfg.Server.Validate(); err != nil {
+		return nil, err
 	}
 
 	if err := ValidateVaultIDConfigs(cfg.Secrets.VaultIDs); err != nil {

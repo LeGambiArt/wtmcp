@@ -308,6 +308,10 @@ func run(forceStdio bool) error {
 		cfg.Server.Transport = config.TransportStdio
 	}
 
+	if err := cfg.Server.Validate(); err != nil {
+		return fmt.Errorf("server config: %w", err)
+	}
+
 	// Start control directory watcher for external reload triggers.
 	// Must come after CLI flag overrides so listenURL reflects the actual transport.
 	listenURL := transport.ListenURL(&cfg.Server)
@@ -321,10 +325,6 @@ func run(forceStdio bool) error {
 		<-ctx.Done()
 		controlWatcher.Stop()
 		cacheStore.Close() //nolint:errcheck,gosec // best-effort on shutdown
-		if collector != nil {
-			collector.Close()
-		}
-		auditor.Close() //nolint:errcheck,gosec // best-effort on shutdown
 	}()
 
 	log.Printf("wtmcp %s starting (workdir: %s, transport: %s)", Version, wd, cfg.Server.Transport)
@@ -332,11 +332,14 @@ func run(forceStdio bool) error {
 	logger := slog.New(slog.NewTextHandler(log.Writer(), &slog.HandlerOptions{Level: slog.LevelInfo}))
 	err = transport.ListenAndServe(ctx, srv, &cfg.Server, logger, os.Stdin, os.Stdout)
 
-	// Plugins shut down after transport stops — ensures in-flight
-	// HTTP requests complete before plugin processes are killed.
+	// Sequential shutdown: transport drained, now safe to tear down.
 	log.Println("shutting down plugins...")
 	mgr.WaitLoaded()
 	mgr.ShutdownAll(context.Background())
+	if collector != nil {
+		collector.Close()
+	}
+	auditor.Close() //nolint:errcheck,gosec // best-effort on shutdown
 
 	return err
 }

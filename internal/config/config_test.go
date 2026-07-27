@@ -592,6 +592,33 @@ server:
 	}
 }
 
+func TestServerConfigValidate(t *testing.T) {
+	valid := &ServerConfig{Transport: TransportStreamableHTTP, Host: "localhost", Port: 8080}
+	if err := valid.Validate(); err != nil {
+		t.Errorf("valid config should pass: %v", err)
+	}
+
+	invalid := &ServerConfig{Transport: "websocket", Host: "localhost", Port: 8080}
+	if err := invalid.Validate(); err == nil {
+		t.Error("invalid transport should fail")
+	}
+
+	badPort := &ServerConfig{Transport: TransportStdio, Host: "localhost", Port: 0}
+	if err := badPort.Validate(); err == nil {
+		t.Error("port 0 should fail")
+	}
+
+	emptyHost := &ServerConfig{Transport: TransportStreamableHTTP, Host: "", Port: 8080}
+	if err := emptyHost.Validate(); err == nil {
+		t.Error("empty host with streamable-http should fail")
+	}
+
+	stdioEmptyHost := &ServerConfig{Transport: TransportStdio, Host: "", Port: 8080}
+	if err := stdioEmptyHost.Validate(); err != nil {
+		t.Errorf("empty host with stdio should pass: %v", err)
+	}
+}
+
 func TestLoadConfigServerInvalidTransport(t *testing.T) {
 	dir := t.TempDir()
 	cfgFile := filepath.Join(dir, "config.yaml")
