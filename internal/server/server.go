@@ -687,6 +687,12 @@ func ReloadPlugin(ctx context.Context, srv *mcpserver.MCPServer, mgr *plugin.Man
 		collector.RemovePluginResources(name)
 	}
 
+	// Acquire reload lock to wait for in-flight tool calls to complete.
+	if handle := mgr.Handle(name); handle != nil {
+		handle.ReloadLock()
+		defer handle.ReloadUnlock()
+	}
+
 	// Reload the plugin (stops handler, re-reads manifest, restarts)
 	if err := mgr.Reload(ctx, name); err != nil {
 		return err
