@@ -36,6 +36,10 @@ func newTestMCPServer() *mcpserver.MCPServer {
 	return srv
 }
 
+// freePort returns an available TCP port. There is an inherent TOCTOU
+// race between closing this listener and the server binding the port;
+// parallel tests could steal it. In practice, the OS rarely reassigns
+// ports this fast, and test retries cover the edge case.
 func freePort(t *testing.T) int {
 	t.Helper()
 	listener, err := net.Listen("tcp", "localhost:0")
@@ -320,20 +324,21 @@ func TestReloadLockSerializesAgainstCalls(t *testing.T) {
 		orderMu.Unlock()
 	}
 
+	callStarted := make(chan struct{})
 	callDone := make(chan struct{})
 
 	// Simulate in-flight tool call
 	go func() {
 		mu.RLock()
 		record("call-start")
+		close(callStarted) // signal that we hold the read lock
 		time.Sleep(100 * time.Millisecond)
 		record("call-end")
 		mu.RUnlock()
 		close(callDone)
 	}()
 
-	// Give call time to start
-	time.Sleep(20 * time.Millisecond)
+	<-callStarted // wait for read lock to be held
 
 	// Reload blocks until call completes
 	mu.Lock()
