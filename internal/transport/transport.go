@@ -57,9 +57,9 @@ func listenHTTP(ctx context.Context, srv *mcpserver.MCPServer, cfg *config.Serve
 
 	httpSrv := mcpserver.NewStreamableHTTPServer(srv,
 		mcpserver.WithSessionIdleTTL(30*time.Minute),
+		mcpserver.WithHeartbeatInterval(30*time.Second),
 		mcpserver.WithStreamableHTTPLogger(logger),
 		mcpserver.WithStreamableHTTPServer(&http.Server{
-			Addr:              addr,
 			Handler:           mux,
 			ReadHeaderTimeout: 10 * time.Second,
 		}),
@@ -74,7 +74,7 @@ func listenHTTP(ctx context.Context, srv *mcpserver.MCPServer, cfg *config.Serve
 	}()
 
 	listenURL := fmt.Sprintf("http://%s/mcp", addr)
-	logger.Info("wtmcp listening", "url", listenURL)
+	logger.Info("wtmcp starting", "transport", "streamable-http", "addr", listenURL)
 
 	select {
 	case err := <-errCh:
