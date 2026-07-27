@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -235,5 +236,119 @@ func TestListenURL(t *testing.T) {
 	}
 	if got := ListenURL(&config.ServerConfig{Transport: config.TransportStreamableHTTP, Host: "localhost", Port: 8080}); got != "http://localhost:8080/mcp" {
 		t.Errorf("ListenURL(http) = %q, want http://localhost:8080/mcp", got)
+	}
+}
+
+func TestListenAndServeHTTPConcurrentSessions(t *testing.T) {
+	srv := newTestMCPServer()
+
+	port := freePort(t)
+	cfg := &config.ServerConfig{
+		Transport: config.TransportStreamableHTTP,
+		Host:      "localhost",
+		Port:      port,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() {
+		ListenAndServe(ctx, srv, cfg, slog.Default(), nil, nil) //nolint:errcheck,gosec
+	}()
+
+	addr := fmt.Sprintf("http://localhost:%d", port)
+	waitForHealthy(t, addr)
+
+	const numClients = 5
+	var wg sync.WaitGroup
+	errors := make(chan error, numClients)
+
+	for i := 0; i < numClients; i++ {
+		wg.Add(1)
+		go func(clientID int) {
+			defer wg.Done()
+
+			// Initialize
+			initReq := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test-client","version":"1.0"}}}`
+			resp, err := http.Post(addr+"/mcp", "application/json", strings.NewReader(initReq)) //nolint:noctx // test
+			if err != nil {
+				errors <- fmt.Errorf("client %d init: %w", clientID, err)
+				return
+			}
+			sessionID := resp.Header.Get("Mcp-Session-Id")
+			_ = resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				errors <- fmt.Errorf("client %d init status: %d", clientID, resp.StatusCode)
+				return
+			}
+
+			// List tools (carry session ID from initialize)
+			listReq := `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`
+			req, _ := http.NewRequest(http.MethodPost, addr+"/mcp", strings.NewReader(listReq)) //nolint:noctx // test
+			req.Header.Set("Content-Type", "application/json")
+			if sessionID != "" {
+				req.Header.Set("Mcp-Session-Id", sessionID)
+			}
+			resp, err = http.DefaultClient.Do(req)
+			if err != nil {
+				errors <- fmt.Errorf("client %d list: %w", clientID, err)
+				return
+			}
+			_ = resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				errors <- fmt.Errorf("client %d list status: %d", clientID, resp.StatusCode)
+			}
+		}(i)
+	}
+
+	wg.Wait()
+	close(errors)
+
+	for err := range errors {
+		t.Error(err)
+	}
+}
+
+func TestReloadLockSerializesAgainstCalls(t *testing.T) {
+	var mu sync.RWMutex
+	var order []string
+	var orderMu sync.Mutex
+
+	record := func(event string) {
+		orderMu.Lock()
+		order = append(order, event)
+		orderMu.Unlock()
+	}
+
+	callDone := make(chan struct{})
+
+	// Simulate in-flight tool call
+	go func() {
+		mu.RLock()
+		record("call-start")
+		time.Sleep(100 * time.Millisecond)
+		record("call-end")
+		mu.RUnlock()
+		close(callDone)
+	}()
+
+	// Give call time to start
+	time.Sleep(20 * time.Millisecond)
+
+	// Reload blocks until call completes
+	mu.Lock()
+	record("reload")
+	mu.Unlock()
+
+	<-callDone
+
+	orderMu.Lock()
+	defer orderMu.Unlock()
+
+	if len(order) != 3 {
+		t.Fatalf("expected 3 events, got %v", order)
+	}
+	if order[0] != "call-start" || order[1] != "call-end" || order[2] != "reload" {
+		t.Errorf("expected [call-start, call-end, reload], got %v", order)
 	}
 }
