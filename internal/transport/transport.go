@@ -4,6 +4,7 @@ package transport
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -73,6 +74,11 @@ func listenHTTP(ctx context.Context, srv *mcpserver.MCPServer, cfg *config.Serve
 		errCh <- httpSrv.Start(addr)
 	}()
 
+	if cfg.Host != "localhost" && cfg.Host != "127.0.0.1" && cfg.Host != "::1" {
+		logger.Warn("binding to non-loopback address with no authentication",
+			"host", cfg.Host, "port", cfg.Port)
+	}
+
 	listenURL := fmt.Sprintf("http://%s/mcp", addr)
 	logger.Info("wtmcp starting", "transport", "streamable-http", "addr", listenURL)
 
@@ -83,7 +89,15 @@ func listenHTTP(ctx context.Context, srv *mcpserver.MCPServer, cfg *config.Serve
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer cancel()
 		if err := httpSrv.Shutdown(shutdownCtx); err != nil {
-			logger.Error("http shutdown error", "err", err)
+			logger.Error("http shutdown error, forcing close", "err", err)
+		}
+		// Drain startup error if Start() failed in the same tick as ctx cancellation.
+		select {
+		case err := <-errCh:
+			if err != nil && !errors.Is(err, http.ErrServerClosed) {
+				return fmt.Errorf("http server: %w", err)
+			}
+		default:
 		}
 		return nil
 	}
