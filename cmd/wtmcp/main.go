@@ -321,7 +321,9 @@ func run(forceStdio bool) error {
 	}
 
 	// Non-plugin cleanup runs on context cancellation.
+	cleanupDone := make(chan struct{})
 	go func() {
+		defer close(cleanupDone)
 		<-ctx.Done()
 		controlWatcher.Stop()
 		cacheStore.Close() //nolint:errcheck,gosec // best-effort on shutdown
@@ -331,6 +333,8 @@ func run(forceStdio bool) error {
 
 	logger := slog.New(slog.NewTextHandler(log.Writer(), &slog.HandlerOptions{Level: slog.LevelInfo}))
 	err = transport.ListenAndServe(ctx, srv, &cfg.Server, logger, os.Stdin, os.Stdout)
+
+	<-cleanupDone // ensure no reload in progress
 
 	// Sequential shutdown: transport drained, now safe to tear down.
 	log.Println("shutting down plugins...")

@@ -313,7 +313,105 @@ func TestListenAndServeHTTPConcurrentSessions(t *testing.T) {
 	}
 }
 
-func TestReloadLockSerializesAgainstCalls(t *testing.T) {
+func TestListenAndServeHTTPDrainBeforeShutdown(t *testing.T) {
+	// Register a tool that takes 500ms to respond.
+	srv := mcpserver.NewMCPServer("test-server", "1.0.0",
+		mcpserver.WithToolCapabilities(true),
+	)
+	srv.AddTool(mcp.Tool{
+		Name:        "slow",
+		Description: "slow tool",
+		InputSchema: mcp.ToolInputSchema{
+			Type:       "object",
+			Properties: map[string]any{},
+		},
+	}, func(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		time.Sleep(500 * time.Millisecond)
+		return mcp.NewToolResultText("completed"), nil
+	})
+
+	port := freePort(t)
+	cfg := &config.ServerConfig{
+		Transport: config.TransportStreamableHTTP,
+		Host:      "localhost",
+		Port:      port,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- ListenAndServe(ctx, srv, cfg, slog.Default(), nil, nil)
+	}()
+
+	addr := fmt.Sprintf("http://localhost:%d", port)
+	waitForHealthy(t, addr)
+
+	// Initialize a session
+	initReq := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`
+	initResp, err := http.Post(addr+"/mcp", "application/json", strings.NewReader(initReq)) //nolint:noctx // test
+	if err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	sessionID := initResp.Header.Get("Mcp-Session-Id")
+	_ = initResp.Body.Close()
+
+	// Start a slow tool call in a goroutine
+	toolDone := make(chan struct{})
+	var toolErr error
+	var toolStatus int
+	go func() {
+		defer close(toolDone)
+		callReq := `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"slow","arguments":{}}}`
+		req, _ := http.NewRequest("POST", addr+"/mcp", strings.NewReader(callReq)) //nolint:noctx // test
+		req.Header.Set("Content-Type", "application/json")
+		if sessionID != "" {
+			req.Header.Set("Mcp-Session-Id", sessionID)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			toolErr = err
+			return
+		}
+		toolStatus = resp.StatusCode
+		_ = resp.Body.Close()
+	}()
+
+	// Give the tool call time to start, then cancel
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+
+	// The tool call should complete despite shutdown
+	select {
+	case <-toolDone:
+		if toolErr != nil {
+			t.Fatalf("tool call failed during drain: %v", toolErr)
+		}
+		if toolStatus != http.StatusOK {
+			t.Errorf("tool call status = %d during drain, want 200", toolStatus)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("tool call did not complete during drain")
+	}
+
+	// Server should have shut down cleanly
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Errorf("ListenAndServe error: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("ListenAndServe did not return")
+	}
+}
+
+// TestRWMutexReloadPattern validates the locking pattern used by
+// Handle.reloadMu: read locks (tool calls) run concurrently, but a
+// write lock (reload) blocks until all reads complete. This tests the
+// pattern, not the Handle integration — a Handle-level test requires
+// a running plugin process. See dispatch.go:126 for the RLock site.
+func TestRWMutexReloadPattern(t *testing.T) {
 	var mu sync.RWMutex
 	var order []string
 	var orderMu sync.Mutex
