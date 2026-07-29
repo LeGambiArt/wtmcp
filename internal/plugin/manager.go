@@ -838,6 +838,16 @@ func (m *Manager) Reload(ctx context.Context, name string) error {
 	m.reloadMu.Lock()
 	defer m.reloadMu.Unlock()
 
+	// Lock the current handle to wait for in-flight tool calls.
+	// Must be inside reloadMu to always see the current handle.
+	m.handlesMu.Lock()
+	handle := m.handles[name]
+	m.handlesMu.Unlock()
+	if handle != nil {
+		handle.ReloadLock()
+		defer handle.ReloadUnlock()
+	}
+
 	group, needEnvReread, envDirErr := m.reloadReadState(name)
 
 	if needEnvReread {
