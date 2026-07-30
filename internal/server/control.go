@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	mcpserver "github.com/mark3labs/mcp-go/server"
@@ -40,6 +41,7 @@ type ControlWatcher struct {
 	listenURL   string
 	stop        chan struct{}
 	done        chan struct{}
+	started     atomic.Bool
 }
 
 // NewControlWatcher creates a control watcher for the given workdir.
@@ -79,12 +81,16 @@ func (w *ControlWatcher) Start() error {
 	}
 
 	go w.pollLoop()
+	w.started.Store(true)
 	log.Printf("control watcher started: %s", w.commandsDir)
 	return nil
 }
 
 // Stop stops the polling loop and cleans up the PID file.
 func (w *ControlWatcher) Stop() {
+	if !w.started.Load() {
+		return
+	}
 	close(w.stop)
 	<-w.done
 	_ = os.Remove(w.pidFile)

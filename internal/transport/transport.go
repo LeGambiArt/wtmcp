@@ -91,13 +91,9 @@ func listenHTTP(ctx context.Context, srv *mcpserver.MCPServer, cfg *config.Serve
 		if err := httpSrv.Shutdown(shutdownCtx); err != nil {
 			logger.Error("http shutdown error, forcing close", "err", err)
 		}
-		// Drain startup error if Start() failed in the same tick as ctx cancellation.
-		select {
-		case err := <-errCh:
-			if err != nil && !errors.Is(err, http.ErrServerClosed) {
-				return fmt.Errorf("http server: %w", err)
-			}
-		default:
+		// Start() is guaranteed to have returned after Shutdown() closes the listener.
+		if err := <-errCh; err != nil && !errors.Is(err, http.ErrServerClosed) {
+			return fmt.Errorf("http server: %w", err)
 		}
 		return nil
 	}
@@ -113,6 +109,10 @@ func ListenURL(cfg *config.ServerConfig) string {
 	return fmt.Sprintf("http://%s/mcp", addr)
 }
 
+// handleHealthz returns 200 OK for Kubernetes liveness probes.
+// This endpoint does not check plugin loading state — use it for
+// liveness only, not readiness. A /readyz endpoint that checks
+// plugin availability is planned for a future release.
 func handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)

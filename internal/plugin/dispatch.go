@@ -131,6 +131,16 @@ func (h *Handle) CallTool(ctx context.Context, toolName string, params json.RawM
 		defer h.mu.Unlock()
 	}
 
+	// After a reload, the old handle's process is stopped. Callers that
+	// were blocked at reloadMu.RLock during the reload will reach here
+	// with a dead process. Return a clear error instead of a broken pipe.
+	if h.manifest.Execution == "persistent" && h.process != nil && h.process.State() == StateStopping {
+		return nil, &protocol.Error{
+			Code:    "plugin_reloaded",
+			Message: fmt.Sprintf("%s was reloaded while this call was waiting; retry the tool call", h.manifest.Name),
+		}
+	}
+
 	// Auto-restart crashed persistent plugins (rate-limited).
 	// restartAllowed/recordRestart access h.restarts under h.restartMu
 	// (separate from h.mu to be safe for concurrency > 1 plugins).
