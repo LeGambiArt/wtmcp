@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 
 	gogitlab "gitlab.com/gitlab-org/api/client-go"
@@ -13,6 +14,9 @@ import (
 const maxBodyLen = 65000
 
 var validBranch = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9._/-]*[a-zA-Z0-9])?$`)
+
+// validProjectPath matches GitLab namespace paths (max 255 chars enforced separately).
+var validProjectPath = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._/-]*[a-zA-Z0-9]$`)
 
 func validateBranch(name string) error {
 	if strings.TrimSpace(name) == "" {
@@ -236,6 +240,7 @@ type createMergeRequestParams struct {
 	ProjectID          string   `json:"project_id"`
 	SourceBranch       string   `json:"source_branch"`
 	TargetBranch       string   `json:"target_branch"`
+	TargetProjectID    string   `json:"target_project_id"`
 	Title              string   `json:"title"`
 	Description        string   `json:"description"`
 	Labels             []string `json:"labels"`
@@ -276,6 +281,29 @@ func toolCreateMergeRequest(params, _ json.RawMessage) (any, error) {
 		return nil, err
 	}
 
+	// Resolve target_project_id to a numeric ID if provided.
+	// When the value is a path string (not a numeric ID), a live GET /projects/:path
+	// is issued to resolve it — this occurs even in dry-run mode.
+	var targetProjectID *int64
+	if tid := strings.TrimSpace(p.TargetProjectID); tid != "" {
+		if n, err := strconv.ParseInt(tid, 10, 64); err == nil {
+			if n <= 0 {
+				return nil, fmt.Errorf("target_project_id: numeric ID must be positive")
+			}
+			targetProjectID = &n
+		} else {
+			if len(tid) > 255 || !validProjectPath.MatchString(tid) {
+				return nil, fmt.Errorf("target_project_id: invalid project path %q", tid)
+			}
+			proj, _, err := client.Projects.GetProject(tid, nil)
+			if err != nil {
+				return nil, fmt.Errorf("target_project_id: project not found or not accessible")
+			}
+			n := proj.ID
+			targetProjectID = &n
+		}
+	}
+
 	if isDryRun(p.DryRun) {
 		m := map[string]any{
 			"dry_run":       true,
@@ -284,6 +312,9 @@ func toolCreateMergeRequest(params, _ json.RawMessage) (any, error) {
 			"source_branch": p.SourceBranch,
 			"target_branch": p.TargetBranch,
 			"title":         title,
+		}
+		if targetProjectID != nil {
+			m["target_project_id"] = *targetProjectID
 		}
 		if p.Description != "" {
 			runes := []rune(p.Description)
@@ -308,9 +339,10 @@ func toolCreateMergeRequest(params, _ json.RawMessage) (any, error) {
 	}
 
 	opts := &gogitlab.CreateMergeRequestOptions{
-		Title:        &title,
-		SourceBranch: &p.SourceBranch,
-		TargetBranch: &p.TargetBranch,
+		Title:           &title,
+		SourceBranch:    &p.SourceBranch,
+		TargetBranch:    &p.TargetBranch,
+		TargetProjectID: targetProjectID,
 	}
 	if p.RemoveSourceBranch != nil {
 		opts.RemoveSourceBranch = p.RemoveSourceBranch
@@ -331,7 +363,7 @@ func toolCreateMergeRequest(params, _ json.RawMessage) (any, error) {
 		return nil, fmt.Errorf("create merge request: %w", err)
 	}
 
-	return map[string]any{
+	result := map[string]any{
 		"iid":           mr.IID,
 		"project_id":    p.ProjectID,
 		"title":         mr.Title,
@@ -340,7 +372,11 @@ func toolCreateMergeRequest(params, _ json.RawMessage) (any, error) {
 		"source_branch": mr.SourceBranch,
 		"target_branch": mr.TargetBranch,
 		"created":       true,
-	}, nil
+	}
+	if mr.TargetProjectID != 0 {
+		result["target_project_id"] = mr.TargetProjectID
+	}
+	return result, nil
 }
 
 // --- gitlab_create_branch ---

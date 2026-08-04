@@ -279,6 +279,31 @@ func TestCreateMergeRequestValidation(t *testing.T) {
 			params: map[string]any{"project_id": "p", "source_branch": "feat", "target_branch": "main", "title": "t", "description": strings.Repeat("x", maxBodyLen+1)},
 			errMsg: "description exceeds",
 		},
+		{
+			name:   "target_project_id zero",
+			params: map[string]any{"project_id": "p", "source_branch": "feat", "target_branch": "main", "title": "t", "target_project_id": "0"},
+			errMsg: "numeric ID must be positive",
+		},
+		{
+			name:   "target_project_id negative",
+			params: map[string]any{"project_id": "p", "source_branch": "feat", "target_branch": "main", "title": "t", "target_project_id": "-1"},
+			errMsg: "numeric ID must be positive",
+		},
+		{
+			name:   "target_project_id invalid path",
+			params: map[string]any{"project_id": "p", "source_branch": "feat", "target_branch": "main", "title": "t", "target_project_id": "bad path!"},
+			errMsg: "invalid project path",
+		},
+		{
+			name:   "target_project_id path starts with dash",
+			params: map[string]any{"project_id": "p", "source_branch": "feat", "target_branch": "main", "title": "t", "target_project_id": "-bad/path"},
+			errMsg: "invalid project path",
+		},
+		{
+			name:   "target_project_id too long",
+			params: map[string]any{"project_id": "p", "source_branch": "feat", "target_branch": "main", "title": "t", "target_project_id": strings.Repeat("a", 256)},
+			errMsg: "invalid project path",
+		},
 	}
 
 	for _, tc := range tests {
@@ -291,6 +316,32 @@ func TestCreateMergeRequestValidation(t *testing.T) {
 				t.Errorf("error = %q, want to contain %q", err.Error(), tc.errMsg)
 			}
 		})
+	}
+}
+
+func TestCreateMergeRequestDryRunNumericTargetProject(t *testing.T) {
+	setupGitLabTest(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Error("should not make any HTTP calls when target_project_id is numeric")
+		http.NotFound(w, r)
+	})
+
+	result, err := toolCreateMergeRequest(mustJSON(t, map[string]any{
+		"project_id":        "group/fork",
+		"source_branch":     "fix-branch",
+		"target_branch":     "main",
+		"title":             "Fix something",
+		"target_project_id": "42",
+	}), nil)
+	if err != nil {
+		t.Fatalf("toolCreateMergeRequest: %v", err)
+	}
+
+	m := result.(map[string]any)
+	if m["dry_run"] != true {
+		t.Errorf("dry_run = %v, want true", m["dry_run"])
+	}
+	if m["target_project_id"] != int64(42) {
+		t.Errorf("target_project_id = %v (%T), want int64(42)", m["target_project_id"], m["target_project_id"])
 	}
 }
 

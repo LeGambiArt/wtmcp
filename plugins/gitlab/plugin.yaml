@@ -389,6 +389,9 @@ tools:
         type: string
         required: true
         description: "Branch to merge into"
+      target_project_id:
+        type: string
+        description: "Target project ID or path for cross-project (fork-to-upstream) MRs. When set, project_id is the fork and this is the upstream project. A path value is resolved to a numeric ID via a live API call, even in dry-run mode."
       title:
         type: string
         required: true
