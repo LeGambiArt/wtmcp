@@ -184,6 +184,13 @@ func TestBuildProfilePythonPlugin(t *testing.T) {
 	if len(pyProfile.ReadPaths) <= len(goProfile.ReadPaths) {
 		t.Error("Python plugin should have more ReadPaths than Go plugin (interpreter)")
 	}
+
+	if !pyProfile.AllowExec {
+		t.Error("AllowExec must be true for Python handlers (interpreter needs execve)")
+	}
+	if goProfile.AllowExec {
+		t.Error("AllowExec must be false for non-Python handlers")
+	}
 }
 
 func contains(slice []string, s string) bool {

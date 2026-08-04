@@ -80,13 +80,15 @@ func (m *Manager) buildProfile(info PluginInfo) arapuca.Profile {
 	write := []string{tmpDir, dataDir}
 
 	return arapuca.Profile{
-		ReadPaths:     read,
-		WritePaths:    write,
-		MaxMemoryMB:   limits.MaxMemoryMB,
-		MaxCPUPct:     limits.MaxCPUPct,
-		MaxPIDs:       limits.MaxPIDs,
-		MaxFileSizeMB: limits.MaxFileSizeMB,
-		UseNetNS:      true,
+		ReadPaths:        read,
+		WritePaths:       write,
+		MaxMemoryMB:      limits.MaxMemoryMB,
+		MaxCPUPct:        limits.MaxCPUPct,
+		MaxPIDs:          limits.MaxPIDs,
+		MaxFileSizeMB:    limits.MaxFileSizeMB,
+		AllowExec:        isPython(info.Handler),
+		CgroupBestEffort: true,
+		UseNetNS:         true,
 	}
 }
 
