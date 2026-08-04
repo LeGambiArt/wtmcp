@@ -120,6 +120,15 @@ func main() {
 }
 
 func run(forceStdio bool) error {
+	// Cgroup trampoline: when a non-root user inherits a root-owned
+	// cgroup (common after su/sudo), re-exec through systemd-run so
+	// the process starts in the user's cgroup tree where sandbox
+	// resource limits work. Must run before any resource allocation
+	// since syscall.Exec replaces the process without running defers.
+	if reexecErr := maybeCgroupTrampoline(); reexecErr != nil {
+		log.Printf("cgroup trampoline: %v (continuing without cgroup resource limits)", reexecErr)
+	}
+
 	// Capture the caller's CWD for file I/O before anything changes it.
 	sessionDir, err := os.Getwd()
 	if err != nil || !filepath.IsAbs(sessionDir) {
