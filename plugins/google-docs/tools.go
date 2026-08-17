@@ -1727,6 +1727,10 @@ func insertMarkdownWithTables(docID string, title string, segments []markdownSeg
 			}
 		}
 
+		// Resolve anchor links now, while Phase 1 indices are still valid.
+		// Phase 2 cell population shifts post-table indices forward.
+		anchorWarnings := resolveAnchorLinks(docID, allDeferredAnchors)
+
 		// --- Phase 2: populate all table cells (chunked) ---
 		//
 		// Tables are processed in reverse document order so that cell
@@ -1749,8 +1753,6 @@ func insertMarkdownWithTables(docID string, title string, segments []markdownSeg
 			}
 			totalReplies += len(resp.Replies)
 		}
-
-		anchorWarnings := resolveAnchorLinks(docID, allDeferredAnchors)
 
 		result := map[string]any{
 			"document_id":  docID,
