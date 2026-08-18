@@ -12,7 +12,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const mcpServerKey = "what-the-mcp"
+const mcpServerKey = "wtmcp"
+const legacyServerKey = "what-the-mcp"
 
 // agentSpec defines how a specific AI agent stores its MCP server configuration.
 type agentSpec struct {
@@ -207,8 +208,9 @@ func agentEnable(agentName, dir string, readOnly bool) error {
 		serverEntry["type"] = "stdio"
 	}
 
-	// Set the server entry
+	// Set the server entry and remove legacy key if present
 	mcpServers[mcpServerKey] = serverEntry
+	delete(mcpServers, legacyServerKey)
 	config["mcpServers"] = mcpServers
 
 	// Write config
@@ -246,14 +248,17 @@ func agentDisable(agentName, dir string) error {
 		return nil
 	}
 
-	// Check if entry exists
-	if _, exists := mcpServers[mcpServerKey]; !exists {
+	// Check if either current or legacy entry exists
+	_, hasCurrent := mcpServers[mcpServerKey]
+	_, hasLegacy := mcpServers[legacyServerKey]
+	if !hasCurrent && !hasLegacy {
 		fmt.Printf("%s is not configured for %s in %s\n", mcpServerKey, agentName, dir)
 		return nil
 	}
 
-	// Remove the entry
+	// Remove both current and legacy entries
 	delete(mcpServers, mcpServerKey)
+	delete(mcpServers, legacyServerKey)
 
 	// If mcpServers is now empty, remove it from config
 	if len(mcpServers) == 0 {

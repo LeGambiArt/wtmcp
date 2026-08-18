@@ -272,7 +272,7 @@ func TestAgentEnable_ClaudeVsClaudeCode_SameConfig(t *testing.T) {
 		t.Fatal("one or both configs missing mcpServers")
 	}
 
-	// Both should have what-the-mcp entry
+	// Both should have wtmcp entry
 	servers1 := config1["mcpServers"].(map[string]any)
 	servers2 := config2["mcpServers"].(map[string]any)
 
@@ -343,10 +343,10 @@ func TestAgentEnable_ClaudeCode_NewFile(t *testing.T) {
 		t.Fatal("mcpServers not found or wrong type")
 	}
 
-	// Check what-the-mcp entry
+	// Check wtmcp entry
 	wtmcp, ok := mcpServers[mcpServerKey].(map[string]any)
 	if !ok {
-		t.Fatalf("what-the-mcp entry not found or wrong type")
+		t.Fatalf("wtmcp entry not found or wrong type")
 	}
 
 	// Check type field (required for Claude Code)
@@ -464,7 +464,7 @@ func TestAgentEnable_ExistingServers(t *testing.T) {
 		t.Error("other-server was removed")
 	}
 	if _, ok := mcpServers[mcpServerKey]; !ok {
-		t.Error("what-the-mcp was not added")
+		t.Error("wtmcp was not added")
 	}
 }
 
@@ -517,7 +517,7 @@ func TestAgentEnable_Gemini_PreservesOtherSettings(t *testing.T) {
 		t.Error("other-server was removed")
 	}
 	if _, ok := mcpServers[mcpServerKey]; !ok {
-		t.Error("what-the-mcp was not added")
+		t.Error("wtmcp was not added")
 	}
 }
 
@@ -526,7 +526,7 @@ func TestAgentEnable_OverwriteExisting(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, ".mcp.json")
 
-	// Write existing config with what-the-mcp
+	// Write existing config with wtmcp
 	existingConfig := map[string]any{
 		"mcpServers": map[string]any{
 			mcpServerKey: map[string]any{
@@ -556,6 +556,101 @@ func TestAgentEnable_OverwriteExisting(t *testing.T) {
 	command := wtmcp["command"].(string)
 	if command == "/old/path/to/wtmcp" {
 		t.Error("command was not updated")
+	}
+}
+
+func TestAgentEnable_RemovesLegacyKey(t *testing.T) {
+	t.Skip("test requires wtmcp binary in PATH")
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, ".mcp.json")
+
+	// Write config with legacy "what-the-mcp" key
+	config := map[string]any{
+		"mcpServers": map[string]any{
+			legacyServerKey: map[string]any{
+				"command": "/old/path/to/wtmcp",
+				"type":    "stdio",
+			},
+		},
+	}
+	if err := writeJSONConfig(configPath, config); err != nil {
+		t.Fatalf("failed to write config: %v", err)
+	}
+
+	if err := agentEnable("claude", tmpDir, false); err != nil {
+		t.Fatalf("agentEnable() failed: %v", err)
+	}
+
+	config, err := readJSONConfig(configPath)
+	if err != nil {
+		t.Fatalf("failed to read config: %v", err)
+	}
+
+	mcpServers := config["mcpServers"].(map[string]any)
+
+	if _, ok := mcpServers[legacyServerKey]; ok {
+		t.Error("legacy key should have been removed")
+	}
+	if _, ok := mcpServers[mcpServerKey]; !ok {
+		t.Error("new key should have been added")
+	}
+}
+
+func TestAgentDisable_RemovesLegacyKey(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, ".mcp.json")
+
+	// Write config with only legacy key
+	config := map[string]any{
+		"mcpServers": map[string]any{
+			legacyServerKey: map[string]any{
+				"command": "/path/to/wtmcp",
+				"type":    "stdio",
+			},
+		},
+	}
+	if err := writeJSONConfig(configPath, config); err != nil {
+		t.Fatalf("failed to write config: %v", err)
+	}
+
+	if err := agentDisable("claude", tmpDir); err != nil {
+		t.Fatalf("agentDisable() failed: %v", err)
+	}
+
+	// File should be removed (only entry was the legacy key)
+	if _, err := os.Stat(configPath); !os.IsNotExist(err) {
+		t.Error("config file should be removed when empty")
+	}
+}
+
+func TestAgentDisable_RemovesBothKeys(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, ".mcp.json")
+
+	// Write config with both legacy and current keys
+	config := map[string]any{
+		"mcpServers": map[string]any{
+			legacyServerKey: map[string]any{
+				"command": "/old/path/to/wtmcp",
+				"type":    "stdio",
+			},
+			mcpServerKey: map[string]any{
+				"command": "/path/to/wtmcp",
+				"type":    "stdio",
+			},
+		},
+	}
+	if err := writeJSONConfig(configPath, config); err != nil {
+		t.Fatalf("failed to write config: %v", err)
+	}
+
+	if err := agentDisable("claude", tmpDir); err != nil {
+		t.Fatalf("agentDisable() failed: %v", err)
+	}
+
+	// File should be removed (both entries removed, nothing left)
+	if _, err := os.Stat(configPath); !os.IsNotExist(err) {
+		t.Error("config file should be removed when empty")
 	}
 }
 
@@ -591,9 +686,9 @@ func TestAgentDisable_RemovesEntry(t *testing.T) {
 
 	mcpServers := config["mcpServers"].(map[string]any)
 
-	// what-the-mcp should be removed
+	// wtmcp should be removed
 	if _, ok := mcpServers[mcpServerKey]; ok {
-		t.Error("what-the-mcp was not removed")
+		t.Error("wtmcp was not removed")
 	}
 
 	// other-server should still exist
@@ -615,7 +710,7 @@ func TestAgentDisable_NoEntry(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, ".mcp.json")
 
-	// Write config without what-the-mcp
+	// Write config without wtmcp
 	config := map[string]any{
 		"mcpServers": map[string]any{
 			"other-server": map[string]any{
@@ -644,7 +739,7 @@ func TestAgentDisable_ClaudeCode_RemovesFileWhenEmpty(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, ".mcp.json")
 
-	// Write config with only what-the-mcp
+	// Write config with only wtmcp
 	config := map[string]any{
 		"mcpServers": map[string]any{
 			mcpServerKey: map[string]any{
@@ -676,7 +771,7 @@ func TestAgentDisable_Cursor_RemovesFileWhenEmpty(t *testing.T) {
 
 	configPath := filepath.Join(cursorDir, "mcp.json")
 
-	// Write config with only what-the-mcp
+	// Write config with only wtmcp
 	config := map[string]any{
 		"mcpServers": map[string]any{
 			mcpServerKey: map[string]any{
@@ -708,7 +803,7 @@ func TestAgentDisable_Gemini_KeepsFileWhenEmpty(t *testing.T) {
 
 	configPath := filepath.Join(geminiDir, "settings.json")
 
-	// Write config with only what-the-mcp
+	// Write config with only wtmcp
 	config := map[string]any{
 		"mcpServers": map[string]any{
 			mcpServerKey: map[string]any{
