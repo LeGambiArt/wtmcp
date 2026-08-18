@@ -202,7 +202,12 @@ func registerPluginTools(deps *serverDeps, manifest *plugin.Manifest) {
 			}
 		}
 
-		tool, schemaJSON := buildMCPTool(toolDef, progressive)
+		tool, schemaJSON, err := buildMCPTool(toolDef, progressive)
+		if err != nil {
+			log.Printf("WARNING: tool %q from plugin %q skipped: %v", toolName, plugName, err)
+			skipped++
+			continue
+		}
 		if manifest.IsUserPlugin {
 			tool.Description = "[user plugin] " + sanitizeContent(tool.Description)
 		}
@@ -402,9 +407,12 @@ func registerPluginTools(deps *serverDeps, manifest *plugin.Manifest) {
 	}
 }
 
-func buildMCPTool(def plugin.ToolDef, progressive bool) (mcp.Tool, []byte) {
+func buildMCPTool(def plugin.ToolDef, progressive bool) (mcp.Tool, []byte, error) {
 	schema := def.ParamsSchema()
-	schemaJSON, _ := json.Marshal(schema)
+	schemaJSON, err := json.Marshal(schema)
+	if err != nil {
+		return mcp.Tool{}, nil, fmt.Errorf("marshal schema for %s: %w", def.Name, err)
+	}
 	tool := mcp.NewToolWithRawSchema(def.Name, def.Description, schemaJSON)
 
 	if progressive && !def.IsPrimary() {
@@ -425,7 +433,7 @@ func buildMCPTool(def plugin.ToolDef, progressive bool) (mcp.Tool, []byte) {
 		tool.Annotations.DestructiveHint = &t
 	}
 
-	return tool, schemaJSON
+	return tool, schemaJSON, nil
 }
 
 func registerDisabledPluginTools(srv *mcpserver.MCPServer, disabled map[string]plugin.DisabledPlugin, progressive bool, readOnly bool, auditor *audit.Logger) {
@@ -440,7 +448,11 @@ func registerDisabledPluginTools(srv *mcpserver.MCPServer, disabled map[string]p
 				continue
 			}
 
-			tool, _ := buildMCPTool(toolDef, progressive)
+			tool, _, err := buildMCPTool(toolDef, progressive)
+			if err != nil {
+				log.Printf("WARNING: disabled tool %q from plugin %q skipped: %v", toolDef.Name, pluginName, err)
+				continue
+			}
 			prefix := "[DISABLED]"
 			if dp.Manifest.IsUserPlugin {
 				prefix = "[DISABLED] [user plugin]"

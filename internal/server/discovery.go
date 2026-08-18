@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
@@ -54,7 +55,10 @@ func registerToolSearch(srv *mcpserver.MCPServer, index *ToolIndex, excludeWrite
 				out[i] = r.toSearchResult()
 			}
 
-			data, _ := json.Marshal(out)
+			data, err := json.Marshal(out)
+			if err != nil {
+				return nil, fmt.Errorf("marshal search results: %w", err)
+			}
 			return sanitizedTextResult(string(data)), nil
 		},
 	)
