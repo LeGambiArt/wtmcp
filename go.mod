@@ -18,7 +18,7 @@ require (
 	github.com/charmbracelet/x/term v0.2.2
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
-	github.com/sergio-correia/go-arapuca v0.2.2
+	github.com/sergio-correia/go-arapuca v0.2.3
 	github.com/spf13/cobra v1.10.2
 	github.com/zalando/go-keyring v0.2.6
 	gitlab.com/gitlab-org/api/client-go v1.46.0
