@@ -598,50 +598,7 @@ func (t *ToolDef) ParamsSchema() map[string]any {
 	var required []string
 
 	for name, p := range t.Params {
-		prop := make(map[string]any)
-		if p.Type != "" {
-			prop["type"] = p.Type
-		}
-		if p.Description != "" {
-			prop["description"] = p.Description
-		}
-		if p.Default != nil {
-			prop["default"] = p.Default
-		}
-		if len(p.Enum) > 0 {
-			prop["enum"] = p.Enum
-		}
-		if p.Type == "array" && p.Items != nil {
-			itemSchema := make(map[string]any)
-			if p.Items.Type != "" {
-				itemSchema["type"] = p.Items.Type
-			}
-			if len(p.Items.Properties) > 0 {
-				itemProps := make(map[string]any, len(p.Items.Properties))
-				for pn, pp := range p.Items.Properties {
-					iprop := make(map[string]any)
-					if pp.Type != "" {
-						iprop["type"] = pp.Type
-					}
-					if pp.Description != "" {
-						iprop["description"] = pp.Description
-					}
-					if pp.Default != nil {
-						iprop["default"] = pp.Default
-					}
-					if len(pp.Enum) > 0 {
-						iprop["enum"] = pp.Enum
-					}
-					itemProps[pn] = iprop
-				}
-				itemSchema["properties"] = itemProps
-			}
-			if len(p.Items.Required) > 0 {
-				itemSchema["required"] = p.Items.Required
-			}
-			prop["items"] = itemSchema
-		}
-		properties[name] = prop
+		properties[name] = paramToSchema(p)
 		if p.Required {
 			required = append(required, name)
 		}
@@ -653,6 +610,44 @@ func (t *ToolDef) ParamsSchema() map[string]any {
 	}
 	if len(required) > 0 {
 		schema["required"] = required
+	}
+	return schema
+}
+
+func paramToSchema(p ParamDef) map[string]any {
+	prop := make(map[string]any)
+	if p.Type != "" {
+		prop["type"] = p.Type
+	}
+	if p.Description != "" {
+		prop["description"] = p.Description
+	}
+	if p.Default != nil {
+		prop["default"] = p.Default
+	}
+	if len(p.Enum) > 0 {
+		prop["enum"] = p.Enum
+	}
+	if p.Type == "array" && p.Items != nil {
+		prop["items"] = itemsToSchema(p.Items)
+	}
+	return prop
+}
+
+func itemsToSchema(items *ItemsDef) map[string]any {
+	schema := make(map[string]any)
+	if items.Type != "" {
+		schema["type"] = items.Type
+	}
+	if len(items.Properties) > 0 {
+		props := make(map[string]any, len(items.Properties))
+		for name, pp := range items.Properties {
+			props[name] = paramToSchema(pp)
+		}
+		schema["properties"] = props
+	}
+	if len(items.Required) > 0 {
+		schema["required"] = items.Required
 	}
 	return schema
 }
