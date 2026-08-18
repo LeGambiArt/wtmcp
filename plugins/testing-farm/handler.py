@@ -197,7 +197,7 @@ def _discover_ssh_keys():
 def _validate_request_id(request_id):
     """Validate that request_id is a UUID."""
     if not _UUID_RE.match(request_id):
-        raise Exception(f"Invalid request ID format: {request_id}")
+        raise ValueError(f"Invalid request ID format: {request_id}")
 
 
 def _fetch_request(request_id):
@@ -965,7 +965,7 @@ def testing_farm_cancel(params):
     if dry_run is not False:
         status, body, _ = http("GET", f"/{API_VERSION}/requests/{request_id}")
         if status != 200:
-            raise Exception(f"Cannot fetch request {request_id} (HTTP {status}): {body}")
+            raise ApiError(status, body)
         state = body.get("state", "unknown") if isinstance(body, dict) else "unknown"
         return {
             "dry_run": True,
