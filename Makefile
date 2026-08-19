@@ -25,6 +25,12 @@ all: build
 # Build everything
 build: wtmcp wtmcpctl plugins
 
+# Guard: a leftover ./wtmcp directory from an older layout blocks the binary build.
+$(if $(shell test -d wtmcp && echo y),$(error \
+	A "wtmcp" directory exists in the project root — this is a leftover from an older \
+	layout. Rename it to ".wtmcp-data" or remove it so the wtmcp binary can be built here: \
+	mv wtmcp .wtmcp-data))
+
 # Build wtmcp binary
 wtmcp: arapuca $(shell find cmd/wtmcp -name '*.go') $(shell find internal -name '*.go')
 	@echo "Building wtmcp..."
@@ -33,8 +39,7 @@ wtmcp: arapuca $(shell find cmd/wtmcp -name '*.go') $(shell find internal -name 
 # Build wtmcpctl binary
 wtmcpctl: arapuca $(shell find cmd/wtmcpctl -name '*.go') $(shell find internal -name '*.go')
 	@echo "Building wtmcpctl..."
-	@mkdir -p bin
-	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o bin/wtmcpctl ./cmd/wtmcpctl
+	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o wtmcpctl ./cmd/wtmcpctl
 
 # Build without arapuca sandbox (no libarapuca needed).
 # Requires WTMCP_UNSANDBOXED=1 at runtime.
@@ -132,7 +137,7 @@ pre-commit:
 # Clean build artifacts
 clean:
 	@echo "Cleaning..."
-	rm -f wtmcp bin/wtmcpctl coverage.out
+	rm -f wtmcp wtmcpctl coverage.out
 	rm -rf build/
 	rm -f plugins/*/handler
 	@for dir in plugins/*/; do \

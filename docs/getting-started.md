@@ -8,8 +8,8 @@ mkdir -p -m 700 ~/.config/wtmcp/env.d
 cp env.d/jira.env.example ~/.config/wtmcp/env.d/jira.env
 # Edit ~/.config/wtmcp/env.d/jira.env with your credentials
 chmod 600 ~/.config/wtmcp/env.d/jira.env
-./bin/wtmcpctl agent enable claude
-./bin/wtmcpctl check
+./wtmcpctl agent enable claude
+./wtmcpctl check
 # Open Claude Code and ask: "Who am I in Jira?"
 ```
 
@@ -199,7 +199,7 @@ Run the following command from your project directory (or from `$HOME` for
 global registration — see the Note below):
 
 ```bash
-./bin/wtmcpctl agent enable claude
+./wtmcpctl agent enable claude
 ```
 
 Expected output:
@@ -218,12 +218,12 @@ automatically whenever it needs to call an MCP tool.
 > agent name:
 >
 > ```bash
-> ./bin/wtmcpctl agent enable gemini   # writes .gemini/settings.json
-> ./bin/wtmcpctl agent enable cursor   # writes .cursor/mcp.json
+> ./wtmcpctl agent enable gemini   # writes .gemini/settings.json
+> ./wtmcpctl agent enable cursor   # writes .cursor/mcp.json
 > ```
 
 > **Note:** Registration is project-scoped by default. Running
-> `./bin/wtmcpctl agent enable claude` inside a project directory creates a
+> `./wtmcpctl agent enable claude` inside a project directory creates a
 > `.mcp.json` that applies only to that project. Running the same command from
 > `$HOME` creates `~/.mcp.json`, which Claude Code picks up for any project
 > that does not have its own `.mcp.json`.
