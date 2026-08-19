@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/LeGambiArt/wtmcp/internal/credentials"
+	"github.com/LeGambiArt/wtmcp/internal/secrets/securefile"
 	"github.com/zalando/go-keyring"
 	"golang.org/x/oauth2"
 )
@@ -181,7 +183,7 @@ func TestResolveCredentialPath(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := resolveCredentialPath(tt.path, tt.dir)
+			result, err := ResolveCredentialPath(tt.path, tt.dir)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -192,9 +194,36 @@ func TestResolveCredentialPath(t *testing.T) {
 	}
 
 	t.Run("traversal rejected", func(t *testing.T) {
-		_, err := resolveCredentialPath("../../etc/passwd", "/opt/creds")
+		base := t.TempDir()
+		outside := filepath.Dir(base)
+		outsideFile := filepath.Join(outside, "outside.json")
+		if err := os.WriteFile(outsideFile, []byte(`{"access_token":"outside"}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		_, err := ResolveCredentialPath(filepath.Join("..", filepath.Base(outsideFile)), base)
 		if err == nil {
 			t.Error("expected error for path traversal")
+		}
+	})
+
+	t.Run("prefix-collision sibling rejected", func(t *testing.T) {
+		root := t.TempDir()
+		base := filepath.Join(root, "credentials")
+		sibling := filepath.Join(root, "credentials-backup")
+		if err := os.MkdirAll(base, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(sibling, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		outsideFile := filepath.Join(sibling, "outside.json")
+		if err := os.WriteFile(outsideFile, []byte(`{"access_token":"outside"}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		_, err := ResolveCredentialPath(filepath.Join("..", "credentials-backup", "outside.json"), base)
+		if err == nil {
+			t.Error("expected error for prefix-collision sibling path")
 		}
 	})
 
@@ -208,7 +237,7 @@ func TestResolveCredentialPath(t *testing.T) {
 		if err := os.Symlink(realDir, link); err != nil {
 			t.Skipf("symlinks not supported: %v", err)
 		}
-		result, err := resolveCredentialPath("token.json", link)
+		result, err := ResolveCredentialPath("token.json", link)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -226,7 +255,7 @@ func TestResolveCredentialPath(t *testing.T) {
 			t.Skipf("symlinks not supported: %v", err)
 		}
 		absPath := filepath.Join(link, "new-token.json")
-		result, err := resolveCredentialPath(absPath, link)
+		result, err := ResolveCredentialPath(absPath, link)
 		if err != nil {
 			t.Fatalf("should accept absolute path through symlinked base for new file: %v", err)
 		}
@@ -238,13 +267,50 @@ func TestResolveCredentialPath(t *testing.T) {
 
 	t.Run("symlink escaping base rejected", func(t *testing.T) {
 		dir := t.TempDir()
+		outside := t.TempDir()
 		link := filepath.Join(dir, "escape")
-		if err := os.Symlink("/etc/passwd", link); err != nil {
+		outsideFile := filepath.Join(outside, "outside.json")
+		if err := os.WriteFile(outsideFile, []byte(`{"access_token":"outside"}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(outsideFile, link); err != nil {
 			t.Skipf("symlinks not supported: %v", err)
 		}
-		_, err := resolveCredentialPath("escape", dir)
+		_, err := ResolveCredentialPath("escape", dir)
 		if err == nil {
 			t.Error("expected error for symlink escaping credentials dir")
+		}
+	})
+
+	t.Run("symlinked ancestor with missing descendant rejected", func(t *testing.T) {
+		dir := t.TempDir()
+		outside := t.TempDir()
+		if err := os.Symlink(outside, filepath.Join(dir, "escape")); err != nil {
+			t.Skipf("symlinks not supported: %v", err)
+		}
+
+		_, err := ResolveCredentialPath(filepath.Join("escape", "missing", "token.json"), dir)
+		if err == nil || !strings.Contains(err.Error(), "escapes credentials directory") {
+			t.Fatalf("ResolveCredentialPath error = %v, want containment error", err)
+		}
+		if _, err := os.Stat(filepath.Join(outside, "missing")); !os.IsNotExist(err) {
+			t.Fatalf("outside path was created or could not be checked: %v", err)
+		}
+	})
+
+	t.Run("missing nested path preserved", func(t *testing.T) {
+		dir := t.TempDir()
+		resolvedDir, err := filepath.EvalSymlinks(dir)
+		if err != nil {
+			t.Fatalf("EvalSymlinks: %v", err)
+		}
+		want := filepath.Join(resolvedDir, "tokens", "new", "token.json")
+		got, err := ResolveCredentialPath(filepath.Join("tokens", "new", "token.json"), dir)
+		if err != nil {
+			t.Fatalf("ResolveCredentialPath: %v", err)
+		}
+		if got != want {
+			t.Errorf("ResolveCredentialPath = %q, want %q", got, want)
 		}
 	})
 }
@@ -382,4 +448,66 @@ func TestOAuth2Provider_NoTokenAnywhere(t *testing.T) {
 	if p.Available() {
 		t.Error("provider should not be available without any token")
 	}
+}
+
+func TestIsFdPath(t *testing.T) {
+	currentPID := fmt.Sprintf("/proc/%d/fd/3", os.Getpid())
+	otherPID := fmt.Sprintf("/proc/%d/fd/7", os.Getpid()+1)
+
+	tests := []struct {
+		path string
+		want bool
+	}{
+		{"/dev/fd/3", true},
+		{"/dev/fd/42", true},
+		{"/proc/self/fd/7", true},
+		{currentPID, true},
+		{otherPID, false},
+		{"/proc/1/fd/0", false},
+		{"/home/user/.config/creds.json", false},
+		{"/proc/self/status", false},
+		{"/proc/", false},
+		{"", false},
+		{"/proc/self/fdx/3", false},
+		{"/proc/self/fd/", false},
+		{"/proc/self/fd/abc", false},
+		{"/proc/self/fd/3/extra", false},
+		{"/dev/fd/", false},
+		{"/dev/fd/abc", false},
+		{"/dev/fd/3/extra", false},
+	}
+	for _, tt := range tests {
+		if got := IsCurrentProcessFDPath(tt.path); got != tt.want {
+			t.Errorf("IsCurrentProcessFDPath(%q) = %v, want %v", tt.path, got, tt.want)
+		}
+	}
+}
+
+func TestOAuth2ProviderFromSecureFile(t *testing.T) {
+	dir := t.TempDir()
+	tokenPath := filepath.Join(dir, "token.json")
+	if err := os.WriteFile(tokenPath, []byte(`{"access_token":"test-token","token_type":"Bearer","expiry":"2099-01-01T00:00:00Z"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	secure, err := securefile.CreateCloexec("oauth2-credentials")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = secure.Close() }()
+	credentials := []byte(`{"installed":{"client_id":"trusted-client","client_secret":"secret","auth_uri":"https://auth.example","token_uri":"https://token.example"}}`)
+	if err := secure.Write(credentials); err != nil {
+		t.Fatal(err)
+	}
+
+	provider, err := newOAuth2ProviderFromSecureFile(tokenPath, secure, []string{"scope"}, dir, testTransport)
+	if err != nil {
+		t.Fatalf("newOAuth2ProviderFromSecureFile: %v", err)
+	}
+	if provider.config == nil {
+		t.Fatal("trusted credentials were not loaded")
+	}
+	if provider.config.ClientID != "trusted-client" || provider.config.Endpoint.TokenURL != "https://token.example" {
+		t.Fatalf("unexpected trusted config: %#v", provider.config)
+	}
+
 }

@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+
+	"github.com/LeGambiArt/wtmcp/internal/secrets/securefile"
 )
 
 // KnownProviderTypes lists the built-in auth provider type names.
@@ -48,25 +50,27 @@ type VariantConfig struct {
 
 // SingleAuthConfig is the config for a single auth provider instance.
 type SingleAuthConfig struct {
-	Type            string
-	Token           string
-	Header          string
-	Prefix          string
-	Username        string
-	Password        string
-	SPN             string
-	Scopes          []string
-	CredentialsFile string
-	TokenFile       string
-	CredentialsDir  string
-	TokenURL        string
-	ClientID        string
-	AppID           string
-	InstallationID  string
-	PrivateKey      string
-	PrivateKeyFile  string
-	BaseURL         string
-	Transport       http.RoundTripper // safe transport injected by plugin manager
+	Type                  string
+	Token                 string
+	Header                string
+	Prefix                string
+	Username              string
+	Password              string
+	SPN                   string
+	Scopes                []string
+	CredentialsFile       string
+	CredentialsSecureFile *securefile.SecureFile
+	TokenFile             string
+	CredentialsDir        string
+	TokenURL              string
+	ClientID              string
+	AppID                 string
+	InstallationID        string
+	PrivateKey            string
+	PrivateKeyFile        string
+	PrivateKeySecureFile  *securefile.SecureFile
+	BaseURL               string
+	Transport             http.RoundTripper // safe transport injected by plugin manager
 }
 
 // ResolveVariant selects the appropriate auth provider from a variant config.
@@ -117,12 +121,22 @@ func providerFromConfig(typeName string, cfg SingleAuthConfig, oauth2Opts *OAuth
 	case "kerberos/spnego":
 		return NewKerberosProvider(cfg.SPN), nil
 	case "oauth2":
+		if cfg.CredentialsSecureFile != nil {
+			return newOAuth2ProviderFromSecureFile(cfg.TokenFile, cfg.CredentialsSecureFile,
+				cfg.Scopes, cfg.CredentialsDir, cfg.Transport, oauth2Opts)
+		}
 		return NewOAuth2Provider(cfg.TokenFile, cfg.CredentialsFile, cfg.Scopes, cfg.CredentialsDir, cfg.Transport, oauth2Opts)
 	case "refresh_token":
 		return NewRefreshTokenProvider(cfg.TokenURL, cfg.ClientID, cfg.Token, cfg.Transport, cfg.TokenFile)
 	case "github_app":
 		privateKeyPEM := []byte(cfg.PrivateKey)
-		if cfg.PrivateKeyFile != "" {
+		if cfg.PrivateKeySecureFile != nil {
+			data, err := loadPrivateKeySecureFile(cfg.PrivateKeySecureFile)
+			if err != nil {
+				return nil, fmt.Errorf("github_app: load private key file: %w", err)
+			}
+			privateKeyPEM = data
+		} else if cfg.PrivateKeyFile != "" {
 			data, err := loadPrivateKeyFile(cfg.PrivateKeyFile)
 			if err != nil {
 				return nil, fmt.Errorf("github_app: load private key file: %w", err)

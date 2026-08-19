@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/LeGambiArt/wtmcp/internal/secrets/securefile"
 	"github.com/golang-jwt/jwt/v5"
 )
 
@@ -855,4 +856,35 @@ func TestPrivateKeyFileTakesPrecedence(t *testing.T) {
 	if gap.privateKey.N.Cmp(key.N) != 0 {
 		t.Error("private key does not match file key")
 	}
+}
+
+func TestPrivateKeySecureFile(t *testing.T) {
+	key, pemBytes := generateTestKey(t)
+	secure, err := securefile.CreateCloexec("github-app-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = secure.Close() }()
+	if err := secure.Write(pemBytes); err != nil {
+		t.Fatal(err)
+	}
+
+	provider, err := providerFromConfig("github_app", SingleAuthConfig{
+		Type:                 "github_app",
+		AppID:                "12345",
+		InstallationID:       "67890",
+		PrivateKeySecureFile: secure,
+		Transport:            http.DefaultTransport,
+	}, nil)
+	if err != nil {
+		t.Fatalf("providerFromConfig: %v", err)
+	}
+	githubProvider, ok := provider.(*GitHubAppProvider)
+	if !ok {
+		t.Fatalf("provider type = %T, want *GitHubAppProvider", provider)
+	}
+	if githubProvider.privateKey.N.Cmp(key.N) != 0 {
+		t.Fatal("trusted securefile key was not loaded")
+	}
+
 }
