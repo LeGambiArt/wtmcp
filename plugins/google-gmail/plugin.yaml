@@ -36,6 +36,8 @@ tools:
         description: "Max messages (hard limit: 100)"
       label_ids:
         type: array
+        items:
+          type: string
         description: "Filter by label IDs"
 
   - name: gmail_get_messages_summary
@@ -45,6 +47,8 @@ tools:
     params:
       message_ids:
         type: array
+        items:
+          type: string
         required: true
         description: "List of Gmail message IDs"
       max_messages:
@@ -62,6 +66,8 @@ tools:
         description: "Gmail search query"
       message_ids:
         type: array
+        items:
+          type: string
         description: "Specific message IDs (alternative to query)"
       max_messages:
         type: integer
@@ -78,6 +84,8 @@ tools:
     params:
       message_ids:
         type: array
+        items:
+          type: string
         required: true
         description: "List of message IDs (max 20)"
       format:
@@ -138,9 +146,13 @@ tools:
         required: true
       add_labels:
         type: array
+        items:
+          type: string
         description: "Label IDs to add"
       remove_labels:
         type: array
+        items:
+          type: string
         description: "Label IDs to remove"
       dry_run:
         type: boolean

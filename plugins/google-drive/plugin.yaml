@@ -157,9 +157,13 @@ tools:
         default: false
       mime_types:
         type: array
+        items:
+          type: string
         description: "Filter by MIME types"
       owners:
         type: array
+        items:
+          type: string
         description: "Filter by owners (e.g. ['me'])"
       include_trashed:
         type: boolean

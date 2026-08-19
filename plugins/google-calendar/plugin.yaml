@@ -83,6 +83,8 @@ tools:
         type: string
       attendees:
         type: array
+        items:
+          type: string
         description: "List of attendee email addresses"
       all_day:
         type: boolean
@@ -167,4 +169,6 @@ tools:
         description: "End time in RFC3339 format"
       calendar_ids:
         type: array
+        items:
+          type: string
         description: "List of calendar IDs (default: primary)"
