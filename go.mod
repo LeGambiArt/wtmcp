@@ -20,7 +20,7 @@ require (
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 	github.com/sergio-correia/go-arapuca v0.2.4
 	github.com/spf13/cobra v1.10.2
-	github.com/zalando/go-keyring v0.2.6
+	github.com/zalando/go-keyring v0.2.8
 	gitlab.com/gitlab-org/api/client-go v1.46.0
 	golang.org/x/crypto v0.55.0
 	golang.org/x/net v0.58.0
@@ -33,7 +33,6 @@ require (
 )
 
 require (
-	al.essio.dev/pkg/shellescape v1.6.0 // indirect
 	cloud.google.com/go/auth v0.23.0 // indirect
 	cloud.google.com/go/auth/oauth2adapt v0.2.8 // indirect
 	cloud.google.com/go/compute/metadata v0.9.0 // indirect
