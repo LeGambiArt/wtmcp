@@ -1092,44 +1092,54 @@ func (m *Manager) sanitizeReason(reason string) string {
 	return reason
 }
 
+type decryptedCredential struct {
+	path       string
+	secureFile *securefile.SecureFile
+}
+
 // decryptCredentialIfVault reads a credential file and, if it is
 // vault-encrypted ($ANSIBLE_VAULT or $WTMCP_VAULT), decrypts it to a
 // securefile. Returns the original path for plaintext files, or the
 // securefile path for encrypted files.
 func (m *Manager) decryptCredentialIfVault(pluginName, path string) (string, error) {
+	result, err := m.decryptCredentialIfVaultResult(pluginName, path)
+	return result.path, err
+}
+
+func (m *Manager) decryptCredentialIfVaultResult(pluginName, path string) (decryptedCredential, error) {
 	info, err := os.Stat(path)
 	if err != nil {
-		return "", err
+		return decryptedCredential{}, err
 	}
 	if info.Size() > 1<<20 {
-		return "", fmt.Errorf("credential file too large: %d bytes (max 1MB)", info.Size())
+		return decryptedCredential{}, fmt.Errorf("credential file too large: %d bytes (max 1MB)", info.Size())
 	}
 	data, err := os.ReadFile(path) //nolint:gosec // path from resolved plugin config
 	if err != nil {
-		return "", err
+		return decryptedCredential{}, err
 	}
 	if !secrets.IsEncrypted(data) {
-		return path, nil
+		return decryptedCredential{path: path}, nil
 	}
 
 	plaintext, err := m.decryptVaultData(data, pluginName)
 	if err != nil {
-		return "", err
+		return decryptedCredential{}, err
 	}
 
 	sf, err := securefile.CreateCloexec(filepath.Base(path))
 	if err != nil {
 		vault.ZeroBytes(plaintext)
-		return "", fmt.Errorf("create securefile: %w", err)
+		return decryptedCredential{}, fmt.Errorf("create securefile: %w", err)
 	}
 	if err := sf.Write(plaintext); err != nil {
 		vault.ZeroBytes(plaintext)
 		_ = sf.Close()
-		return "", fmt.Errorf("write securefile: %w", err)
+		return decryptedCredential{}, fmt.Errorf("write securefile: %w", err)
 	}
 	vault.ZeroBytes(plaintext)
 	m.secureTracker.TrackForPlugin(pluginName, sf)
-	return sf.Path(), nil
+	return decryptedCredential{path: sf.Path(), secureFile: sf}, nil
 }
 
 // ConfigDisabledPlugins returns a snapshot of plugins that were
@@ -1519,17 +1529,105 @@ func (m *Manager) resolveAuth(pluginName string, manifest *Manifest) auth.Provid
 
 	vars := m.pluginVars(manifest)
 	resolve := func(s string) string { return config.ResolveVars(s, vars) }
+	rejectManifestFDPath := func(path string) error {
+		if path != "" && auth.IsCurrentProcessFDPath(path) {
+			return fmt.Errorf("fd-backed credential paths are not permitted in plugin configuration")
+		}
+		return nil
+	}
 
-	decryptCredFile := func(path string) string {
+	resolveCredPath := func(path string) (string, error) {
 		if path == "" {
-			return ""
+			return "", nil
 		}
-		decrypted, err := m.decryptCredentialIfVault(pluginName, path)
+		resolved, err := auth.ResolveCredentialPath(path, credDir)
 		if err != nil {
-			log.Printf("[%s] credential file decrypt failed, skipping: %v", pluginName, err)
-			return ""
+			return "", err
 		}
-		return decrypted
+		if auth.IsCurrentProcessFDPath(resolved) {
+			return "", fmt.Errorf("fd-backed credential paths are not permitted in plugin configuration")
+		}
+		return resolved, nil
+	}
+
+	decryptCredFile := func(path string) (decryptedCredential, error) {
+		if path == "" {
+			return decryptedCredential{}, nil
+		}
+		decrypted, err := m.decryptCredentialIfVaultResult(pluginName, path)
+		if err != nil {
+			return decryptedCredential{}, err
+		}
+		return decrypted, nil
+	}
+
+	var safeTransport http.RoundTripper
+	prepareAuthConfig := func(v AuthServiceConfig) (auth.SingleAuthConfig, error) {
+		providerType := auth.NormalizeProviderType(v.Type)
+		var credentialsResult, privateKeyResult decryptedCredential
+
+		credentialsInput := resolve(v.CredentialsFile)
+		if err := rejectManifestFDPath(credentialsInput); err != nil {
+			return auth.SingleAuthConfig{}, fmt.Errorf("credentials_file: %w", err)
+		}
+		credentialsFile, err := resolveCredPath(credentialsInput)
+		if err != nil {
+			return auth.SingleAuthConfig{}, fmt.Errorf("credentials_file: %w", err)
+		}
+		if providerType == "oauth2" {
+			credentialsResult, err = decryptCredFile(credentialsFile)
+			if err != nil {
+				return auth.SingleAuthConfig{}, fmt.Errorf("credentials_file: %w", err)
+			}
+		}
+
+		tokenInput := resolve(v.TokenFile)
+		if err := rejectManifestFDPath(tokenInput); err != nil {
+			return auth.SingleAuthConfig{}, fmt.Errorf("token_file: %w", err)
+		}
+		tokenFile, err := resolveCredPath(tokenInput)
+		if err != nil {
+			return auth.SingleAuthConfig{}, fmt.Errorf("token_file: %w", err)
+		}
+
+		privateKeyInput := resolve(v.PrivateKeyFile)
+		if err := rejectManifestFDPath(privateKeyInput); err != nil {
+			return auth.SingleAuthConfig{}, fmt.Errorf("private_key_file: %w", err)
+		}
+		privateKeyFile, err := resolveCredPath(privateKeyInput)
+		if err != nil {
+			return auth.SingleAuthConfig{}, fmt.Errorf("private_key_file: %w", err)
+		}
+		if providerType == "github_app" {
+			privateKeyResult, err = decryptCredFile(privateKeyFile)
+			if err != nil {
+				return auth.SingleAuthConfig{}, fmt.Errorf("private_key_file: %w", err)
+			}
+		}
+
+		return auth.SingleAuthConfig{
+			Type:                  v.Type,
+			Token:                 resolve(v.Token),
+			Header:                v.Header,
+			Prefix:                v.Prefix,
+			Username:              resolve(v.Username),
+			Password:              resolve(v.Password),
+			SPN:                   resolve(v.SPN),
+			Scopes:                v.Scopes,
+			CredentialsFile:       credentialsResult.path,
+			CredentialsSecureFile: credentialsResult.secureFile,
+			TokenFile:             tokenFile,
+			CredentialsDir:        credDir,
+			TokenURL:              resolve(v.TokenURL),
+			ClientID:              resolve(v.ClientID),
+			AppID:                 resolve(v.AppID),
+			InstallationID:        resolve(v.InstallationID),
+			PrivateKey:            resolve(v.PrivateKey),
+			PrivateKeyFile:        privateKeyResult.path,
+			PrivateKeySecureFile:  privateKeyResult.secureFile,
+			BaseURL:               resolve(manifest.Services.HTTP.BaseURL),
+			Transport:             safeTransport,
+		}, nil
 	}
 
 	// Build OAuth2 options from token encryption (if available).
@@ -1555,66 +1653,48 @@ func (m *Manager) resolveAuth(pluginName string, manifest *Manifest) auth.Provid
 		variantCfg.Select = resolve(authCfg.Select)
 		variantCfg.Variants = make(map[string]auth.SingleAuthConfig)
 
-		// Filter out variants whose provider is disabled (auto-select only;
-		// explicit selection is already caught by checkDisabledProvider).
-		for _, name := range authCfg.VariantOrder {
-			v := authCfg.Variants[name]
-			if m.isProviderDisabled(auth.NormalizeProviderType(v.Type)) {
-				log.Printf("[%s] skipping variant %q: provider %q is disabled",
-					manifest.Name, name, auth.NormalizeProviderType(v.Type))
-				continue
+		// Prepare only the explicitly selected variant. Invalid unselected
+		// variants must not disable a valid explicit selection.
+		if variantCfg.Select != "" && variantCfg.Select != "auto" {
+			if v, ok := authCfg.Variants[variantCfg.Select]; ok {
+				prepared, err := prepareAuthConfig(v)
+				if err != nil {
+					log.Printf("[%s] auth variant %q rejected: %v", manifest.Name, variantCfg.Select, err)
+					return nil
+				}
+				variantCfg.Variants[variantCfg.Select] = prepared
+				variantCfg.VariantOrder = []string{variantCfg.Select}
 			}
-			variantCfg.VariantOrder = append(variantCfg.VariantOrder, name)
-			variantCfg.Variants[name] = auth.SingleAuthConfig{
-				Type:            v.Type,
-				Token:           resolve(v.Token),
-				Header:          v.Header,
-				Prefix:          v.Prefix,
-				Username:        resolve(v.Username),
-				Password:        resolve(v.Password),
-				SPN:             resolve(v.SPN),
-				Scopes:          v.Scopes,
-				CredentialsFile: decryptCredFile(resolve(v.CredentialsFile)),
-				TokenFile:       resolve(v.TokenFile),
-				CredentialsDir:  credDir,
-				TokenURL:        resolve(v.TokenURL),
-				ClientID:        resolve(v.ClientID),
-				AppID:           resolve(v.AppID),
-				InstallationID:  resolve(v.InstallationID),
-				PrivateKey:      resolve(v.PrivateKey),
-				PrivateKeyFile:  decryptCredFile(resolve(v.PrivateKeyFile)),
-				BaseURL:         resolve(manifest.Services.HTTP.BaseURL),
-				Transport:       safeTransport,
+		} else {
+			// Filter out variants whose provider is disabled or whose
+			// credential configuration is invalid.
+			for _, name := range authCfg.VariantOrder {
+				v := authCfg.Variants[name]
+				if m.isProviderDisabled(auth.NormalizeProviderType(v.Type)) {
+					log.Printf("[%s] skipping variant %q: provider %q is disabled",
+						manifest.Name, name, auth.NormalizeProviderType(v.Type))
+					continue
+				}
+				prepared, err := prepareAuthConfig(v)
+				if err != nil {
+					log.Printf("[%s] skipping auth variant %q: %v", manifest.Name, name, err)
+					continue
+				}
+				variantCfg.VariantOrder = append(variantCfg.VariantOrder, name)
+				variantCfg.Variants[name] = prepared
 			}
 		}
 	} else {
 		// Single auth type — resolve vars and wrap as a single
 		// variant so ResolveVariant gets the full config.
+		prepared, err := prepareAuthConfig(authCfg)
+		if err != nil {
+			log.Printf("[%s] auth configuration rejected: %v", manifest.Name, err)
+			return nil
+		}
 		variantCfg.Select = "default"
 		variantCfg.VariantOrder = []string{"default"}
-		variantCfg.Variants = map[string]auth.SingleAuthConfig{
-			"default": {
-				Type:            authCfg.Type,
-				Token:           resolve(authCfg.Token),
-				Header:          authCfg.Header,
-				Prefix:          authCfg.Prefix,
-				Username:        resolve(authCfg.Username),
-				Password:        resolve(authCfg.Password),
-				SPN:             resolve(authCfg.SPN),
-				Scopes:          authCfg.Scopes,
-				CredentialsFile: decryptCredFile(resolve(authCfg.CredentialsFile)),
-				TokenFile:       resolve(authCfg.TokenFile),
-				CredentialsDir:  credDir,
-				TokenURL:        resolve(authCfg.TokenURL),
-				ClientID:        resolve(authCfg.ClientID),
-				AppID:           resolve(authCfg.AppID),
-				InstallationID:  resolve(authCfg.InstallationID),
-				PrivateKey:      resolve(authCfg.PrivateKey),
-				PrivateKeyFile:  decryptCredFile(resolve(authCfg.PrivateKeyFile)),
-				BaseURL:         resolve(manifest.Services.HTTP.BaseURL),
-				Transport:       safeTransport,
-			},
-		}
+		variantCfg.Variants = map[string]auth.SingleAuthConfig{"default": prepared}
 	}
 
 	provider, err := auth.ResolveVariant(variantCfg)

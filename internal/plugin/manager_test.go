@@ -2,7 +2,12 @@ package plugin
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
+	"errors"
 	"log"
 	"os"
 	"path/filepath"
@@ -15,6 +20,7 @@ import (
 	"github.com/LeGambiArt/wtmcp/internal/config"
 	"github.com/LeGambiArt/wtmcp/internal/protocol"
 	"github.com/LeGambiArt/wtmcp/internal/proxy"
+	"github.com/LeGambiArt/wtmcp/internal/secrets/securefile"
 )
 
 func setupTestPlugin(t *testing.T, name, script string) string {
@@ -821,6 +827,937 @@ func createPluginWithManifest(t *testing.T, parentDir, name, manifestYAML string
 	manifestPath := filepath.Join(pluginDir, "plugin.yaml")
 	if err := os.WriteFile(manifestPath, []byte(manifestYAML), 0o644); err != nil { //nolint:gosec // test config
 		t.Fatal(err)
+	}
+}
+
+// TestResolveAuthRelativeCredentialPaths verifies that resolveAuth works when
+// credential files (credentials_file, token_file, private_key_file) are
+// specified as relative paths in plugin.yaml. Regression test for a bug
+// where decryptCredFile received a relative path, os.Stat failed (wrong
+// CWD), and the error handler returned "" instead of the original path,
+// causing NewOAuth2Provider to fail with "credential file path is required".
+func TestResolveAuthRelativeCredentialPaths(t *testing.T) {
+	credDir := t.TempDir()
+	groupDir := filepath.Join(credDir, "google")
+	if err := os.MkdirAll(groupDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write a minimal Google OAuth2 client credentials file.
+	clientCreds := `{"installed":{"client_id":"test.apps.googleusercontent.com","client_secret":"secret","auth_uri":"https://accounts.google.com/o/oauth2/auth","token_uri":"https://oauth2.googleapis.com/token","redirect_uris":["urn:ietf:wg:oauth:2.0:oob"]}}`
+	if err := os.WriteFile(filepath.Join(groupDir, "client-credentials.json"), []byte(clientCreds), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write a token file so the provider has a token to use.
+	tokenJSON := `{"access_token":"ya29.test","token_type":"Bearer","refresh_token":"1//test","expiry":"2099-01-01T00:00:00Z"}`
+	if err := os.WriteFile(filepath.Join(groupDir, "token-drive.json"), []byte(tokenJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.DefaultConfig()
+	cfg.CredentialsDir = credDir
+
+	authReg := auth.NewRegistry()
+	cacheStore := cache.NewMemoryStore()
+	p := proxy.New(nil, cfg.Plugins.MaxMessageSize, cfg.HTTP.Timeout)
+	m := NewManager(authReg, p, cacheStore, cfg, nil, nil, "", "", "", config.EnvLoadOptions{}, "")
+
+	manifest := &Manifest{
+		Name:            "google-drive",
+		CredentialGroup: "google",
+		Services: ServiceConfig{
+			Auth: AuthServiceConfig{
+				Type:            "oauth2",
+				TokenFile:       "token-drive.json",
+				CredentialsFile: "client-credentials.json",
+				Scopes:          []string{"https://www.googleapis.com/auth/drive"},
+			},
+			HTTP: HTTPServiceConfig{
+				BaseURL: "https://www.googleapis.com",
+			},
+		},
+	}
+
+	provider := m.resolveAuth("google-drive", manifest)
+	if provider == nil {
+		t.Fatal("resolveAuth returned nil; relative credential paths should resolve against credential_group directory")
+	}
+	if provider.Name() != "oauth2" {
+		t.Errorf("provider name = %q, want %q", provider.Name(), "oauth2")
+	}
+	if !provider.Available() {
+		t.Error("provider should be available (token file exists)")
+	}
+}
+
+func TestResolveAuthRejectsPathTraversal(t *testing.T) {
+	credDir := t.TempDir()
+	groupDir := filepath.Join(credDir, "evil")
+	if err := os.MkdirAll(groupDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	outsideData := []byte("$ANSIBLE_VAULT;1.1;AES256\noutside")
+	if err := os.WriteFile(filepath.Join(credDir, "stolen.json"), outsideData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(groupDir, "token.json"), []byte(`{"access_token":"inside-token","token_type":"Bearer","expiry":"2099-01-01T00:00:00Z"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.DefaultConfig()
+	cfg.CredentialsDir = credDir
+
+	authReg := auth.NewRegistry()
+	cacheStore := cache.NewMemoryStore()
+	p := proxy.New(nil, cfg.Plugins.MaxMessageSize, cfg.HTTP.Timeout)
+	decryptor := &testCredentialDecryptor{plaintext: []byte(`{"installed":{"client_id":"outside-client","client_secret":"secret","auth_uri":"https://accounts.google.com/o/oauth2/auth","token_uri":"https://oauth2.googleapis.com/token","redirect_uris":["urn:ietf:wg:oauth:2.0:oob"]}}`)}
+	m := NewManager(authReg, p, cacheStore, cfg, nil, nil, "", "", "", config.EnvLoadOptions{}, "", ManagerOptions{Decryptor: decryptor})
+
+	manifest := &Manifest{
+		Name:            "evil-plugin",
+		CredentialGroup: "evil",
+		Services: ServiceConfig{
+			Auth: AuthServiceConfig{ //nolint:gosec // G101: intentional traversal path for security test
+				Type:            "oauth2",
+				TokenFile:       "token.json",
+				CredentialsFile: "../stolen.json",
+				Scopes:          []string{"https://example.com/scope"},
+			},
+			HTTP: HTTPServiceConfig{
+				BaseURL: "https://example.com",
+			},
+		},
+	}
+
+	provider := m.resolveAuth("evil-plugin", manifest)
+	if provider != nil {
+		t.Fatal("resolveAuth should return nil when credentials_file escapes group directory via ../")
+	}
+	if decryptor.calls != 0 {
+		t.Fatalf("decryptor calls = %d, want 0", decryptor.calls)
+	}
+}
+
+func TestResolveAuthRejectsSymlinkEscape(t *testing.T) {
+	credDir := t.TempDir()
+	groupDir := filepath.Join(credDir, "sneaky")
+	if err := os.MkdirAll(groupDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a symlink inside the group directory that points outside.
+	outside := t.TempDir()
+	outsideData := []byte("$ANSIBLE_VAULT;1.1;AES256\noutside")
+	if err := os.WriteFile(filepath.Join(outside, "creds.json"), outsideData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(outside, "creds.json"), filepath.Join(groupDir, "escape.json")); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(groupDir, "token.json"), []byte(`{"access_token":"inside-token","token_type":"Bearer","expiry":"2099-01-01T00:00:00Z"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.DefaultConfig()
+	cfg.CredentialsDir = credDir
+
+	authReg := auth.NewRegistry()
+	cacheStore := cache.NewMemoryStore()
+	p := proxy.New(nil, cfg.Plugins.MaxMessageSize, cfg.HTTP.Timeout)
+	decryptor := &testCredentialDecryptor{plaintext: []byte(`{"installed":{"client_id":"outside-client","client_secret":"secret","auth_uri":"https://a","token_uri":"https://t"}}`)}
+	m := NewManager(authReg, p, cacheStore, cfg, nil, nil, "", "", "", config.EnvLoadOptions{}, "", ManagerOptions{Decryptor: decryptor})
+
+	manifest := &Manifest{
+		Name:            "sneaky-plugin",
+		CredentialGroup: "sneaky",
+		Services: ServiceConfig{
+			Auth: AuthServiceConfig{
+				Type:            "oauth2",
+				TokenFile:       "token.json",
+				CredentialsFile: "escape.json",
+				Scopes:          []string{"https://example.com/scope"},
+			},
+			HTTP: HTTPServiceConfig{
+				BaseURL: "https://example.com",
+			},
+		},
+	}
+
+	provider := m.resolveAuth("sneaky-plugin", manifest)
+	if provider != nil {
+		t.Fatal("resolveAuth should return nil when credentials_file is a symlink escaping group directory")
+	}
+	if decryptor.calls != 0 {
+		t.Fatalf("decryptor calls = %d, want 0", decryptor.calls)
+	}
+}
+
+func TestResolveAuthRejectsAbsolutePathOutsideCredDir(t *testing.T) {
+	credDir := t.TempDir()
+	groupDir := filepath.Join(credDir, "test")
+	if err := os.MkdirAll(groupDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write valid credentials inside the group directory.
+	clientCreds := `{"installed":{"client_id":"test.apps.googleusercontent.com","client_secret":"secret","auth_uri":"https://accounts.google.com/o/oauth2/auth","token_uri":"https://oauth2.googleapis.com/token","redirect_uris":["urn:ietf:wg:oauth:2.0:oob"]}}`
+	if err := os.WriteFile(filepath.Join(groupDir, "client-credentials.json"), []byte(clientCreds), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Place a token file outside the credential directory.
+	outside := t.TempDir()
+	tokenJSON := `{"access_token":"ya29.test","token_type":"Bearer","refresh_token":"1//test","expiry":"2099-01-01T00:00:00Z"}`
+	if err := os.WriteFile(filepath.Join(outside, "token.json"), []byte(tokenJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.DefaultConfig()
+	cfg.CredentialsDir = credDir
+
+	authReg := auth.NewRegistry()
+	cacheStore := cache.NewMemoryStore()
+	p := proxy.New(nil, cfg.Plugins.MaxMessageSize, cfg.HTTP.Timeout)
+	m := NewManager(authReg, p, cacheStore, cfg, nil, nil, "", "", "", config.EnvLoadOptions{}, "")
+
+	manifest := &Manifest{
+		Name:            "test-plugin",
+		CredentialGroup: "test",
+		Services: ServiceConfig{
+			Auth: AuthServiceConfig{
+				Type:            "oauth2",
+				TokenFile:       filepath.Join(outside, "token.json"),
+				CredentialsFile: "client-credentials.json",
+				Scopes:          []string{"https://www.googleapis.com/auth/drive"},
+			},
+			HTTP: HTTPServiceConfig{
+				BaseURL: "https://www.googleapis.com",
+			},
+		},
+	}
+
+	provider := m.resolveAuth("test-plugin", manifest)
+	if provider != nil {
+		t.Fatal("resolveAuth should return nil when token_file is an absolute path outside credential directory")
+	}
+}
+
+func TestResolveAuthNonexistentTokenFile(t *testing.T) {
+	credDir := t.TempDir()
+	groupDir := filepath.Join(credDir, "google")
+	if err := os.MkdirAll(groupDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	clientCreds := `{"installed":{"client_id":"test.apps.googleusercontent.com","client_secret":"secret","auth_uri":"https://accounts.google.com/o/oauth2/auth","token_uri":"https://oauth2.googleapis.com/token","redirect_uris":["urn:ietf:wg:oauth:2.0:oob"]}}`
+	if err := os.WriteFile(filepath.Join(groupDir, "client-credentials.json"), []byte(clientCreds), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.DefaultConfig()
+	cfg.CredentialsDir = credDir
+
+	authReg := auth.NewRegistry()
+	cacheStore := cache.NewMemoryStore()
+	p := proxy.New(nil, cfg.Plugins.MaxMessageSize, cfg.HTTP.Timeout)
+	m := NewManager(authReg, p, cacheStore, cfg, nil, nil, "", "", "", config.EnvLoadOptions{}, "")
+
+	manifest := &Manifest{
+		Name:            "google-drive",
+		CredentialGroup: "google",
+		Services: ServiceConfig{
+			Auth: AuthServiceConfig{
+				Type:            "oauth2",
+				TokenFile:       "nonexistent-token.json",
+				CredentialsFile: "client-credentials.json",
+				Scopes:          []string{"https://www.googleapis.com/auth/drive"},
+			},
+			HTTP: HTTPServiceConfig{
+				BaseURL: "https://www.googleapis.com",
+			},
+		},
+	}
+
+	provider := m.resolveAuth("google-drive", manifest)
+	if provider == nil {
+		t.Fatal("resolveAuth should succeed when token_file does not exist yet (first-run scenario)")
+	}
+	if provider.Name() != "oauth2" {
+		t.Errorf("provider name = %q, want %q", provider.Name(), "oauth2")
+	}
+}
+
+func TestResolveAuthRejectsInvalidCredentialFields(t *testing.T) {
+	for _, field := range []string{"CredentialsFile", "TokenFile", "PrivateKeyFile"} {
+		t.Run(field, func(t *testing.T) {
+			credDir := t.TempDir()
+			groupDir := filepath.Join(credDir, "test")
+			if err := os.MkdirAll(groupDir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+
+			cfg := config.DefaultConfig()
+			cfg.CredentialsDir = credDir
+			authReg := auth.NewRegistry()
+			cacheStore := cache.NewMemoryStore()
+			p := proxy.New(nil, cfg.Plugins.MaxMessageSize, cfg.HTTP.Timeout)
+			m := NewManager(authReg, p, cacheStore, cfg, nil, nil, "", "", "", config.EnvLoadOptions{}, "")
+
+			manifest := &Manifest{
+				Name:            "invalid-credential-plugin",
+				CredentialGroup: "test",
+				Services: ServiceConfig{
+					Auth: AuthServiceConfig{
+						Type:  "bearer",
+						Token: "valid-token",
+					},
+					HTTP: HTTPServiceConfig{BaseURL: "https://example.com"},
+				},
+			}
+			invalidPath := "../outside"
+			switch field {
+			case "CredentialsFile":
+				manifest.Services.Auth.CredentialsFile = invalidPath
+			case "TokenFile":
+				manifest.Services.Auth.TokenFile = invalidPath
+			case "PrivateKeyFile":
+				manifest.Services.Auth.PrivateKeyFile = invalidPath
+			}
+
+			if provider := m.resolveAuth("invalid-credential-plugin", manifest); provider != nil {
+				t.Fatalf("resolveAuth returned %s provider for rejected %s", provider.Name(), field)
+			}
+		})
+	}
+}
+
+func TestResolveAuthExplicitSelectionIgnoresInvalidUnselectedVariant(t *testing.T) {
+	credDir := t.TempDir()
+	groupDir := filepath.Join(credDir, "variants")
+	if err := os.MkdirAll(groupDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.DefaultConfig()
+	cfg.CredentialsDir = credDir
+	authReg := auth.NewRegistry()
+	cacheStore := cache.NewMemoryStore()
+	p := proxy.New(nil, cfg.Plugins.MaxMessageSize, cfg.HTTP.Timeout)
+	m := NewManager(authReg, p, cacheStore, cfg, nil, nil, "", "", "", config.EnvLoadOptions{}, "")
+
+	manifest := &Manifest{
+		Name:            "variant-plugin",
+		CredentialGroup: "variants",
+		Services: ServiceConfig{
+			Auth: AuthServiceConfig{
+				Select: "good",
+				Variants: map[string]AuthServiceConfig{
+					"bad":  {Type: "bearer", Token: "bad", CredentialsFile: "../outside"},
+					"good": {Type: "bearer", Token: "good"},
+				},
+				VariantOrder: []string{"bad", "good"},
+			},
+			HTTP: HTTPServiceConfig{BaseURL: "https://example.com"},
+		},
+	}
+
+	provider := m.resolveAuth("variant-plugin", manifest)
+	if provider == nil || provider.Name() != "bearer" {
+		t.Fatalf("resolveAuth returned %v, want bearer provider", provider)
+	}
+	headers, err := provider.Authenticate(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+	if got := headers.Get("Authorization"); got != "Bearer good" {
+		t.Errorf("Authorization = %q, want %q", got, "Bearer good")
+	}
+}
+
+func TestResolveAuthAutoSkipsInvalidVariant(t *testing.T) {
+	credDir := t.TempDir()
+	groupDir := filepath.Join(credDir, "variants")
+	if err := os.MkdirAll(groupDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.DefaultConfig()
+	cfg.CredentialsDir = credDir
+	authReg := auth.NewRegistry()
+	cacheStore := cache.NewMemoryStore()
+	p := proxy.New(nil, cfg.Plugins.MaxMessageSize, cfg.HTTP.Timeout)
+	m := NewManager(authReg, p, cacheStore, cfg, nil, nil, "", "", "", config.EnvLoadOptions{}, "")
+
+	manifest := &Manifest{
+		Name:            "auto-variant-plugin",
+		CredentialGroup: "variants",
+		Services: ServiceConfig{
+			Auth: AuthServiceConfig{
+				Select: "auto",
+				Variants: map[string]AuthServiceConfig{
+					"bad":  {Type: "bearer", Token: "bad", CredentialsFile: "../outside"},
+					"good": {Type: "bearer", Token: "good"},
+				},
+				VariantOrder: []string{"bad", "good"},
+			},
+			HTTP: HTTPServiceConfig{BaseURL: "https://example.com"},
+		},
+	}
+
+	provider := m.resolveAuth("auto-variant-plugin", manifest)
+	if provider == nil || provider.Name() != "bearer" {
+		t.Fatalf("resolveAuth returned %v, want later bearer provider", provider)
+	}
+	headers, err := provider.Authenticate(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+	if got := headers.Get("Authorization"); got != "Bearer good" {
+		t.Errorf("Authorization = %q, want %q", got, "Bearer good")
+	}
+
+	good := manifest.Services.Auth.Variants["good"]
+	good.CredentialsFile = "../outside"
+	manifest.Services.Auth.Variants["good"] = good
+	if provider := m.resolveAuth("auto-variant-plugin", manifest); provider != nil {
+		t.Fatalf("resolveAuth returned %s provider when all variants are invalid", provider.Name())
+	}
+}
+
+func TestResolveAuthRejectsMissingCredentialsFile(t *testing.T) {
+	credDir := t.TempDir()
+	groupDir := filepath.Join(credDir, "missing")
+	if err := os.MkdirAll(groupDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	tokenJSON := `{"access_token":"ya29.test","token_type":"Bearer","expiry":"2099-01-01T00:00:00Z"}`
+	if err := os.WriteFile(filepath.Join(groupDir, "token.json"), []byte(tokenJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.DefaultConfig()
+	cfg.CredentialsDir = credDir
+	authReg := auth.NewRegistry()
+	cacheStore := cache.NewMemoryStore()
+	p := proxy.New(nil, cfg.Plugins.MaxMessageSize, cfg.HTTP.Timeout)
+	m := NewManager(authReg, p, cacheStore, cfg, nil, nil, "", "", "", config.EnvLoadOptions{}, "")
+	manifest := &Manifest{
+		Name:            "missing-credentials-plugin",
+		CredentialGroup: "missing",
+		Services: ServiceConfig{
+			Auth: AuthServiceConfig{
+				Type:            "oauth2",
+				TokenFile:       "token.json",
+				CredentialsFile: "missing.json",
+			},
+			HTTP: HTTPServiceConfig{BaseURL: "https://example.com"},
+		},
+	}
+
+	if provider := m.resolveAuth("missing-credentials-plugin", manifest); provider != nil {
+		t.Fatalf("resolveAuth returned %s provider for missing credentials", provider.Name())
+	}
+}
+
+func TestResolveAuthIgnoresMissingUnusedPrivateKeyFile(t *testing.T) {
+	credDir := t.TempDir()
+	groupDir := filepath.Join(credDir, "missing-key")
+	if err := os.MkdirAll(groupDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.DefaultConfig()
+	cfg.CredentialsDir = credDir
+	authReg := auth.NewRegistry()
+	cacheStore := cache.NewMemoryStore()
+	p := proxy.New(nil, cfg.Plugins.MaxMessageSize, cfg.HTTP.Timeout)
+	m := NewManager(authReg, p, cacheStore, cfg, nil, nil, "", "", "", config.EnvLoadOptions{}, "")
+	manifest := &Manifest{
+		Name:            "missing-key-plugin",
+		CredentialGroup: "missing-key",
+		Services: ServiceConfig{
+			Auth: AuthServiceConfig{
+				Type:           "bearer",
+				Token:          "valid-token",
+				PrivateKeyFile: "missing.pem",
+			},
+			HTTP: HTTPServiceConfig{BaseURL: "https://example.com"},
+		},
+	}
+
+	if provider := m.resolveAuth("missing-key-plugin", manifest); provider == nil || provider.Name() != "bearer" {
+		t.Fatalf("resolveAuth returned %v provider, want bearer", provider)
+	}
+}
+
+func TestResolveAuthLoadsRelativeGitHubAppPrivateKey(t *testing.T) {
+	credDir := t.TempDir()
+	groupDir := filepath.Join(credDir, "github")
+	if err := os.MkdirAll(groupDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{
+		Type:  "RSA PRIVATE KEY",
+		Bytes: x509.MarshalPKCS1PrivateKey(key),
+	})
+	if err := os.WriteFile(filepath.Join(groupDir, "app.pem"), keyPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.DefaultConfig()
+	cfg.CredentialsDir = credDir
+	authReg := auth.NewRegistry()
+	cacheStore := cache.NewMemoryStore()
+	p := proxy.New(nil, cfg.Plugins.MaxMessageSize, cfg.HTTP.Timeout)
+	m := NewManager(authReg, p, cacheStore, cfg, nil, nil, "", "", "", config.EnvLoadOptions{}, "")
+	manifest := &Manifest{
+		Name:            "github-app-plugin",
+		CredentialGroup: "github",
+		Services: ServiceConfig{
+			Auth: AuthServiceConfig{
+				Type:           "github_app",
+				AppID:          "12345",
+				InstallationID: "67890",
+				PrivateKeyFile: "app.pem",
+			},
+			HTTP: HTTPServiceConfig{BaseURL: "https://api.github.com"},
+		},
+	}
+
+	provider := m.resolveAuth("github-app-plugin", manifest)
+	if provider == nil || provider.Name() != "github_app" {
+		t.Fatalf("resolveAuth returned %v, want github_app provider", provider)
+	}
+	if !provider.Available() {
+		t.Fatal("github_app provider should be available")
+	}
+}
+
+func TestResolveAuthRejectsGitHubAppPrivateKeyTraversal(t *testing.T) {
+	credDir := t.TempDir()
+	groupDir := filepath.Join(credDir, "github")
+	if err := os.MkdirAll(groupDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{
+		Type:  "RSA PRIVATE KEY",
+		Bytes: x509.MarshalPKCS1PrivateKey(key),
+	})
+	if err := os.WriteFile(filepath.Join(credDir, "outside.pem"), keyPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.DefaultConfig()
+	cfg.CredentialsDir = credDir
+	authReg := auth.NewRegistry()
+	cacheStore := cache.NewMemoryStore()
+	p := proxy.New(nil, cfg.Plugins.MaxMessageSize, cfg.HTTP.Timeout)
+	m := NewManager(authReg, p, cacheStore, cfg, nil, nil, "", "", "", config.EnvLoadOptions{}, "")
+	manifest := &Manifest{
+		Name:            "github-app-traversal-plugin",
+		CredentialGroup: "github",
+		Services: ServiceConfig{
+			Auth: AuthServiceConfig{
+				Type:           "github_app",
+				AppID:          "12345",
+				InstallationID: "67890",
+				PrivateKeyFile: "../outside.pem",
+			},
+			HTTP: HTTPServiceConfig{BaseURL: "https://api.github.com"},
+		},
+	}
+
+	if provider := m.resolveAuth("github-app-traversal-plugin", manifest); provider != nil {
+		t.Fatalf("resolveAuth returned %s provider for private key traversal", provider.Name())
+	}
+}
+
+func TestResolveAuthRejectsOversizedCredentialsFile(t *testing.T) {
+	credDir := t.TempDir()
+	groupDir := filepath.Join(credDir, "oversized")
+	if err := os.MkdirAll(groupDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(groupDir, "credentials.json"), []byte(strings.Repeat("x", 1<<20+1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.DefaultConfig()
+	cfg.CredentialsDir = credDir
+	authReg := auth.NewRegistry()
+	cacheStore := cache.NewMemoryStore()
+	p := proxy.New(nil, cfg.Plugins.MaxMessageSize, cfg.HTTP.Timeout)
+	m := NewManager(authReg, p, cacheStore, cfg, nil, nil, "", "", "", config.EnvLoadOptions{}, "")
+	manifest := &Manifest{
+		Name:            "oversized-credentials-plugin",
+		CredentialGroup: "oversized",
+		Services: ServiceConfig{
+			Auth: AuthServiceConfig{
+				Type:            "oauth2",
+				TokenFile:       "token.json",
+				CredentialsFile: "credentials.json",
+			},
+			HTTP: HTTPServiceConfig{BaseURL: "https://example.com"},
+		},
+	}
+
+	if provider := m.resolveAuth("oversized-credentials-plugin", manifest); provider != nil {
+		t.Fatalf("resolveAuth returned %s provider for oversized credentials", provider.Name())
+	}
+}
+
+type testCredentialDecryptor struct {
+	plaintext        []byte
+	calls            int
+	err              error
+	inputs           []string
+	plaintextByInput map[string][]byte
+}
+
+func (d *testCredentialDecryptor) Decrypt(data []byte, _ string) ([]byte, error) {
+	d.calls++
+	d.inputs = append(d.inputs, string(data))
+	if d.err != nil {
+		return nil, d.err
+	}
+	plaintext := d.plaintext
+	if mapped, ok := d.plaintextByInput[string(data)]; ok {
+		plaintext = mapped
+	}
+	return append([]byte(nil), plaintext...), nil
+}
+
+func (d *testCredentialDecryptor) Close() error { return nil }
+
+func TestDecryptCredentialIfVaultResultPropagatesDecryptorError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "credentials.json")
+	if err := os.WriteFile(path, []byte("$ANSIBLE_VAULT;1.1;AES256\nencrypted"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sentinel := errors.New("decryptor sentinel")
+	m := newTestManager(t)
+	decryptor := &testCredentialDecryptor{err: sentinel}
+	m.decryptor = decryptor
+
+	result, err := m.decryptCredentialIfVaultResult("test-plugin", path)
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("error = %v, want sentinel", err)
+	}
+	if result.path != "" {
+		t.Errorf("result path = %q, want empty", result.path)
+	}
+	if decryptor.calls != 1 {
+		t.Errorf("decryptor calls = %d, want 1", decryptor.calls)
+	}
+}
+
+func TestResolveAuthRejectsManifestFDPaths(t *testing.T) {
+	secure, err := securefile.CreateCloexec("manifest-fd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = secure.Close() }()
+	if err := secure.Write([]byte("not manifest data")); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, field := range []string{"CredentialsFile", "TokenFile", "PrivateKeyFile"} {
+		t.Run(field, func(t *testing.T) {
+			credDir := t.TempDir()
+			cfg := config.DefaultConfig()
+			cfg.CredentialsDir = credDir
+			authReg := auth.NewRegistry()
+			cacheStore := cache.NewMemoryStore()
+			p := proxy.New(nil, cfg.Plugins.MaxMessageSize, cfg.HTTP.Timeout)
+			decryptor := &testCredentialDecryptor{plaintext: []byte(`{"installed":{"client_id":"id","client_secret":"secret"}}`)}
+			m := NewManager(authReg, p, cacheStore, cfg, nil, nil, "", "", "", config.EnvLoadOptions{}, "",
+				ManagerOptions{Decryptor: decryptor})
+			manifest := &Manifest{
+				Name:            "manifest-fd-plugin",
+				CredentialGroup: "manifest-fd",
+				Services:        ServiceConfig{Auth: AuthServiceConfig{Type: "bearer", Token: "token"}, HTTP: HTTPServiceConfig{BaseURL: "https://example.com"}},
+			}
+			switch field {
+			case "CredentialsFile":
+				manifest.Services.Auth.CredentialsFile = secure.Path()
+			case "TokenFile":
+				manifest.Services.Auth.TokenFile = secure.Path()
+			case "PrivateKeyFile":
+				manifest.Services.Auth.PrivateKeyFile = secure.Path()
+			}
+			if provider := m.resolveAuth("manifest-fd-plugin", manifest); provider != nil {
+				t.Fatalf("resolveAuth returned %s provider for manifest fd path", provider.Name())
+			}
+			if decryptor.calls != 0 {
+				t.Fatalf("decryptor calls = %d, want 0", decryptor.calls)
+			}
+		})
+	}
+}
+
+func TestResolveAuthRejectsSymlinkToManifestFDPath(t *testing.T) {
+	secure, err := securefile.CreateCloexec("manifest-fd-link")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = secure.Close() }()
+	if err := secure.Write([]byte("not manifest data")); err != nil {
+		t.Fatal(err)
+	}
+	credDir := t.TempDir()
+	groupDir := filepath.Join(credDir, "fd-link")
+	if err := os.MkdirAll(groupDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(groupDir, "credentials.json")
+	if err := os.Symlink(secure.Path(), link); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+	cfg := config.DefaultConfig()
+	cfg.CredentialsDir = credDir
+	decryptor := &testCredentialDecryptor{plaintext: []byte(`{"installed":{"client_id":"id","client_secret":"secret"}}`)}
+	authReg := auth.NewRegistry()
+	cacheStore := cache.NewMemoryStore()
+	p := proxy.New(nil, cfg.Plugins.MaxMessageSize, cfg.HTTP.Timeout)
+	m := NewManager(authReg, p, cacheStore, cfg, nil, nil, "", "", "", config.EnvLoadOptions{}, "", ManagerOptions{Decryptor: decryptor})
+	manifest := &Manifest{
+		Name:            "manifest-fd-link-plugin",
+		CredentialGroup: "fd-link",
+		Services:        ServiceConfig{Auth: AuthServiceConfig{Type: "oauth2", TokenFile: "missing.json", CredentialsFile: "credentials.json"}, HTTP: HTTPServiceConfig{BaseURL: "https://example.com"}},
+	}
+	if provider := m.resolveAuth("manifest-fd-link-plugin", manifest); provider != nil {
+		t.Fatalf("resolveAuth returned %s provider for symlink-resolved manifest fd path", provider.Name())
+	}
+	if decryptor.calls != 0 {
+		t.Fatalf("decryptor calls = %d, want 0", decryptor.calls)
+	}
+}
+
+func TestResolveAuthIgnoresUnusedCredentialFiles(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.CredentialsDir = t.TempDir()
+	authReg := auth.NewRegistry()
+	cacheStore := cache.NewMemoryStore()
+	p := proxy.New(nil, cfg.Plugins.MaxMessageSize, cfg.HTTP.Timeout)
+	m := NewManager(authReg, p, cacheStore, cfg, nil, nil, "", "", "", config.EnvLoadOptions{}, "")
+	manifest := &Manifest{
+		Name: "bearer-with-unused-credentials",
+		Services: ServiceConfig{
+			Auth: AuthServiceConfig{
+				Type:            "bearer",
+				Token:           "token",
+				CredentialsFile: "missing-client-credentials.json",
+				PrivateKeyFile:  "missing-private-key.pem",
+			},
+			HTTP: HTTPServiceConfig{BaseURL: "https://example.com"},
+		},
+	}
+
+	provider := m.resolveAuth("bearer-with-unused-credentials", manifest)
+	if provider == nil || provider.Name() != "bearer" {
+		t.Fatalf("resolveAuth returned %v provider, want bearer", provider)
+	}
+}
+
+func TestResolveAuthLoadsVaultCredentialFiles(t *testing.T) {
+	credDir := t.TempDir()
+	groupDir := filepath.Join(credDir, "google")
+	if err := os.MkdirAll(groupDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(groupDir, "credentials.json"), []byte("$ANSIBLE_VAULT;1.1;AES256\nsecret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(groupDir, "token.json"), []byte(`{"access_token":"token","token_type":"Bearer","expiry":"2099-01-01T00:00:00Z"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.DefaultConfig()
+	cfg.CredentialsDir = credDir
+	decryptor := &testCredentialDecryptor{plaintext: []byte(`{"installed":{"client_id":"vault-client","client_secret":"secret","auth_uri":"https://auth.example","token_uri":"https://token.example"}}`)}
+	authReg := auth.NewRegistry()
+	cacheStore := cache.NewMemoryStore()
+	p := proxy.New(nil, cfg.Plugins.MaxMessageSize, cfg.HTTP.Timeout)
+	m := NewManager(authReg, p, cacheStore, cfg, nil, nil, "", "", "", config.EnvLoadOptions{}, "", ManagerOptions{Decryptor: decryptor})
+	manifest := &Manifest{
+		Name:            "google-drive",
+		CredentialGroup: "google",
+		Services:        ServiceConfig{Auth: AuthServiceConfig{Type: "oauth2", TokenFile: "token.json", CredentialsFile: "credentials.json"}, HTTP: HTTPServiceConfig{BaseURL: "https://example.com"}},
+	}
+	provider := m.resolveAuth("google-drive", manifest)
+	if provider == nil || !provider.Available() {
+		t.Fatalf("resolveAuth returned unavailable provider: %v", provider)
+	}
+	if decryptor.calls != 1 {
+		t.Fatalf("decryptor calls = %d, want 1", decryptor.calls)
+	}
+}
+
+func TestResolveAuthRejectsInvalidVaultCredentials(t *testing.T) {
+	credDir := t.TempDir()
+	groupDir := filepath.Join(credDir, "invalid-vault")
+	if err := os.MkdirAll(groupDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(groupDir, "credentials.json"), []byte("$ANSIBLE_VAULT;1.1;AES256\nsecret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(groupDir, "token.json"), []byte(`{"access_token":"token","token_type":"Bearer","expiry":"2099-01-01T00:00:00Z"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.DefaultConfig()
+	cfg.CredentialsDir = credDir
+	decryptor := &testCredentialDecryptor{plaintext: []byte("not-json")}
+	authReg := auth.NewRegistry()
+	cacheStore := cache.NewMemoryStore()
+	p := proxy.New(nil, cfg.Plugins.MaxMessageSize, cfg.HTTP.Timeout)
+	m := NewManager(authReg, p, cacheStore, cfg, nil, nil, "", "", "", config.EnvLoadOptions{}, "", ManagerOptions{Decryptor: decryptor})
+	manifest := &Manifest{
+		Name:            "invalid-vault-plugin",
+		CredentialGroup: "invalid-vault",
+		Services:        ServiceConfig{Auth: AuthServiceConfig{Type: "oauth2", TokenFile: "token.json", CredentialsFile: "credentials.json"}, HTTP: HTTPServiceConfig{BaseURL: "https://example.com"}},
+	}
+	if provider := m.resolveAuth("invalid-vault-plugin", manifest); provider != nil {
+		t.Fatalf("resolveAuth returned %s provider for invalid decrypted credentials", provider.Name())
+	}
+}
+
+func TestResolveAuthLoadsVaultPrivateKey(t *testing.T) {
+	credDir := t.TempDir()
+	groupDir := filepath.Join(credDir, "github")
+	if err := os.MkdirAll(groupDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+	if err := os.WriteFile(filepath.Join(groupDir, "app.pem"), []byte("$ANSIBLE_VAULT;1.1;AES256\nsecret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.DefaultConfig()
+	cfg.CredentialsDir = credDir
+	decryptor := &testCredentialDecryptor{plaintext: keyPEM}
+	authReg := auth.NewRegistry()
+	cacheStore := cache.NewMemoryStore()
+	p := proxy.New(nil, cfg.Plugins.MaxMessageSize, cfg.HTTP.Timeout)
+	m := NewManager(authReg, p, cacheStore, cfg, nil, nil, "", "", "", config.EnvLoadOptions{}, "", ManagerOptions{Decryptor: decryptor})
+	manifest := &Manifest{
+		Name:            "github-app-plugin",
+		CredentialGroup: "github",
+		Services:        ServiceConfig{Auth: AuthServiceConfig{Type: "github_app", AppID: "12345", InstallationID: "67890", PrivateKeyFile: "app.pem"}, HTTP: HTTPServiceConfig{BaseURL: "https://api.github.com"}},
+	}
+	provider := m.resolveAuth("github-app-plugin", manifest)
+	if provider == nil || !provider.Available() {
+		t.Fatalf("resolveAuth returned unavailable provider: %v", provider)
+	}
+	if decryptor.calls != 1 {
+		t.Fatalf("decryptor calls = %d, want 1", decryptor.calls)
+	}
+}
+
+func TestResolveAuthLoadsVaultVariant(t *testing.T) {
+	credDir := t.TempDir()
+	groupDir := filepath.Join(credDir, "variants")
+	if err := os.MkdirAll(groupDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	badData := []byte("$ANSIBLE_VAULT;1.1;AES256\nbad")
+	goodData := []byte("$ANSIBLE_VAULT;1.1;AES256\ngood")
+	if err := os.WriteFile(filepath.Join(credDir, "outside.json"), badData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(groupDir, "credentials.json"), goodData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(groupDir, "token.json"), []byte(`{"access_token":"token","token_type":"Bearer","expiry":"2099-01-01T00:00:00Z"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.DefaultConfig()
+	cfg.CredentialsDir = credDir
+	decryptor := &testCredentialDecryptor{plaintextByInput: map[string][]byte{
+		string(badData):  []byte(`{"installed":{"client_id":"outside-client","client_secret":"secret","auth_uri":"https://auth.example","token_uri":"https://token.example"}}`),
+		string(goodData): []byte(`{"installed":{"client_id":"variant-client","client_secret":"secret","auth_uri":"https://auth.example","token_uri":"https://token.example"}}`),
+	}}
+	authReg := auth.NewRegistry()
+	cacheStore := cache.NewMemoryStore()
+	p := proxy.New(nil, cfg.Plugins.MaxMessageSize, cfg.HTTP.Timeout)
+	m := NewManager(authReg, p, cacheStore, cfg, nil, nil, "", "", "", config.EnvLoadOptions{}, "", ManagerOptions{Decryptor: decryptor})
+	manifest := &Manifest{
+		Name:            "variant-vault-plugin",
+		CredentialGroup: "variants",
+		Services: ServiceConfig{Auth: AuthServiceConfig{
+			Select: "auto",
+			Variants: map[string]AuthServiceConfig{
+				"bad":  {Type: "oauth2", TokenFile: "token.json", CredentialsFile: "../outside.json"}, //nolint:gosec // G101: intentional traversal path for security test
+				"good": {Type: "oauth2", TokenFile: "token.json", CredentialsFile: "credentials.json"},
+			},
+			VariantOrder: []string{"bad", "good"},
+		}, HTTP: HTTPServiceConfig{BaseURL: "https://example.com"}},
+	}
+	provider := m.resolveAuth("variant-vault-plugin", manifest)
+	if provider == nil || provider.Name() != "oauth2" || !provider.Available() {
+		t.Fatalf("resolveAuth returned unavailable provider: %v", provider)
+	}
+	if decryptor.calls != 1 || len(decryptor.inputs) != 1 || decryptor.inputs[0] != string(goodData) {
+		t.Fatalf("decryptor calls/inputs = %d/%q, want 1/%q", decryptor.calls, decryptor.inputs, string(goodData))
+	}
+
+	manifest.Services.Auth.Select = "good"
+	if provider := m.resolveAuth("variant-vault-plugin", manifest); provider == nil || !provider.Available() {
+		t.Fatalf("resolveAuth returned unavailable provider for explicit valid variant: %v", provider)
+	}
+	if decryptor.calls != 2 || decryptor.inputs[1] != string(goodData) {
+		t.Fatalf("decryptor calls/inputs = %d/%q after explicit valid selection, want 2/[good]", decryptor.calls, decryptor.inputs)
+	}
+
+	manifest.Services.Auth.Select = "bad"
+	if provider := m.resolveAuth("variant-vault-plugin", manifest); provider != nil {
+		t.Fatalf("resolveAuth returned %s provider for explicitly selected invalid variant", provider.Name())
+	}
+	if decryptor.calls != 2 {
+		t.Fatalf("decryptor calls = %d after explicit invalid selection, want 2", decryptor.calls)
+	}
+}
+
+func TestResolveAuthLoadsRelativeRefreshTokenFile(t *testing.T) {
+	credDir := t.TempDir()
+	groupDir := filepath.Join(credDir, "refresh")
+	if err := os.MkdirAll(groupDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(groupDir, "refresh.json"), []byte(`{"refresh_token":"file-token"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.DefaultConfig()
+	cfg.CredentialsDir = credDir
+	authReg := auth.NewRegistry()
+	cacheStore := cache.NewMemoryStore()
+	p := proxy.New(nil, cfg.Plugins.MaxMessageSize, cfg.HTTP.Timeout)
+	m := NewManager(authReg, p, cacheStore, cfg, nil, nil, "", "", "", config.EnvLoadOptions{}, "")
+	manifest := &Manifest{
+		Name:            "refresh-plugin",
+		CredentialGroup: "refresh",
+		Services:        ServiceConfig{Auth: AuthServiceConfig{Type: "refresh_token", TokenURL: "https://sso.example/token", ClientID: "client", TokenFile: "refresh.json"}, HTTP: HTTPServiceConfig{BaseURL: "https://example.com"}}, //nolint:gosec // G101: test token configuration
+	}
+	provider := m.resolveAuth("refresh-plugin", manifest)
+	if provider == nil || !provider.Available() {
+		t.Fatalf("resolveAuth returned unavailable provider: %v", provider)
+	}
+
+	manifest.Services.Auth.TokenFile = "../outside.json"
+	if provider := m.resolveAuth("refresh-plugin", manifest); provider != nil {
+		t.Fatalf("resolveAuth returned %s provider for refresh token traversal", provider.Name())
 	}
 }
 

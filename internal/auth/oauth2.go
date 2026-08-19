@@ -8,12 +8,14 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/LeGambiArt/wtmcp/internal/config"
 	"github.com/LeGambiArt/wtmcp/internal/credentials"
+	"github.com/LeGambiArt/wtmcp/internal/secrets/securefile"
 	"golang.org/x/oauth2"
 )
 
@@ -56,7 +58,7 @@ func NewOAuth2Provider(tokenFile, credentialsFile string, scopes []string, crede
 	if transport == nil {
 		return nil, fmt.Errorf("oauth2: transport must not be nil")
 	}
-	resolvedToken, err := resolveCredentialPath(tokenFile, credentialsDir)
+	resolvedToken, err := ResolveCredentialPath(tokenFile, credentialsDir)
 	if err != nil {
 		return nil, fmt.Errorf("oauth2: token_file: %w", err)
 	}
@@ -75,7 +77,7 @@ func NewOAuth2Provider(tokenFile, credentialsFile string, scopes []string, crede
 	}
 
 	// Load OAuth2 client config from credentials file
-	credPath, err := resolveCredentialPath(credentialsFile, credentialsDir)
+	credPath, err := ResolveCredentialPath(credentialsFile, credentialsDir)
 	if err != nil {
 		return nil, fmt.Errorf("oauth2: credentials_file: %w", err)
 	}
@@ -112,6 +114,44 @@ func NewOAuth2Provider(tokenFile, credentialsFile string, scopes []string, crede
 		}
 	}
 
+	return p, nil
+}
+
+func newOAuth2ProviderFromSecureFile(tokenFile string, credentialsFile *securefile.SecureFile,
+	scopes []string, credentialsDir string, transport http.RoundTripper, opts ...*OAuth2Options) (*OAuth2Provider, error) {
+	if transport == nil {
+		return nil, fmt.Errorf("oauth2: transport must not be nil")
+	}
+	resolvedToken, err := ResolveCredentialPath(tokenFile, credentialsDir)
+	if err != nil {
+		return nil, fmt.Errorf("oauth2: token_file: %w", err)
+	}
+	p := &OAuth2Provider{
+		tokenFile:      resolvedToken,
+		credentialsDir: credentialsDir,
+		scopes:         scopes,
+		transport:      transport,
+	}
+	if len(opts) > 0 && opts[0] != nil {
+		p.tokenEncryption = opts[0].TokenEncryption
+		p.credentialGroup = opts[0].CredentialGroup
+		p.pluginName = opts[0].PluginName
+	}
+	config, err := loadOAuth2ConfigFromSecureFile(credentialsFile, scopes)
+	if err != nil {
+		return nil, fmt.Errorf("oauth2: credentials_file: %w", err)
+	}
+	p.config = config
+	if p.tokenEncryption != nil && p.credentialGroup != "" {
+		if token, loadErr := p.tokenEncryption.LoadToken(p.credentialGroup, p.pluginName); loadErr == nil {
+			p.token = token
+		}
+	}
+	if p.token == nil {
+		if token, loadErr := loadToken(p.tokenFile); loadErr == nil {
+			p.token = token
+		}
+	}
 	return p, nil
 }
 
@@ -328,6 +368,29 @@ func loadOAuth2Config(path string, scopes []string) (*oauth2.Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	return parseOAuth2Config(data, scopes)
+}
+
+func loadOAuth2ConfigFromSecureFile(file *securefile.SecureFile, scopes []string) (*oauth2.Config, error) {
+	path := file.Path()
+	if !IsCurrentProcessFDPath(path) {
+		return nil, fmt.Errorf("credentials file is not a current-process fd path")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if info.Size() > 1<<20 {
+		return nil, fmt.Errorf("credentials file too large: %d bytes (max 1MB)", info.Size())
+	}
+	data, err := os.ReadFile(path) //nolint:gosec // manager-created securefile
+	if err != nil {
+		return nil, err
+	}
+	return parseOAuth2Config(data, scopes)
+}
+
+func parseOAuth2Config(data []byte, scopes []string) (*oauth2.Config, error) {
 
 	var creds credentialsJSON
 	if err := json.Unmarshal(data, &creds); err != nil {
@@ -359,7 +422,10 @@ func loadOAuth2Config(path string, scopes []string) (*oauth2.Config, error) {
 	}, nil
 }
 
-func resolveCredentialPath(path, credentialsDir string) (string, error) {
+// ResolveCredentialPath resolves a credential file path against a base
+// credentials directory, enforcing containment (the resolved path must
+// remain under the base directory after symlink resolution).
+func ResolveCredentialPath(path, credentialsDir string) (string, error) {
 	if path == "" {
 		return "", fmt.Errorf("credential file path is required")
 	}
@@ -386,12 +452,24 @@ func resolveCredentialPath(path, credentialsDir string) (string, error) {
 		resolved = r
 	} else if !os.IsNotExist(err) {
 		return "", fmt.Errorf("resolve credential path: %w", err)
-	} else if dir := filepath.Dir(resolved); dir != resolved {
-		if rd, err := filepath.EvalSymlinks(dir); err == nil {
-			resolved = filepath.Join(rd, filepath.Base(resolved))
-		} else if !os.IsNotExist(err) {
-			return "", fmt.Errorf("resolve credential parent dir: %w", err)
+	} else {
+		// Resolve the deepest existing parent so an ancestor symlink cannot
+		// bypass containment when the credential file has missing descendants.
+		parent := filepath.Dir(resolved)
+		missing := []string{filepath.Base(resolved)}
+		for parent != filepath.Dir(parent) {
+			if resolvedParent, err := filepath.EvalSymlinks(parent); err == nil {
+				resolved = filepath.Join(append([]string{resolvedParent}, missing...)...)
+				break
+			} else if !os.IsNotExist(err) {
+				return "", fmt.Errorf("resolve credential parent dir: %w", err)
+			}
+			missing = append([]string{filepath.Base(parent)}, missing...)
+			parent = filepath.Dir(parent)
 		}
+	}
+	if info, err := os.Lstat(resolved); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("credential path must not be a symlink: %s", path)
 	}
 	cleanBase := filepath.Clean(base)
 	if resolved != cleanBase &&
@@ -399,4 +477,45 @@ func resolveCredentialPath(path, credentialsDir string) (string, error) {
 		return "", fmt.Errorf("credential path escapes credentials directory: %s", path)
 	}
 	return resolved, nil
+}
+
+// IsCurrentProcessFDPath reports whether path is an fd-backed path from vault
+// decryption (securefile). Matches /dev/fd/N and
+// /proc/{self,<pid>}/fd/N (after EvalSymlinks resolves the
+// /proc/self symlink). The fd component must be numeric with no
+// trailing path segments.
+func IsCurrentProcessFDPath(path string) bool {
+	path = filepath.Clean(path)
+	if after, ok := strings.CutPrefix(path, "/dev/fd/"); ok {
+		return isNumericFd(after)
+	}
+	if !strings.HasPrefix(path, "/proc/") {
+		return false
+	}
+	rest := path[len("/proc/"):]
+	slash := strings.IndexByte(rest, '/')
+	if slash < 0 {
+		return false
+	}
+	pid := rest[:slash]
+	if pid != "self" && pid != strconv.Itoa(os.Getpid()) {
+		return false
+	}
+	after, ok := strings.CutPrefix(rest[slash:], "/fd/")
+	if !ok {
+		return false
+	}
+	return isNumericFd(after)
+}
+
+func isNumericFd(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
 }

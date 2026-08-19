@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/LeGambiArt/wtmcp/internal/config"
+	"github.com/LeGambiArt/wtmcp/internal/secrets/securefile"
 	"github.com/LeGambiArt/wtmcp/internal/secrets/vault"
 	"github.com/golang-jwt/jwt/v5"
 )
@@ -265,4 +266,16 @@ func loadPrivateKeyFile(path string) ([]byte, error) {
 		return nil, fmt.Errorf("private key file: %w", err)
 	}
 	return os.ReadFile(path) //nolint:gosec // path validated above
+}
+
+func loadPrivateKeySecureFile(file *securefile.SecureFile) ([]byte, error) {
+	path := file.Path()
+	if !IsCurrentProcessFDPath(path) {
+		return nil, fmt.Errorf("private key file is not a current-process fd path")
+	}
+	_, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	return os.ReadFile(path) //nolint:gosec // manager-created securefile
 }
