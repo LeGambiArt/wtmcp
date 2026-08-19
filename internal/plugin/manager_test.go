@@ -824,6 +824,109 @@ func createPluginWithManifest(t *testing.T, parentDir, name, manifestYAML string
 	}
 }
 
+// TestResolveAuthRelativeCredentialPaths verifies that resolveAuth works when
+// credential files (credentials_file, token_file, private_key_file) are
+// specified as relative paths in plugin.yaml. Regression test for a bug
+// where decryptCredFile received a relative path, os.Stat failed (wrong
+// CWD), and the error handler returned "" instead of the original path,
+// causing NewOAuth2Provider to fail with "credential file path is required".
+func TestResolveAuthRelativeCredentialPaths(t *testing.T) {
+	credDir := t.TempDir()
+	groupDir := filepath.Join(credDir, "google")
+	if err := os.MkdirAll(groupDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write a minimal Google OAuth2 client credentials file.
+	clientCreds := `{"installed":{"client_id":"test.apps.googleusercontent.com","client_secret":"secret","auth_uri":"https://accounts.google.com/o/oauth2/auth","token_uri":"https://oauth2.googleapis.com/token","redirect_uris":["urn:ietf:wg:oauth:2.0:oob"]}}`
+	if err := os.WriteFile(filepath.Join(groupDir, "client-credentials.json"), []byte(clientCreds), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write a token file so the provider has a token to use.
+	tokenJSON := `{"access_token":"ya29.test","token_type":"Bearer","refresh_token":"1//test","expiry":"2099-01-01T00:00:00Z"}`
+	if err := os.WriteFile(filepath.Join(groupDir, "token-drive.json"), []byte(tokenJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.DefaultConfig()
+	cfg.CredentialsDir = credDir
+
+	authReg := auth.NewRegistry()
+	cacheStore := cache.NewMemoryStore()
+	p := proxy.New(nil, cfg.Plugins.MaxMessageSize, cfg.HTTP.Timeout)
+	m := NewManager(authReg, p, cacheStore, cfg, nil, nil, "", "", "", config.EnvLoadOptions{}, "")
+
+	manifest := &Manifest{
+		Name:            "google-drive",
+		CredentialGroup: "google",
+		Services: ServiceConfig{
+			Auth: AuthServiceConfig{
+				Type:            "oauth2",
+				TokenFile:       "token-drive.json",
+				CredentialsFile: "client-credentials.json",
+				Scopes:          []string{"https://www.googleapis.com/auth/drive"},
+			},
+			HTTP: HTTPServiceConfig{
+				BaseURL: "https://www.googleapis.com",
+			},
+		},
+	}
+
+	provider := m.resolveAuth("google-drive", manifest)
+	if provider == nil {
+		t.Fatal("resolveAuth returned nil; relative credential paths should resolve against credential_group directory")
+	}
+	if provider.Name() != "oauth2" {
+		t.Errorf("provider name = %q, want %q", provider.Name(), "oauth2")
+	}
+	if !provider.Available() {
+		t.Error("provider should be available (token file exists)")
+	}
+}
+
+func TestResolveAuthRejectsPathTraversal(t *testing.T) {
+	credDir := t.TempDir()
+	groupDir := filepath.Join(credDir, "evil")
+	if err := os.MkdirAll(groupDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	// Place a file outside the group directory that a traversal would reach.
+	if err := os.WriteFile(filepath.Join(credDir, "stolen.json"), []byte(`{"installed":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.DefaultConfig()
+	cfg.CredentialsDir = credDir
+
+	authReg := auth.NewRegistry()
+	cacheStore := cache.NewMemoryStore()
+	p := proxy.New(nil, cfg.Plugins.MaxMessageSize, cfg.HTTP.Timeout)
+	m := NewManager(authReg, p, cacheStore, cfg, nil, nil, "", "", "", config.EnvLoadOptions{}, "")
+
+	manifest := &Manifest{
+		Name:            "evil-plugin",
+		CredentialGroup: "evil",
+		Services: ServiceConfig{
+			Auth: AuthServiceConfig{ //nolint:gosec // G101: intentional traversal path for security test
+				Type:            "oauth2",
+				TokenFile:       "token.json",
+				CredentialsFile: "../stolen.json",
+				Scopes:          []string{"https://example.com/scope"},
+			},
+			HTTP: HTTPServiceConfig{
+				BaseURL: "https://example.com",
+			},
+		},
+	}
+
+	provider := m.resolveAuth("evil-plugin", manifest)
+	if provider != nil {
+		t.Fatal("resolveAuth should return nil when credentials_file escapes group directory via ../")
+	}
+}
+
 func TestCheckDisabledProvider_SingleType(t *testing.T) {
 	dir := t.TempDir()
 	createPluginWithManifest(t, dir, "krb-plugin", `

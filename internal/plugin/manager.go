@@ -1520,12 +1520,32 @@ func (m *Manager) resolveAuth(pluginName string, manifest *Manifest) auth.Provid
 	vars := m.pluginVars(manifest)
 	resolve := func(s string) string { return config.ResolveVars(s, vars) }
 
+	resolveCredPath := func(path string) string {
+		if path == "" || filepath.IsAbs(path) {
+			return path
+		}
+		if credDir == "" {
+			return path
+		}
+		joined := filepath.Clean(filepath.Join(credDir, path))
+		cleanDir := filepath.Clean(credDir)
+		if joined != cleanDir &&
+			!strings.HasPrefix(joined, cleanDir+string(filepath.Separator)) {
+			log.Printf("[%s] credential path escapes group directory: %s", pluginName, path)
+			return ""
+		}
+		return joined
+	}
+
 	decryptCredFile := func(path string) string {
 		if path == "" {
 			return ""
 		}
 		decrypted, err := m.decryptCredentialIfVault(pluginName, path)
 		if err != nil {
+			if os.IsNotExist(err) {
+				return path
+			}
 			log.Printf("[%s] credential file decrypt failed, skipping: %v", pluginName, err)
 			return ""
 		}
@@ -1574,15 +1594,15 @@ func (m *Manager) resolveAuth(pluginName string, manifest *Manifest) auth.Provid
 				Password:        resolve(v.Password),
 				SPN:             resolve(v.SPN),
 				Scopes:          v.Scopes,
-				CredentialsFile: decryptCredFile(resolve(v.CredentialsFile)),
-				TokenFile:       resolve(v.TokenFile),
+				CredentialsFile: decryptCredFile(resolveCredPath(resolve(v.CredentialsFile))),
+				TokenFile:       resolveCredPath(resolve(v.TokenFile)),
 				CredentialsDir:  credDir,
 				TokenURL:        resolve(v.TokenURL),
 				ClientID:        resolve(v.ClientID),
 				AppID:           resolve(v.AppID),
 				InstallationID:  resolve(v.InstallationID),
 				PrivateKey:      resolve(v.PrivateKey),
-				PrivateKeyFile:  decryptCredFile(resolve(v.PrivateKeyFile)),
+				PrivateKeyFile:  decryptCredFile(resolveCredPath(resolve(v.PrivateKeyFile))),
 				BaseURL:         resolve(manifest.Services.HTTP.BaseURL),
 				Transport:       safeTransport,
 			}
@@ -1602,15 +1622,15 @@ func (m *Manager) resolveAuth(pluginName string, manifest *Manifest) auth.Provid
 				Password:        resolve(authCfg.Password),
 				SPN:             resolve(authCfg.SPN),
 				Scopes:          authCfg.Scopes,
-				CredentialsFile: decryptCredFile(resolve(authCfg.CredentialsFile)),
-				TokenFile:       resolve(authCfg.TokenFile),
+				CredentialsFile: decryptCredFile(resolveCredPath(resolve(authCfg.CredentialsFile))),
+				TokenFile:       resolveCredPath(resolve(authCfg.TokenFile)),
 				CredentialsDir:  credDir,
 				TokenURL:        resolve(authCfg.TokenURL),
 				ClientID:        resolve(authCfg.ClientID),
 				AppID:           resolve(authCfg.AppID),
 				InstallationID:  resolve(authCfg.InstallationID),
 				PrivateKey:      resolve(authCfg.PrivateKey),
-				PrivateKeyFile:  decryptCredFile(resolve(authCfg.PrivateKeyFile)),
+				PrivateKeyFile:  decryptCredFile(resolveCredPath(resolve(authCfg.PrivateKeyFile))),
 				BaseURL:         resolve(manifest.Services.HTTP.BaseURL),
 				Transport:       safeTransport,
 			},
