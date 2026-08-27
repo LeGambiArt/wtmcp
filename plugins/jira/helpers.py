@@ -576,6 +576,31 @@ def wiki_to_adf(text):
     return {"version": 1, "type": "doc", "content": blocks}
 
 
+_URL_RE = re.compile(r'(https?://[^\s<>\[\](){}\'"]+[^\s<>\[\](){}\'",;.!?])')
+
+
+def _text_with_links(line: str) -> list[dict]:
+    """Split a line into ADF text nodes, wrapping URLs with link marks."""
+    parts = _URL_RE.split(line)
+    if len(parts) == 1:
+        return [{"type": "text", "text": line}]
+    nodes = []
+    for part in parts:
+        if not part:
+            continue
+        if _URL_RE.fullmatch(part):
+            nodes.append(
+                {
+                    "type": "text",
+                    "text": part,
+                    "marks": [{"type": "link", "attrs": {"href": part}}],
+                }
+            )
+        else:
+            nodes.append({"type": "text", "text": part})
+    return nodes or [{"type": "text", "text": line}]
+
+
 def text_to_adf(text: str | dict | None) -> dict:
     """Convert plain text to Atlassian Document Format (ADF).
 
@@ -619,11 +644,11 @@ def text_to_adf(text: str | dict | None) -> dict:
     if isinstance(text, str) and len(text) <= _MAX_WIKI_PARSE_LEN and _looks_like_wiki_markup(text):
         return wiki_to_adf(text)
 
-    # Plain text — split into paragraphs
+    # Plain text — split into paragraphs, auto-link URLs
     content = []
     for para in str(text).split("\n"):
         if para.strip():
-            content.append({"type": "paragraph", "content": [{"type": "text", "text": para}]})
+            content.append({"type": "paragraph", "content": _text_with_links(para)})
         else:
             content.append({"type": "paragraph", "content": []})
 
