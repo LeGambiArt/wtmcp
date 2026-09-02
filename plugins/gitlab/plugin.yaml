@@ -477,6 +477,45 @@ tools:
         default: true
         description: "Preview without creating (default: true)"
 
+  - name: gitlab_commit_files
+    access: write
+    description: >
+      Commit multiple files in a single atomic commit. Pass files as an
+      array of {path, content} objects. Shell scripts (.sh) automatically
+      get executable permission (100755). Defaults to dry_run=true.
+    params:
+      instance:
+        type: string
+      project_id:
+        type: string
+        required: true
+        description: "Project ID or path (e.g. 'group/project')"
+      branch:
+        type: string
+        required: true
+        description: "Target branch for the commit"
+      files:
+        type: array
+        required: true
+        description: "Array of {path, content} objects to commit"
+        items:
+          type: object
+          properties:
+            path:
+              type: string
+              description: "File path in the repository"
+            content:
+              type: string
+              description: "File content (plain text)"
+      message:
+        type: string
+        required: true
+        description: "Commit message"
+      dry_run:
+        type: boolean
+        default: true
+        description: "Preview without committing (default: true)"
+
   - name: gitlab_create_mr_discussion
     access: write
     description: >

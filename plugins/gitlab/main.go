@@ -42,6 +42,7 @@ func main() {
 	p.Handle("gitlab_create_or_update_file", toolCreateOrUpdateFile)
 	p.Handle("gitlab_create_mr_discussion", toolCreateMRDiscussion)
 	p.Handle("gitlab_add_mr_note", toolAddMRNote)
+	p.Handle("gitlab_commit_files", toolCommitFiles)
 
 	if err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "handler: %v\n", err)
