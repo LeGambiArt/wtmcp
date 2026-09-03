@@ -396,7 +396,47 @@ func resolveCredentialPath(path, credentialsDir string) (string, error) {
 	cleanBase := filepath.Clean(base)
 	if resolved != cleanBase &&
 		!strings.HasPrefix(resolved, cleanBase+string(filepath.Separator)) {
-		return "", fmt.Errorf("credential path escapes credentials directory: %s", path)
+		if !isFdPath(resolved) {
+			return "", fmt.Errorf("credential path escapes credentials directory: %s", path)
+		}
 	}
 	return resolved, nil
+}
+
+// isFdPath reports whether path is an fd-backed path from vault
+// decryption (securefile). These paths are exempt from the
+// credentials directory containment check because the source file
+// was already validated before decryption. Matches /dev/fd/N and
+// /proc/{self,<pid>}/fd/N (after EvalSymlinks resolves the
+// /proc/self symlink). The fd component must be numeric with no
+// trailing path segments.
+func isFdPath(path string) bool {
+	if after, ok := strings.CutPrefix(path, "/dev/fd/"); ok {
+		return isNumericFd(after)
+	}
+	if !strings.HasPrefix(path, "/proc/") {
+		return false
+	}
+	rest := path[len("/proc/"):]
+	slash := strings.IndexByte(rest, '/')
+	if slash < 0 {
+		return false
+	}
+	after, ok := strings.CutPrefix(rest[slash:], "/fd/")
+	if !ok {
+		return false
+	}
+	return isNumericFd(after)
+}
+
+func isNumericFd(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
 }

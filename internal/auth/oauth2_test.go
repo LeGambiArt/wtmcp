@@ -383,3 +383,32 @@ func TestOAuth2Provider_NoTokenAnywhere(t *testing.T) {
 		t.Error("provider should not be available without any token")
 	}
 }
+
+func TestIsFdPath(t *testing.T) {
+	tests := []struct {
+		path string
+		want bool
+	}{
+		{"/dev/fd/3", true},
+		{"/dev/fd/42", true},
+		{"/proc/self/fd/7", true},
+		{"/proc/12345/fd/7", true},
+		{"/proc/1/fd/0", true},
+		{"/home/user/.config/creds.json", false},
+		{"/proc/self/status", false},
+		{"/proc/", false},
+		{"", false},
+		{"/proc/self/fdx/3", false},
+		{"/proc/self/fd/", false},
+		{"/proc/self/fd/abc", false},
+		{"/proc/self/fd/3/extra", false},
+		{"/dev/fd/", false},
+		{"/dev/fd/abc", false},
+		{"/dev/fd/3/extra", false},
+	}
+	for _, tt := range tests {
+		if got := isFdPath(tt.path); got != tt.want {
+			t.Errorf("isFdPath(%q) = %v, want %v", tt.path, got, tt.want)
+		}
+	}
+}
