@@ -548,6 +548,130 @@ func toolCreateOrUpdateFile(params, _ json.RawMessage) (any, error) {
 	}, nil
 }
 
+// --- gitlab_commit_files ---
+
+type commitFileEntry struct {
+	Path    string `json:"path"`
+	Content string `json:"content"`
+}
+
+type commitFilesParams struct {
+	instanceParam
+	ProjectID string            `json:"project_id"`
+	Branch    string            `json:"branch"`
+	Files     []commitFileEntry `json:"files"`
+	Message   string            `json:"message"`
+	DryRun    *bool             `json:"dry_run"`
+}
+
+func toolCommitFiles(params, _ json.RawMessage) (any, error) {
+	var p commitFilesParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("parse params: %w", err)
+	}
+	if p.ProjectID == "" {
+		return nil, fmt.Errorf("project_id is required")
+	}
+	if len(p.Files) == 0 {
+		return nil, fmt.Errorf("files is required and must be a non-empty array")
+	}
+	if strings.TrimSpace(p.Message) == "" {
+		return nil, fmt.Errorf("message is required")
+	}
+	if p.Branch != "" {
+		if err := validateBranch(p.Branch); err != nil {
+			return nil, fmt.Errorf("branch: %w", err)
+		}
+	}
+
+	for i, f := range p.Files {
+		if err := validatePath(f.Path); err != nil {
+			return nil, fmt.Errorf("files[%d]: %w", i, err)
+		}
+		if f.Content == "" {
+			return nil, fmt.Errorf("files[%d]: content is required", i)
+		}
+		if len(f.Content) > 1_000_000 {
+			return nil, fmt.Errorf("files[%d]: content exceeds 1MB limit (%d bytes)", i, len(f.Content))
+		}
+	}
+
+	// Build file summary with modes for dry_run and result
+	type fileSummary struct {
+		Path string `json:"path"`
+		Mode string `json:"mode"`
+	}
+	fileSummaries := make([]fileSummary, len(p.Files))
+	for i, f := range p.Files {
+		mode := "100644"
+		if strings.HasSuffix(f.Path, ".sh") {
+			mode = "100755"
+		}
+		fileSummaries[i] = fileSummary{Path: f.Path, Mode: mode}
+	}
+
+	if isDryRun(p.DryRun) {
+		return map[string]any{
+			"dry_run":    true,
+			"action":     "gitlab_commit_files",
+			"project_id": p.ProjectID,
+			"branch":     p.Branch,
+			"message":    p.Message,
+			"file_count": len(p.Files),
+			"files":      fileSummaries,
+		}, nil
+	}
+
+	client, err := resolveInstance(p.Instance)
+	if err != nil {
+		return nil, err
+	}
+
+	// Check which files exist to determine create vs update action
+	actions := make([]*gogitlab.CommitActionOptions, len(p.Files))
+	for i, f := range p.Files {
+		action := gogitlab.FileCreate
+		getOpts := &gogitlab.GetFileOptions{}
+		if p.Branch != "" {
+			getOpts.Ref = &p.Branch
+		}
+		_, getResp, getErr := client.RepositoryFiles.GetFile(p.ProjectID, f.Path, getOpts)
+		if getErr == nil {
+			action = gogitlab.FileUpdate
+		} else if getResp == nil || getResp.StatusCode != http.StatusNotFound {
+			return nil, fmt.Errorf("check if file %q exists: %w", f.Path, getErr)
+		}
+
+		content := f.Content
+		isExecutable := strings.HasSuffix(f.Path, ".sh")
+		actions[i] = &gogitlab.CommitActionOptions{
+			Action:          &action,
+			FilePath:        &f.Path,
+			Content:         &content,
+			ExecuteFilemode: &isExecutable,
+		}
+	}
+
+	opts := &gogitlab.CreateCommitOptions{
+		Branch:        &p.Branch,
+		CommitMessage: &p.Message,
+		Actions:       actions,
+	}
+
+	commit, _, err := client.Commits.CreateCommit(p.ProjectID, opts)
+	if err != nil {
+		return nil, fmt.Errorf("create commit: %w", err)
+	}
+
+	return map[string]any{
+		"commit":     commit.ShortID,
+		"branch":     p.Branch,
+		"project_id": p.ProjectID,
+		"file_count": len(p.Files),
+		"files":      fileSummaries,
+	}, nil
+}
+
 // --- helpers ---
 
 func fetchDiffRefs(client *gogitlab.Client, pid string, mrIID int64) (baseSHA, headSHA, startSHA string, err error) {
