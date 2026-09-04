@@ -1524,6 +1524,9 @@ func (m *Manager) resolveAuth(pluginName string, manifest *Manifest) auth.Provid
 		if path == "" {
 			return ""
 		}
+		if !filepath.IsAbs(path) && credDir != "" {
+			path = filepath.Join(credDir, path)
+		}
 		decrypted, err := m.decryptCredentialIfVault(pluginName, path)
 		if err != nil {
 			log.Printf("[%s] credential file decrypt failed, skipping: %v", pluginName, err)
