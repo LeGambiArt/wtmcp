@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"github.com/LeGambiArt/wtmcp/internal/config"
 	arapuca "github.com/sergio-correia/go-arapuca"
@@ -238,7 +239,29 @@ func pythonReadPaths() []string {
 	if err != nil {
 		return []string{interp}
 	}
-	return []string{resolved, filepath.Dir(resolved)}
+	paths := []string{resolved, filepath.Dir(resolved)}
+	if fw := frameworkVersionRoot(resolved); fw != "" {
+		paths = append(paths, fw)
+	}
+	return paths
+}
+
+// frameworkVersionRoot returns the enclosing "<Name>.framework/Versions/<ver>"
+// directory for a macOS framework-build Python interpreter (e.g. the
+// python.org installer), or "" if resolved isn't inside one. Framework
+// builds relaunch themselves through a bundled
+// "Resources/<Name>.app/Contents/MacOS/<Name>" binary outside bin/, so the
+// sandbox needs exec access to the whole version directory, not just bin/.
+func frameworkVersionRoot(resolved string) string {
+	dir := filepath.Dir(resolved)
+	for dir != "/" && dir != "." {
+		parent := filepath.Dir(dir)
+		if filepath.Base(parent) == "Versions" && strings.HasSuffix(filepath.Base(filepath.Dir(parent)), ".framework") {
+			return dir
+		}
+		dir = parent
+	}
+	return ""
 }
 
 // pipeSet holds the six FDs for stdin/stdout/stderr pipe pairs.

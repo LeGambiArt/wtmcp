@@ -193,6 +193,43 @@ func TestBuildProfilePythonPlugin(t *testing.T) {
 	}
 }
 
+func TestFrameworkVersionRoot(t *testing.T) {
+	cases := []struct {
+		name     string
+		resolved string
+		want     string
+	}{
+		{
+			name:     "python.org macOS installer",
+			resolved: "/Library/Frameworks/Python.framework/Versions/3.12/bin/python3.12",
+			want:     "/Library/Frameworks/Python.framework/Versions/3.12",
+		},
+		{
+			name:     "homebrew cellar framework build",
+			resolved: "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/bin/python3.14",
+			want:     "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14",
+		},
+		{
+			name:     "non-framework interpreter",
+			resolved: "/usr/bin/python3",
+			want:     "",
+		},
+		{
+			name:     "not under Versions",
+			resolved: "/opt/homebrew/bin/python3",
+			want:     "",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := frameworkVersionRoot(tc.resolved); got != tc.want {
+				t.Errorf("frameworkVersionRoot(%q) = %q, want %q", tc.resolved, got, tc.want)
+			}
+		})
+	}
+}
+
 func contains(slice []string, s string) bool {
 	for _, v := range slice {
 		if v == s {
