@@ -11,6 +11,7 @@ require github.com/sassoftware/gssapi v0.0.0-20210121192716-4ccd52fd8e05
 require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/JohannesKaufmann/html-to-markdown/v2 v2.5.2
+	github.com/LeGambiArt/go-arapuca v0.2.5
 	github.com/LeGambiArt/oauth2flow v0.2.0
 	github.com/alecthomas/chroma/v2 v2.27.0
 	github.com/charmbracelet/huh v1.0.0
@@ -18,7 +19,6 @@ require (
 	github.com/charmbracelet/x/term v0.2.2
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
-	github.com/sergio-correia/go-arapuca v0.2.4
 	github.com/spf13/cobra v1.10.2
 	github.com/zalando/go-keyring v0.2.8
 	gitlab.com/gitlab-org/api/client-go v1.46.0

@@ -81,7 +81,7 @@ direct network connections.
 ### Sandboxing
 
 OS-level plugin isolation via
-[arapuca](https://github.com/sergio-correia/arapuca) is built by
+[arapuca](https://github.com/LeGambiArt/arapuca) is built by
 default:
 
 - **Landlock LSM** filesystem confinement (Linux) — plugins can
