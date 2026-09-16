@@ -25,7 +25,7 @@ directories.
 ## Sandbox support
 
 The default build includes OS-level plugin sandboxing via
-[arapuca](https://github.com/sergio-correia/arapuca). The Makefile
+[arapuca](https://github.com/LeGambiArt/arapuca). The Makefile
 auto-detects system libarapuca via pkg-config; if not found, it builds
 from the `third_party/arapuca` submodule (requires a Rust toolchain).
 

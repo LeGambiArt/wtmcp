@@ -14,8 +14,8 @@ import (
 	"runtime"
 	"strings"
 
+	arapuca "github.com/LeGambiArt/go-arapuca"
 	"github.com/LeGambiArt/wtmcp/internal/config"
-	arapuca "github.com/sergio-correia/go-arapuca"
 )
 
 // Built reports whether the binary includes sandbox support.

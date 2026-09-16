@@ -12,7 +12,7 @@ import (
 	"sync"
 	"testing"
 
-	arapuca "github.com/sergio-correia/go-arapuca"
+	arapuca "github.com/LeGambiArt/go-arapuca"
 
 	"github.com/LeGambiArt/wtmcp/internal/config"
 )
