@@ -2096,6 +2096,10 @@ type deferredAnchor struct {
 	slug          string
 }
 
+func isValidListRange(startIndex, endIndex int64) bool {
+	return startIndex >= 1 && startIndex < endIndex
+}
+
 // convertMarkdownToRequests converts markdown segments to Google Docs API requests.
 // When stripTrailingNewline is true, the trailing \n is removed from the last
 // text segment to avoid an unwanted empty paragraph at the document end.
@@ -2727,8 +2731,14 @@ func convertMarkdownToRequests(segments []markdownSegment, startIndex int64, str
 		})
 	}
 
-	// Apply list formatting to collected ranges (do this after all text insertion)
-	for _, lr := range listRanges {
+	// Apply list formatting to collected ranges in reverse document order.
+	// CreateParagraphBullets removes the temporary nesting tabs, so formatting a
+	// later range first keeps earlier ranges' indices stable.
+	for i := len(listRanges) - 1; i >= 0; i-- {
+		lr := listRanges[i]
+		if !isValidListRange(lr.startIndex, lr.endIndex) {
+			continue
+		}
 		bulletPreset := "BULLET_DISC_CIRCLE_SQUARE"
 		if lr.isOrdered {
 			bulletPreset = "NUMBERED_DECIMAL_ALPHA_ROMAN"
