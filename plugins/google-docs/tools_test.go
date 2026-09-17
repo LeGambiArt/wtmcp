@@ -287,6 +287,67 @@ func TestParseMarkdownHardWrapMarkerShapes(t *testing.T) {
 		})
 	}
 }
+
+func TestBulletRequestsReverseDisjointNestedRanges(t *testing.T) {
+	markdown := "- first\n    - nested-first\n\n- second\n    - nested-second"
+	for _, tt := range []struct {
+		name                 string
+		stripTrailingNewline bool
+		wantRanges           [][2]int64
+	}{
+		{"strip", true, [][2]int64{{22, 43}, {1, 21}}},
+		{"no_strip", false, [][2]int64{{22, 44}, {1, 21}}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			segments := parseMarkdown(markdown)
+			requests, _, _ := convertMarkdownToRequests(segments, 1, tt.stripTrailingNewline)
+
+			var bullets []*docs.CreateParagraphBulletsRequest
+			for _, req := range requests {
+				if req.CreateParagraphBullets != nil {
+					bullets = append(bullets, req.CreateParagraphBullets)
+				}
+			}
+			if len(bullets) != len(tt.wantRanges) {
+				t.Fatalf("got %d bullet requests, want %d", len(bullets), len(tt.wantRanges))
+			}
+			for i, bullet := range bullets {
+				if bullet.BulletPreset != "BULLET_DISC_CIRCLE_SQUARE" {
+					t.Errorf("bullet request %d preset = %q, want bullet preset", i, bullet.BulletPreset)
+				}
+				got := [2]int64{bullet.Range.StartIndex, bullet.Range.EndIndex}
+				if got != tt.wantRanges[i] {
+					t.Errorf("bullet request %d range = %v, want %v", i, got, tt.wantRanges[i])
+				}
+				if !isValidListRange(bullet.Range.StartIndex, bullet.Range.EndIndex) {
+					t.Errorf("bullet request %d has invalid range: %+v", i, bullet.Range)
+				}
+			}
+		})
+	}
+}
+
+func TestIsValidListRange(t *testing.T) {
+	tests := []struct {
+		name       string
+		start, end int64
+		want       bool
+	}{
+		{"valid", 1, 2, true},
+		{"zero start", 0, 1, false},
+		{"empty", 1, 1, false},
+		{"inverted", 2, 1, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isValidListRange(tt.start, tt.end); got != tt.want {
+				t.Errorf("isValidListRange(%d, %d) = %t, want %t", tt.start, tt.end, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestParseStrikethrough(t *testing.T) {
 	t.Run("basic strikethrough", func(t *testing.T) {
 		segments := parseSimpleFormatting("~~strikethrough~~")
