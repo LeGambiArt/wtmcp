@@ -10,6 +10,7 @@ env_passthrough: all
 services:
   auth:
     type: bearer
+    optional: true
     token: "${GITLAB_TOKEN}"
     header: PRIVATE-TOKEN
     prefix: "none"

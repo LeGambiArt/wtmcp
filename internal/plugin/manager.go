@@ -1699,7 +1699,15 @@ func (m *Manager) resolveAuth(pluginName string, manifest *Manifest) auth.Provid
 
 	provider, err := auth.ResolveVariant(variantCfg)
 	if err != nil {
+		if authCfg.Optional {
+			log.Printf("[%s] optional auth unavailable; using anonymous access", manifest.Name)
+			return nil
+		}
 		log.Printf("[%s] auth disabled: variant resolution failed (plugin will return 401 on all requests): %v", manifest.Name, err)
+		return nil
+	}
+	if authCfg.Optional && !provider.Available() {
+		log.Printf("[%s] optional auth unavailable; using anonymous access", manifest.Name)
 		return nil
 	}
 	return provider

@@ -1,11 +1,13 @@
 package main
 
 import (
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
 
+	"github.com/LeGambiArt/wtmcp/pkg/handler"
 	gogitlab "gitlab.com/gitlab-org/api/client-go"
 )
 
@@ -71,6 +73,40 @@ func TestScanMultiInstanceDefaultURL(t *testing.T) {
 	}
 	if entries[0].URL != "https://gitlab.com" {
 		t.Errorf("URL = %q, want https://gitlab.com", entries[0].URL)
+	}
+}
+
+func TestSetupSingleInstanceDefaultsToAnonymousGitLabCom(t *testing.T) {
+	t.Setenv("GITLAB_URL", "")
+	t.Setenv("GITLAB_TOKEN", "")
+
+	if err := setupSingleInstance(handler.New(), &http.Client{}); err != nil {
+		t.Fatalf("setupSingleInstance: %v", err)
+	}
+
+	if got := instances["default"].URL; got != "https://gitlab.com" {
+		t.Errorf("URL = %q, want https://gitlab.com", got)
+	}
+}
+
+func TestSetupSingleInstanceURLWithoutToken(t *testing.T) {
+	t.Setenv("GITLAB_TOKEN", "")
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("PRIVATE-TOKEN"); got != "" {
+			t.Errorf("PRIVATE-TOKEN = %q, want no authentication header", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":1,"path_with_namespace":"group/project"}`))
+	}))
+	defer ts.Close()
+	t.Setenv("GITLAB_URL", ts.URL)
+
+	if err := setupSingleInstance(handler.New(), ts.Client()); err != nil {
+		t.Fatalf("setupSingleInstance: %v", err)
+	}
+	if _, _, err := instances["default"].Client.Projects.GetProject("group/project", nil); err != nil {
+		t.Fatalf("GetProject: %v", err)
 	}
 }
 

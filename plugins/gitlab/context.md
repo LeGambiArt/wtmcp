@@ -17,13 +17,16 @@ gitlab_list_merge_requests(instance="public", scope="assigned_to_me")
 ```
 
 Instances are discovered from environment variables:
-- `GITLAB_TOKEN` + `GITLAB_URL` → single instance (default)
+- no variables → anonymous access to `https://gitlab.com`
+- `GITLAB_URL` only → anonymous access to that instance
+- `GITLAB_TOKEN` + optional `GITLAB_URL` → authenticated single instance
 - `GITLAB_PUBLIC_TOKEN` + `GITLAB_PUBLIC_URL` → instance "public"
 - `GITLAB_INTERNAL_TOKEN` + `GITLAB_INTERNAL_URL` → instance "internal"
 
 Authentication is handled by the core HTTP proxy — the plugin
 does not access tokens directly. For multi-instance, per-domain
-auth binding routes the correct token to each GitLab server.
+auth binding routes the correct token to each GitLab server. Tools
+that require the current user or write access still require a token.
 
 ### Project IDs
 

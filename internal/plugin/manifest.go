@@ -87,6 +87,8 @@ type ServiceConfig struct {
 // AuthServiceConfig declares auth requirements.
 type AuthServiceConfig struct {
 	Type string `yaml:"type"`
+	// Optional permits requests to proceed anonymously when credentials are unavailable.
+	Optional bool `yaml:"optional"`
 	// Token holds a bearer token (type=bearer) or refresh/offline
 	// token (type=refresh_token). Typically set via env var: "${MY_TOKEN}".
 	Token           string                       `yaml:"token"`
