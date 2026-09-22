@@ -244,6 +244,9 @@ func TestServerTLSConfigValidate(t *testing.T) {
 		{"cert and key ok", ServerTLSConfig{CertFile: "c", KeyFile: "k"}, false},
 		{"require needs ca", ServerTLSConfig{CertFile: "c", KeyFile: "k", ClientAuth: "require"}, true},
 		{"require with ca ok", ServerTLSConfig{CertFile: "c", KeyFile: "k", CAFile: "ca", ClientAuth: "require"}, false},
+		{"require without cert", ServerTLSConfig{CAFile: "ca", ClientAuth: "require"}, true},
+		{"request without cert", ServerTLSConfig{CAFile: "ca", ClientAuth: "request"}, true},
+		{"request with cert and ca ok", ServerTLSConfig{CertFile: "c", KeyFile: "k", CAFile: "ca", ClientAuth: "request"}, false},
 		{"bad client_auth", ServerTLSConfig{ClientAuth: "bogus"}, true},
 		{"none ok", ServerTLSConfig{ClientAuth: "none"}, false},
 	}

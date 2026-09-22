@@ -292,8 +292,18 @@ func (t *ServerTLSConfig) Validate() error {
 		return fmt.Errorf("server.tls.client_auth must be one of %q, %q, %q, got %q",
 			ClientAuthRequire, ClientAuthRequest, ClientAuthNone, t.ClientAuth)
 	}
-	if (t.ClientAuth == ClientAuthRequire || t.ClientAuth == ClientAuthRequest) && t.CAFile == "" {
-		return fmt.Errorf("server.tls.ca_file is required when client_auth is %q", t.ClientAuth)
+	if t.ClientAuth == ClientAuthRequire || t.ClientAuth == ClientAuthRequest {
+		if t.CAFile == "" {
+			return fmt.Errorf("server.tls.ca_file is required when client_auth is %q", t.ClientAuth)
+		}
+		// Client authentication is only exercised over TLS. Without a
+		// server cert the transport silently serves plaintext HTTP
+		// (see transport.listenHTTP), so client certs are never
+		// requested or verified — a fail-open trap. Require the cert so
+		// the misconfiguration fails at startup instead.
+		if t.CertFile == "" {
+			return fmt.Errorf("server.tls.cert_file and key_file are required when client_auth is %q", t.ClientAuth)
+		}
 	}
 	return nil
 }
