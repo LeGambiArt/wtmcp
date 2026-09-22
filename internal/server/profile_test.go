@@ -45,6 +45,13 @@ func newFilterTestServer(t *testing.T) *mcpServerWithInit {
 		},
 	})
 	mgr.SetHandle("alpha")
+	mgr.SetManifest("beta", &plugin.Manifest{
+		Name: "beta",
+		Tools: []plugin.ToolDef{
+			{Name: "beta_run", Description: "Run", Access: "read", Visibility: "primary"},
+		},
+	})
+	mgr.SetHandle("beta")
 
 	cfg := config.DefaultConfig()
 	cfg.Tools.Discovery = "full"
@@ -157,6 +164,61 @@ func TestToolFilterBlocksDeniedCall(t *testing.T) {
 	}`))
 	if _, isErr := resp.(mcp.JSONRPCError); !isErr {
 		t.Fatalf("denied tools/call should return a JSON-RPC error, got %T", resp)
+	}
+}
+
+// callToolText drives a tools/call and returns the text of the first
+// content block, for tools that return a JSON/text payload.
+func (s *mcpServerWithInit) callToolText(ctx context.Context, t *testing.T, raw string) string {
+	t.Helper()
+	resp := s.srv.HandleMessage(ctx, json.RawMessage(raw))
+	r, ok := resp.(mcp.JSONRPCResponse)
+	if !ok {
+		t.Fatalf("tools/call: expected JSONRPCResponse, got %T", resp)
+	}
+	b, _ := json.Marshal(r.Result)
+	var parsed struct {
+		Content []struct {
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(b, &parsed); err != nil {
+		t.Fatalf("unmarshal tools/call result: %v", err)
+	}
+	if len(parsed.Content) == 0 {
+		return ""
+	}
+	return parsed.Content[0].Text
+}
+
+func TestPluginListFilteredByProfile(t *testing.T) {
+	s := newFilterTestServer(t)
+	// Allow only alpha's read tool; beta is entirely denied.
+	filter := buildFilter(t, config.ProfileDefinition{
+		Allow: map[string][]string{"alpha": {"alpha_get_.*"}},
+	})
+	ctx := profile.WithFilter(context.Background(), filter)
+
+	body := s.callToolText(ctx, t, `{
+		"jsonrpc": "2.0", "id": 5, "method": "tools/call",
+		"params": {"name": "plugin_list", "arguments": {}}
+	}`)
+	if !strings.Contains(body, "alpha") {
+		t.Errorf("plugin_list should include alpha (has an allowed tool), got: %s", body)
+	}
+	if strings.Contains(body, "beta") {
+		t.Errorf("plugin_list must NOT include fully-denied beta, got: %s", body)
+	}
+}
+
+func TestPluginListNoProfileShowsAll(t *testing.T) {
+	s := newFilterTestServer(t)
+	body := s.callToolText(context.Background(), t, `{
+		"jsonrpc": "2.0", "id": 6, "method": "tools/call",
+		"params": {"name": "plugin_list", "arguments": {}}
+	}`)
+	if !strings.Contains(body, "alpha") || !strings.Contains(body, "beta") {
+		t.Errorf("without a profile plugin_list should include all plugins, got: %s", body)
 	}
 }
 

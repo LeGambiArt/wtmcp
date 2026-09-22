@@ -106,6 +106,22 @@ func newToolFilter(toolOwners *ToolOwnerMap) mcpserver.ToolFilterFunc {
 	}
 }
 
+// profileAllowsPlugin reports whether the connection's profile filter
+// permits at least one of the plugin's tools. A nil filter (no profiles
+// configured) permits everything. Used to hide plugins an agent cannot
+// use from the exempt introspection tools (plugin_list, tool_stats).
+func profileAllowsPlugin(filter *profile.Filter, manifest *plugin.Manifest) bool {
+	if filter == nil {
+		return true
+	}
+	for _, t := range manifest.Tools {
+		if filter.IsAllowed(manifest.Name, t.Name) {
+			return true
+		}
+	}
+	return false
+}
+
 // New creates an MCP server with tools from all loaded plugins.
 // When sandboxBuilt is false, the server's MCP instructions warn
 // the LLM that plugins run without OS-level isolation.
@@ -523,11 +539,19 @@ func registerManagementTools(deps *serverDeps) {
 		mcp.NewTool("plugin_list",
 			mcp.WithDescription("List all plugins and their status (loaded, disabled)"),
 		),
-		func(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			var plugins []map[string]any
+
+			// Filter by the connection's profile so an agent cannot
+			// enumerate plugins whose tools it may not call. plugin_list
+			// itself is exempt, but its inventory is still filtered.
+			filter := profile.FilterFromContext(ctx)
 
 			disabled := mgr.DisabledPlugins()
 			for name, manifest := range mgr.Manifests() {
+				if !profileAllowsPlugin(filter, manifest) {
+					continue
+				}
 				if dp, ok := disabled[name]; ok {
 					plugins = append(plugins, map[string]any{
 						"name":             name,
@@ -588,7 +612,7 @@ func registerManagementTools(deps *serverDeps) {
 
 	// tool_stats: show tool usage stats
 	if collector != nil {
-		registerToolStats(srv, collector)
+		registerToolStats(srv, collector, mgr)
 	}
 }
 
@@ -619,7 +643,7 @@ var excludedTools = map[string]bool{
 // ExcludedTools returns the set of tool names excluded from stats.
 func ExcludedTools() map[string]bool { return maps.Clone(excludedTools) }
 
-func registerToolStats(srv *mcpserver.MCPServer, collector *stats.Collector) {
+func registerToolStats(srv *mcpserver.MCPServer, collector *stats.Collector, mgr *plugin.Manager) {
 	srv.AddTool(
 		mcp.NewTool("tool_stats",
 			mcp.WithDescription("Show tool usage stats: call counts, token estimates, durations, schema costs, resource reads"),
@@ -633,11 +657,24 @@ func registerToolStats(srv *mcpserver.MCPServer, collector *stats.Collector) {
 				mcp.Description("Include resource read stats (default: false)"),
 			),
 		),
-		func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			args := req.GetArguments()
 			groupBy, _ := args["group_by"].(string)
 			includeSchemas, _ := args["include_schemas"].(bool)
 			includeResources, _ := args["include_resources"].(bool)
+
+			// Filter stats by the connection's profile so an agent cannot
+			// enumerate tools/plugins it may not call. tool_stats itself
+			// is exempt, but the per-tool/plugin rows are still filtered.
+			// Aggregate totals stay global (they reveal no tool names).
+			filter := profile.FilterFromContext(ctx)
+			pluginVisible := func(name string) bool {
+				if filter == nil {
+					return true
+				}
+				manifest, ok := mgr.Manifests()[name]
+				return ok && profileAllowsPlugin(filter, manifest)
+			}
 
 			result := map[string]any{
 				"tokenizer":      collector.TokenizerName(),
@@ -645,17 +682,57 @@ func registerToolStats(srv *mcpserver.MCPServer, collector *stats.Collector) {
 			}
 
 			if groupBy == "plugin" {
-				result["calls"] = collector.PluginSummaries()
+				plugins := collector.PluginSummaries()
+				if filter != nil {
+					kept := plugins[:0:0]
+					for _, p := range plugins {
+						if pluginVisible(p.PluginName) {
+							kept = append(kept, p)
+						}
+					}
+					plugins = kept
+				}
+				result["calls"] = plugins
 			} else {
-				result["calls"] = collector.Summary()
+				calls := collector.Summary()
+				if filter != nil {
+					kept := calls[:0:0]
+					for _, c := range calls {
+						if filter.IsAllowed(c.PluginName, c.ToolName) {
+							kept = append(kept, c)
+						}
+					}
+					calls = kept
+				}
+				result["calls"] = calls
 			}
 
 			if includeSchemas {
-				result["schema_cost"] = collector.SchemaCost()
+				sc := collector.SchemaCost()
+				if filter != nil {
+					kept := sc.ByPlugin[:0:0]
+					for _, ps := range sc.ByPlugin {
+						if pluginVisible(ps.Plugin) {
+							kept = append(kept, ps)
+						}
+					}
+					sc.ByPlugin = kept
+				}
+				result["schema_cost"] = sc
 			}
 
 			if includeResources {
-				result["resources"] = collector.ResourceSummary()
+				resources := collector.ResourceSummary()
+				if filter != nil {
+					kept := resources[:0:0]
+					for _, r := range resources {
+						if pluginVisible(r.PluginName) {
+							kept = append(kept, r)
+						}
+					}
+					resources = kept
+				}
+				result["resources"] = resources
 			}
 
 			inputTk, outputTk := collector.TotalTokens()
