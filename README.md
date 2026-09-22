@@ -54,7 +54,8 @@ proxying, caching, and output encoding so plugins stay minimal.
 - **Agent profiles**: Per-connection tool filtering — different agents
   see different tool subsets based on their mTLS client-certificate
   identity (streamable-http) or a `--profile` flag (stdio). Fail-closed
-  by default. See [docs/profiles-guide.md](docs/profiles-guide.md)
+  on streamable-http (stdio is fail-open without `--profile`). See
+  [docs/profiles-guide.md](docs/profiles-guide.md)
 - **Encrypted credentials**: Ansible Vault encrypted env.d files,
   auto-detected and decrypted transparently at startup
 
@@ -252,9 +253,12 @@ different tool subsets.
   verified TLS client certificate (CN or SAN). `client_auth: require` is
   mandatory whenever profiles are configured.
 - **Stdio** — a single agent selects its profile with `--profile <name>`.
-- **Fail-closed** — once profiles exist, an unmatched (or ambiguous)
-  identity gets *no* tools unless a permissive `default` is set. With no
-  profiles configured, all tools remain visible (backward compatible).
+  Note: stdio is **fail-open** when `--profile` is omitted (all tools
+  visible); profiles are an access boundary on streamable-http only.
+- **Fail-closed (streamable-http)** — once profiles exist, an unmatched
+  (or ambiguous) identity gets *no* tools unless a permissive `default`
+  is set. With no profiles configured, all tools remain visible
+  (backward compatible).
 - **Single enforcement point** — one filter governs both `tools/list`
   (hiding) and `tools/call` (rejection before the handler runs);
   `tool_search` results are filtered too. Read-only introspection tools

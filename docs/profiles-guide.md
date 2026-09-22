@@ -12,11 +12,19 @@ same wtmcp instance.
 - **Stdio:** a single agent selects its profile with the `--profile`
   flag.
 
-Profiles are **fail-closed**: once any profile is configured, an agent
-that matches no rule gets *no* tools unless you explicitly set a
-permissive default. With no profiles configured at all, behavior is
-unchanged (all tools visible) — the feature is fully backward
+Profiles are **fail-closed on streamable-HTTP**: once any profile is
+configured, an agent that matches no rule gets *no* tools unless you
+explicitly set a permissive default. With no profiles configured at all,
+behavior is unchanged (all tools visible) — the feature is fully backward
 compatible.
+
+> **Stdio is different.** The stdio transport has no certificate identity,
+> so it selects a profile from the `--profile` flag. If profiles are
+> configured but `--profile` is omitted, stdio is **fail-open**: all tools
+> are visible. Profiles restrict a stdio session only when you pass
+> `--profile`. Do not rely on profiles as an access boundary on stdio;
+> the fail-closed guarantee applies to streamable-HTTP (mTLS) only. See
+> [Stdio transport](#stdio-transport).
 
 > Design rationale and alternatives considered: see
 > [docs/design/profiles.md](design/profiles.md).
@@ -249,6 +257,16 @@ wtmcp --profile code-review
 - If profiles are configured but `--profile` is omitted on stdio, no
   filter is applied (all tools visible).
 
+> **Security caveat — stdio is fail-open without `--profile`.** Unlike
+> streamable-HTTP, an unspecified profile on stdio does **not** deny
+> tools; it shows all of them. This is intentional (stdio is a local,
+> single-user, 1:1 channel with no identity to enforce against), but it
+> means profiles are not an access boundary on stdio. If you need
+> guaranteed restriction, either always pass `--profile`, or use the
+> streamable-HTTP transport with `client_auth: require`, which is
+> fail-closed. Consider `--read-only` as an orthogonal, always-on guard
+> for stdio sessions.
+
 ## Validation and debugging (`wtmcpctl profile`)
 
 Validate and inspect your configuration offline, without starting the
@@ -293,6 +311,11 @@ correctness).
 - **Denied calls** return an ordinary MCP "tool not found," which does
   not confirm the tool exists. The primary audit signal is the
   per-connection profile assignment logged at connect time.
+- **Stdio is fail-open without `--profile`** — profiles are an access
+  boundary on streamable-HTTP (mTLS) only. On stdio, an omitted
+  `--profile` shows all tools; always pass `--profile` (or use
+  `--read-only`) if you need restriction there. See
+  [Stdio transport](#stdio-transport).
 
 ## Limitations
 
