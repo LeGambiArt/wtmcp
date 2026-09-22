@@ -1,8 +1,19 @@
 # Agent Profiles — Design Proposal
 
 **Issue:** [#214](https://github.com/LeGambiArt/wtmcp/issues/214)
-**Status:** Draft
+**Status:** Implemented
 **Date:** 2026-09-16
+
+> **Implemented.** For the user-facing guide, see
+> [docs/profiles-guide.md](../profiles-guide.md); for the `wtmcpctl
+> profile` command reference, see
+> [README-wtmcpctl.md](../../README-wtmcpctl.md#profile). This document
+> is retained as the design rationale (including alternatives
+> considered). A few implementation details differ from the sketches
+> below — notably, TLS reuses mcp-go's `WithTLSCert` plus a `TLSConfig`
+> on the injected `http.Server` rather than taking over the listener,
+> and the `WithToolFilter` closure is built inside `server.New` (so
+> `ToolOwnerMap.owner` stayed unexported).
 
 ## Problem Statement
 

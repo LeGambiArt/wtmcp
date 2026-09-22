@@ -51,6 +51,10 @@ proxying, caching, and output encoding so plugins stay minimal.
 - **Progressive discovery**: Tools default to deferred; only primary
   tools are loaded into model context. Deferred tools are
   discoverable via `tool_search` and called directly through MCP
+- **Agent profiles**: Per-connection tool filtering — different agents
+  see different tool subsets based on their mTLS client-certificate
+  identity (streamable-http) or a `--profile` flag (stdio). Fail-closed
+  by default. See [docs/profiles-guide.md](docs/profiles-guide.md)
 - **Encrypted credentials**: Ansible Vault encrypted env.d files,
   auto-detected and decrypted transparently at startup
 
@@ -237,6 +241,30 @@ Plugin processes receive only the credentials they need.
 - **Memory-backed secure files** — decrypted credentials stored
   via `memfd_create`, never touch disk
 
+### Agent Profiles (per-connection tool filtering)
+
+Restrict which tools an agent can discover and call, based on its
+identity. Without profiles, every client sees every tool; with them, a
+read-only review agent and a CI agent can share one wtmcp instance with
+different tool subsets.
+
+- **mTLS identity** — on streamable-http, agents are identified by their
+  verified TLS client certificate (CN or SAN). `client_auth: require` is
+  mandatory whenever profiles are configured.
+- **Stdio** — a single agent selects its profile with `--profile <name>`.
+- **Fail-closed** — once profiles exist, an unmatched (or ambiguous)
+  identity gets *no* tools unless a permissive `default` is set. With no
+  profiles configured, all tools remain visible (backward compatible).
+- **Single enforcement point** — one filter governs both `tools/list`
+  (hiding) and `tools/call` (rejection before the handler runs);
+  `tool_search` results are filtered too. Read-only introspection tools
+  (`plugin_list`, `tool_stats`, `tool_search`) are always exempt.
+- **Anchored tool patterns, exact identity matching** — `allow`/`deny`
+  are anchored regexps; identity match values are exact strings.
+
+Validate offline with `wtmcpctl profile check`. Full documentation:
+[docs/profiles-guide.md](docs/profiles-guide.md).
+
 ## Building and Running
 
 ```bash
@@ -253,6 +281,7 @@ The workdir layout:
   config.yaml           Core config (optional)
   .env                  Environment variables
   env.d/*.env           Additional env files
+  profiles.d/*.yaml     Agent profiles (optional; per-agent tool filtering)
   plugins/
     jira/
       plugin.yaml       Plugin manifest
@@ -692,6 +721,7 @@ docs/
   plugin-guide.md       Plugin development guide
   wtmcpctl.md           Plugin management tool guide
   credentials-guide.md  Credential management guide
+  profiles-guide.md     Agent profiles (per-agent tool filtering) guide
 ```
 
 ## License

@@ -1,0 +1,186 @@
+package server
+
+import (
+	"context"
+	"encoding/json"
+	"strings"
+	"testing"
+
+	"github.com/mark3labs/mcp-go/mcp"
+
+	"github.com/LeGambiArt/wtmcp/internal/config"
+	"github.com/LeGambiArt/wtmcp/internal/plugin"
+	"github.com/LeGambiArt/wtmcp/internal/profile"
+)
+
+// buildFilter builds a *profile.Filter for tests using only the exported
+// resolver API (Filter's own constructor is unexported).
+func buildFilter(t *testing.T, def config.ProfileDefinition) *profile.Filter {
+	t.Helper()
+	loaded := &config.ProfileLoadResult{
+		Definitions: map[string]config.ProfileDefinition{"p": def},
+		Rules: []config.ProfileRule{
+			{Match: config.ProfileMatch{CN: "bot"}, Profile: "p", File: "f.yaml"},
+		},
+	}
+	resolver, err := profile.NewResolver("", loaded)
+	if err != nil {
+		t.Fatalf("NewResolver: %v", err)
+	}
+	f := resolver.FilterFor(profile.Identity{CN: "bot"})
+	if f == nil {
+		t.Fatalf("expected non-nil filter")
+	}
+	return f
+}
+
+func newFilterTestServer(t *testing.T) *mcpServerWithInit {
+	t.Helper()
+	mgr := plugin.NewManagerForTest()
+	mgr.SetManifest("alpha", &plugin.Manifest{
+		Name: "alpha",
+		Tools: []plugin.ToolDef{
+			{Name: "alpha_get_data", Description: "Get", Access: "read", Visibility: "primary"},
+			{Name: "alpha_delete_data", Description: "Delete", Access: "read", Visibility: "primary"},
+		},
+	})
+	mgr.SetHandle("alpha")
+
+	cfg := config.DefaultConfig()
+	cfg.Tools.Discovery = "full"
+
+	index := NewToolIndex(mgr, false)
+	srv, _ := New("test", mgr, cfg, index, nil, nil, nil, nil, true)
+
+	s := &mcpServerWithInit{srv: srv}
+	s.initialize(t)
+	return s
+}
+
+type mcpServerWithInit struct {
+	srv interface {
+		HandleMessage(context.Context, json.RawMessage) mcp.JSONRPCMessage
+	}
+}
+
+func (s *mcpServerWithInit) initialize(t *testing.T) {
+	t.Helper()
+	s.srv.HandleMessage(context.Background(), json.RawMessage(`{
+		"jsonrpc": "2.0", "id": 1, "method": "initialize",
+		"params": {"protocolVersion": "2025-03-26",
+		           "clientInfo": {"name": "test", "version": "1"},
+		           "capabilities": {}}
+	}`))
+}
+
+// listToolNames drives tools/list under ctx and returns the tool names.
+func (s *mcpServerWithInit) listToolNames(ctx context.Context, t *testing.T) map[string]bool {
+	t.Helper()
+	resp := s.srv.HandleMessage(ctx, json.RawMessage(`{
+		"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}
+	}`))
+	r, ok := resp.(mcp.JSONRPCResponse)
+	if !ok {
+		t.Fatalf("tools/list: expected JSONRPCResponse, got %T", resp)
+	}
+	b, _ := json.Marshal(r.Result)
+	var parsed struct {
+		Tools []struct {
+			Name string `json:"name"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal(b, &parsed); err != nil {
+		t.Fatalf("unmarshal tools/list: %v", err)
+	}
+	names := make(map[string]bool)
+	for _, tl := range parsed.Tools {
+		names[tl.Name] = true
+	}
+	return names
+}
+
+func TestToolFilterListHidesDeniedTools(t *testing.T) {
+	s := newFilterTestServer(t)
+	filter := buildFilter(t, config.ProfileDefinition{
+		Allow: map[string][]string{"alpha": {"alpha_get_.*"}},
+	})
+	ctx := profile.WithFilter(context.Background(), filter)
+
+	names := s.listToolNames(ctx, t)
+	if !names["alpha_get_data"] {
+		t.Errorf("alpha_get_data should be visible")
+	}
+	if names["alpha_delete_data"] {
+		t.Errorf("alpha_delete_data should be hidden by profile")
+	}
+	// Exempt introspection tools remain visible.
+	if !names["tool_search"] {
+		t.Errorf("tool_search must remain visible (exempt)")
+	}
+}
+
+func TestToolFilterListNoProfileShowsAll(t *testing.T) {
+	s := newFilterTestServer(t)
+	// No filter in context -> backward compatible, all tools visible.
+	names := s.listToolNames(context.Background(), t)
+	if !names["alpha_get_data"] || !names["alpha_delete_data"] {
+		t.Errorf("without a profile all tools should be visible, got %v", names)
+	}
+}
+
+func TestToolFilterDenyAllHidesEverythingButExempt(t *testing.T) {
+	s := newFilterTestServer(t)
+	// Empty allow -> deny all (only exempt tools pass).
+	filter := buildFilter(t, config.ProfileDefinition{})
+	ctx := profile.WithFilter(context.Background(), filter)
+
+	names := s.listToolNames(ctx, t)
+	if names["alpha_get_data"] || names["alpha_delete_data"] {
+		t.Errorf("deny-all should hide plugin tools, got %v", names)
+	}
+	if !names["tool_search"] || !names["plugin_list"] {
+		t.Errorf("exempt tools must remain, got %v", names)
+	}
+}
+
+func TestToolFilterBlocksDeniedCall(t *testing.T) {
+	s := newFilterTestServer(t)
+	filter := buildFilter(t, config.ProfileDefinition{
+		Allow: map[string][]string{"alpha": {"alpha_get_.*"}},
+	})
+	ctx := profile.WithFilter(context.Background(), filter)
+
+	// Calling a denied tool must be rejected by mcp-go before the handler.
+	resp := s.srv.HandleMessage(ctx, json.RawMessage(`{
+		"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+		"params": {"name": "alpha_delete_data", "arguments": {}}
+	}`))
+	if _, isErr := resp.(mcp.JSONRPCError); !isErr {
+		t.Fatalf("denied tools/call should return a JSON-RPC error, got %T", resp)
+	}
+}
+
+func TestToolSearchResultsFilteredByProfile(t *testing.T) {
+	s := newFilterTestServer(t)
+	filter := buildFilter(t, config.ProfileDefinition{
+		Allow: map[string][]string{"alpha": {"alpha_get_.*"}},
+	})
+	ctx := profile.WithFilter(context.Background(), filter)
+
+	resp := s.srv.HandleMessage(ctx, json.RawMessage(`{
+		"jsonrpc": "2.0", "id": 4, "method": "tools/call",
+		"params": {"name": "tool_search", "arguments": {"query": "data"}}
+	}`))
+	r, ok := resp.(mcp.JSONRPCResponse)
+	if !ok {
+		t.Fatalf("tool_search: expected JSONRPCResponse, got %T", resp)
+	}
+	b, _ := json.Marshal(r.Result)
+	body := string(b)
+	if !strings.Contains(body, "alpha_get_data") {
+		t.Errorf("tool_search should include allowed alpha_get_data, got: %s", body)
+	}
+	if strings.Contains(body, "alpha_delete_data") {
+		t.Errorf("tool_search must NOT include denied alpha_delete_data, got: %s", body)
+	}
+}

@@ -7,6 +7,8 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
+
+	"github.com/LeGambiArt/wtmcp/internal/profile"
 )
 
 // registerToolSearch adds the tool_search meta-tool for discovering
@@ -39,7 +41,7 @@ func registerToolSearch(srv *mcpserver.MCPServer, index *ToolIndex, excludeWrite
 	tool.Annotations.ReadOnlyHint = &readOnly
 
 	srv.AddTool(tool,
-		func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			args := req.GetArguments()
 			query, _ := args["query"].(string)
 			pluginFilter, _ := args["plugin_name"].(string)
@@ -49,6 +51,19 @@ func registerToolSearch(srv *mcpserver.MCPServer, index *ToolIndex, excludeWrite
 			}
 
 			results := index.Search(query, pluginFilter, limit, excludeWrite)
+
+			// Filter results by the connection's profile so an agent does
+			// not discover tools it cannot call. tool_search itself is
+			// exempt, but its *results* are still filtered.
+			if filter := profile.FilterFromContext(ctx); filter != nil {
+				filtered := results[:0:0]
+				for _, r := range results {
+					if filter.IsAllowed(r.Plugin, r.Name) {
+						filtered = append(filtered, r)
+					}
+				}
+				results = filtered
+			}
 
 			out := make([]searchResult, len(results))
 			for i, r := range results {

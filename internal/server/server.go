@@ -25,6 +25,7 @@ import (
 
 	"github.com/LeGambiArt/wtmcp/internal/plugin"
 	"github.com/LeGambiArt/wtmcp/internal/pluginctx"
+	"github.com/LeGambiArt/wtmcp/internal/profile"
 	"github.com/LeGambiArt/wtmcp/internal/protocol"
 	"github.com/LeGambiArt/wtmcp/internal/proxy"
 	"github.com/LeGambiArt/wtmcp/internal/ratelimit"
@@ -84,13 +85,43 @@ func (m *ToolOwnerMap) removePlugin(pluginName string) {
 	}
 }
 
+// newToolFilter builds the mcp-go tool filter that enforces the
+// per-connection profile. The returned func reads the *profile.Filter
+// stored in the request context (set by the identity context func) and
+// keeps only the tools that filter allows. When no filter is present
+// (no profiles configured), it returns the tools unchanged.
+func newToolFilter(toolOwners *ToolOwnerMap) mcpserver.ToolFilterFunc {
+	return func(ctx context.Context, tools []mcp.Tool) []mcp.Tool {
+		filter := profile.FilterFromContext(ctx)
+		if filter == nil {
+			return tools // no profiles configured — unfiltered
+		}
+		allowed := make([]mcp.Tool, 0, len(tools))
+		for _, tool := range tools {
+			if filter.IsAllowed(toolOwners.owner(tool.Name), tool.Name) {
+				allowed = append(allowed, tool)
+			}
+		}
+		return allowed
+	}
+}
+
 // New creates an MCP server with tools from all loaded plugins.
 // When sandboxBuilt is false, the server's MCP instructions warn
 // the LLM that plugins run without OS-level isolation.
 func New(version string, manager *plugin.Manager, cfg *config.Config, index *ToolIndex, collector *stats.Collector, auditor *audit.Logger, rateLimiter *ratelimit.Registry, framer *OutputFramer, sandboxBuilt bool) (*mcpserver.MCPServer, *ToolOwnerMap) {
+	toolOwners := newToolOwnerMap()
+
 	opts := []mcpserver.ServerOption{
 		mcpserver.WithToolCapabilities(true),
 		mcpserver.WithResourceCapabilities(true, true),
+		// Profile-based tool filtering. mcp-go consults this filter on
+		// both tools/list (hides tools) and tools/call (rejects the call
+		// before the handler runs), so it is a complete access boundary.
+		// It is inert unless a *profile.Filter is present in the request
+		// context (set by the identity context func) — so with no
+		// profiles configured, behavior is unchanged.
+		mcpserver.WithToolFilter(newToolFilter(toolOwners)),
 	}
 	if cfg.Security.ElicitationEnabled() {
 		opts = append(opts, mcpserver.WithElicitation())
@@ -116,7 +147,6 @@ func New(version string, manager *plugin.Manager, cfg *config.Config, index *Too
 	}
 	srv := mcpserver.NewMCPServer("wtmcp", version, opts...)
 
-	toolOwners := newToolOwnerMap()
 	deps := &serverDeps{
 		srv:         srv,
 		mgr:         manager,

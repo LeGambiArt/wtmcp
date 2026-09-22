@@ -47,6 +47,7 @@ var (
 	transportFlag string
 	hostFlag      string
 	portFlag      int
+	profileFlag   string
 )
 
 var rootCmd = &cobra.Command{
@@ -90,6 +91,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&configPath, "config", "", "Config file path")
 	rootCmd.PersistentFlags().StringVar(&workdir, "workdir", "", "Working directory")
 	rootCmd.PersistentFlags().BoolVar(&readOnly, "read-only", false, "Only register read-access tools (no write tools)")
+	rootCmd.PersistentFlags().StringVar(&profileFlag, "profile", "", "Apply a named profile's tool filter (stdio transport)")
 	if err := rootCmd.MarkPersistentFlagDirname("workdir"); err != nil {
 		panic(err)
 	}
@@ -377,6 +379,18 @@ func run(forceStdio bool) error {
 		return fmt.Errorf("server config: %w", err)
 	}
 
+	// Load and validate agent profiles, then build the transport
+	// options that inject per-connection tool filters. Must come after
+	// CLI flag overrides so the client_auth check sees the real transport.
+	resolver, err := setupProfiles(cfg, wd)
+	if err != nil {
+		return err
+	}
+	transportOpts, err := profileTransportOptions(cfg, resolver, profileFlag)
+	if err != nil {
+		return err
+	}
+
 	// Start control directory watcher for external reload triggers.
 	// Must come after CLI flag overrides so listenURL reflects the actual transport.
 	listenURL := transport.ListenURL(&cfg.Server)
@@ -397,7 +411,7 @@ func run(forceStdio bool) error {
 	log.Printf("wtmcp %s starting (workdir: %s, transport: %s)", Version, wd, cfg.Server.Transport)
 
 	logger := slog.New(slog.NewTextHandler(log.Writer(), &slog.HandlerOptions{Level: slog.LevelInfo}))
-	err = transport.ListenAndServe(ctx, srv, &cfg.Server, logger, os.Stdin, os.Stdout)
+	err = transport.ListenAndServe(ctx, srv, &cfg.Server, logger, os.Stdin, os.Stdout, transportOpts...)
 
 	<-cleanupDone // ensure no reload in progress
 
