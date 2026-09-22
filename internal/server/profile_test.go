@@ -52,6 +52,16 @@ func newFilterTestServer(t *testing.T) *mcpServerWithInit {
 		},
 	})
 	mgr.SetHandle("beta")
+	// gamma is discovered but disabled: its tools register as [DISABLED]
+	// stubs. They must still carry their plugin owner so profile rules
+	// that name the plugin apply to them.
+	mgr.SetManifest("gamma", &plugin.Manifest{
+		Name: "gamma",
+		Tools: []plugin.ToolDef{
+			{Name: "gamma_op", Description: "Op", Access: "read", Visibility: "primary"},
+		},
+	})
+	mgr.SetDisabledPlugin("gamma", "boom")
 
 	cfg := config.DefaultConfig()
 	cfg.Tools.Discovery = "full"
@@ -219,6 +229,37 @@ func TestPluginListNoProfileShowsAll(t *testing.T) {
 	}`)
 	if !strings.Contains(body, "alpha") || !strings.Contains(body, "beta") {
 		t.Errorf("without a profile plugin_list should include all plugins, got: %s", body)
+	}
+}
+
+func TestDisabledStubRespectsPluginOwnerInProfile(t *testing.T) {
+	s := newFilterTestServer(t)
+	// gamma is disabled; a profile that allows gamma by name must still
+	// show its [DISABLED] stub. This regresses the case where a stub's
+	// owner was empty and only "*" rules could match it.
+	filter := buildFilter(t, config.ProfileDefinition{
+		Allow: map[string][]string{"gamma": {".*"}},
+	})
+	ctx := profile.WithFilter(context.Background(), filter)
+
+	names := s.listToolNames(ctx, t)
+	if !names["gamma_op"] {
+		t.Errorf("disabled stub gamma_op should be visible when profile allows gamma, got %v", names)
+	}
+	// A plugin the profile does not name stays hidden.
+	if names["alpha_get_data"] {
+		t.Errorf("alpha_get_data should be hidden (not allowed), got %v", names)
+	}
+}
+
+func TestDisabledStubHiddenByDenyAll(t *testing.T) {
+	s := newFilterTestServer(t)
+	filter := buildFilter(t, config.ProfileDefinition{})
+	ctx := profile.WithFilter(context.Background(), filter)
+
+	names := s.listToolNames(ctx, t)
+	if names["gamma_op"] {
+		t.Errorf("deny-all must hide disabled stub gamma_op, got %v", names)
 	}
 }
 

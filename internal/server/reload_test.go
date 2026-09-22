@@ -209,7 +209,7 @@ func TestSwapStartFailedTools(t *testing.T) {
 	mgr.SetDisabledPlugin("crashed", "init timeout after 5s")
 
 	// SwapStartFailedTools should replace normal tools with stubs.
-	SwapStartFailedTools(srv, mgr, cfg, nil)
+	SwapStartFailedTools(srv, mgr, cfg, nil, nil)
 
 	tools = srv.ListTools()
 	st, ok = tools["crashed_get"]
@@ -251,7 +251,7 @@ func TestSwapStartFailedTools_SkipsAlreadyDisabled(t *testing.T) {
 	}
 
 	// SwapStartFailedTools should be a no-op (no re-registration).
-	SwapStartFailedTools(srv, mgr, cfg, nil)
+	SwapStartFailedTools(srv, mgr, cfg, nil, nil)
 
 	tools = srv.ListTools()
 	st = tools["envfail_get"]
@@ -293,7 +293,7 @@ func TestReloadPlugin_StillDisabledReRegistersStubs(t *testing.T) {
 		t.Fatal("broken should be in disabled map")
 	}
 	single := map[string]plugin.DisabledPlugin{"broken": dp}
-	registerDisabledPluginTools(srv, single, false, cfg.ReadOnly, nil)
+	registerDisabledPluginTools(srv, single, false, cfg.ReadOnly, nil, nil)
 
 	// Verify stub is back.
 	tools = srv.ListTools()

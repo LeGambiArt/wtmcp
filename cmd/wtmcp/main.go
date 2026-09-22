@@ -354,7 +354,7 @@ func run(forceStdio bool) error {
 		// Post-load: swap tools for plugins that failed to start
 		// from normal registrations to [DISABLED] stubs, register
 		// plugin-provided resources, and rebuild the tool index.
-		server.SwapStartFailedTools(srv, mgr, cfg, auditor)
+		server.SwapStartFailedTools(srv, mgr, cfg, auditor, toolOwners)
 		server.RegisterPluginResources(srv, mgr, collector)
 		index.Rebuild(mgr)
 		log.Printf("all plugins loaded (%d)", len(mgr.LoadedPlugins()))
