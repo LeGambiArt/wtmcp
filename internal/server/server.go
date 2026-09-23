@@ -561,31 +561,42 @@ func registerManagementTools(deps *serverDeps) {
 				if !profileAllowsPlugin(filter, manifest) {
 					continue
 				}
-				if dp, ok := disabled[name]; ok {
-					plugins = append(plugins, map[string]any{
-						"name":             name,
-						"status":           "disabled",
-						"reason":           dp.Reason,
-						"credential_group": manifest.CredentialGroup,
-						"tools":            len(manifest.Tools),
-					})
-					continue
-				}
 
-				var primaryCount, deferredCount int
+				// Count only the tools this profile permits, so the
+				// advertised totals never reveal that gated tools exist
+				// (a nil filter permits everything). Consistent with the
+				// feature's guarantee that an agent does not discover a
+				// tool it cannot call.
+				var total, primaryCount, deferredCount int
 				for _, t := range manifest.Tools {
+					if filter != nil && !filter.IsAllowed(name, t.Name) {
+						continue
+					}
+					total++
 					if t.IsPrimary() {
 						primaryCount++
 					} else {
 						deferredCount++
 					}
 				}
+
+				if dp, ok := disabled[name]; ok {
+					plugins = append(plugins, map[string]any{
+						"name":             name,
+						"status":           "disabled",
+						"reason":           dp.Reason,
+						"credential_group": manifest.CredentialGroup,
+						"tools":            total,
+					})
+					continue
+				}
+
 				plugins = append(plugins, map[string]any{
 					"name":        name,
 					"version":     manifest.Version,
 					"description": manifest.Description,
 					"execution":   manifest.Execution,
-					"tools":       len(manifest.Tools),
+					"tools":       total,
 					"primary":     primaryCount,
 					"deferred":    deferredCount,
 				})

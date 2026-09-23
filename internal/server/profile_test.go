@@ -219,6 +219,34 @@ func TestPluginListFilteredByProfile(t *testing.T) {
 	if strings.Contains(body, "beta") {
 		t.Errorf("plugin_list must NOT include fully-denied beta, got: %s", body)
 	}
+
+	// Counts must reflect only the profile-allowed tools: alpha has two
+	// tools but the profile allows just alpha_get_data, so the advertised
+	// totals must not reveal the gated alpha_delete_data.
+	var listed []struct {
+		Name    string `json:"name"`
+		Tools   int    `json:"tools"`
+		Primary int    `json:"primary"`
+	}
+	if err := json.Unmarshal([]byte(body), &listed); err != nil {
+		t.Fatalf("unmarshal plugin_list: %v (body: %s)", err, body)
+	}
+	var sawAlpha bool
+	for _, p := range listed {
+		if p.Name != "alpha" {
+			continue
+		}
+		sawAlpha = true
+		if p.Tools != 1 {
+			t.Errorf("alpha tools count = %d, want 1 (only alpha_get_data allowed): %s", p.Tools, body)
+		}
+		if p.Primary != 1 {
+			t.Errorf("alpha primary count = %d, want 1: %s", p.Primary, body)
+		}
+	}
+	if !sawAlpha {
+		t.Errorf("plugin_list did not list alpha: %s", body)
+	}
 }
 
 func TestPluginListNoProfileShowsAll(t *testing.T) {
