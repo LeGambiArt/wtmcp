@@ -90,7 +90,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&configPath, "config", "", "Config file path")
 	rootCmd.PersistentFlags().StringVar(&workdir, "workdir", "", "Working directory")
 	rootCmd.PersistentFlags().BoolVar(&readOnly, "read-only", false, "Only register read-access tools (no write tools)")
-	rootCmd.PersistentFlags().StringVar(&profileFlag, "profile", "", "Apply a named profile's tool filter (stdio transport)")
+	rootCmd.PersistentFlags().StringVar(&profileFlag, "profile", "", "Apply a named profile's tool filter on stdio (overrides profiles.default from config)")
 	if err := rootCmd.MarkPersistentFlagDirname("workdir"); err != nil {
 		panic(err)
 	}
