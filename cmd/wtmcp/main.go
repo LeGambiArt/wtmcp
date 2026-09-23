@@ -331,6 +331,18 @@ func run(forceStdio bool) error {
 	if !sandbox.Built() {
 		log.Println("WARNING: binary built without sandbox support — plugins run without OS-level isolation. This mode is intended for development and debugging only.")
 	}
+
+	// Load and validate agent profiles before the server is built: the
+	// tool_search description drops its global category summary when
+	// profiles are active, so the index must know before New registers
+	// the tool. Transport-dependent validation (client_auth) happens
+	// later, after CLI flag overrides, via profileTransportOptions.
+	resolver, err := setupProfiles(cfg, wd)
+	if err != nil {
+		return err
+	}
+	index.SetProfilesActive(resolver.Configured())
+
 	srv, toolOwners := server.New(Version, mgr, cfg, index, collector, auditor, pluginRL, framer, sandbox.Built())
 
 	// Phase 2 (background): start plugin processes. The MCP server
@@ -366,13 +378,9 @@ func run(forceStdio bool) error {
 		return fmt.Errorf("server config: %w", err)
 	}
 
-	// Load and validate agent profiles, then build the transport
-	// options that inject per-connection tool filters. Must come after
-	// CLI flag overrides so the client_auth check sees the real transport.
-	resolver, err := setupProfiles(cfg, wd)
-	if err != nil {
-		return err
-	}
+	// Build the transport options that inject per-connection tool filters
+	// from the resolver loaded above. Must come after CLI flag overrides
+	// so the client_auth check sees the real transport.
 	transportOpts, err := profileTransportOptions(cfg, resolver, profileFlag)
 	if err != nil {
 		return err
