@@ -14,15 +14,23 @@ import (
 // registerToolSearch adds the tool_search meta-tool for discovering
 // tools by keyword. Useful in both full and progressive modes.
 func registerToolSearch(srv *mcpserver.MCPServer, index *ToolIndex, excludeWrite bool) {
-	categorySummary := index.CategorySummary()
+	description := "Search for available tools by keyword. Returns tool " +
+		"names, descriptions, and parameter schemas. Found tools can be " +
+		"called directly by name."
+
+	// The category summary is a single global string baked into the tool
+	// description, so it cannot be filtered per connection. When profiles
+	// are active it would advertise tool names and counts a restricted
+	// agent may not call, so omit it; agents still discover their allowed
+	// tools via primary tools/list entries and keyword searches (whose
+	// results are profile-filtered below). Without profiles there is
+	// nothing to hide, so keep the summary as a discovery aid.
+	if !index.ProfilesActive() {
+		description += "\n\nAvailable tool categories:\n" + index.CategorySummary()
+	}
 
 	tool := mcp.NewTool("tool_search",
-		mcp.WithDescription(
-			"Search for available tools by keyword. Returns tool "+
-				"names, descriptions, and parameter schemas. Found "+
-				"tools can be called directly by name.\n\n"+
-				"Available tool categories:\n"+categorySummary,
-		),
+		mcp.WithDescription(description),
 		mcp.WithString("query",
 			mcp.Required(),
 			mcp.Description("Search keywords (matches tool names, "+

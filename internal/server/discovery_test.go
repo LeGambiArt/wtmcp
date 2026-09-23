@@ -116,9 +116,50 @@ func TestDiscoveryToolSearchRegistered(t *testing.T) {
 		t.Error("tool_search should have a description")
 	}
 
+	// Without profiles the description advertises the category summary.
+	if !strings.Contains(ts.Tool.Description, "Available tool categories") {
+		t.Errorf("tool_search description should include category summary without profiles, got: %q", ts.Tool.Description)
+	}
+
 	// Verify read-only annotation
 	if ts.Tool.Annotations.ReadOnlyHint == nil || !*ts.Tool.Annotations.ReadOnlyHint {
 		t.Error("tool_search should be marked read-only")
+	}
+}
+
+// TestDiscoveryToolSearchOmitsCatalogWithProfiles verifies that when
+// agent profiles are active the tool_search description drops the global
+// category summary, so it cannot leak names/counts of tools a restricted
+// agent may not call.
+func TestDiscoveryToolSearchOmitsCatalogWithProfiles(t *testing.T) {
+	mgr := plugin.NewManagerForTest()
+	mgr.SetManifest("alpha", &plugin.Manifest{
+		Name: "alpha",
+		Tools: []plugin.ToolDef{
+			{Name: "alpha_search", Description: "Search alpha", Access: "read", Visibility: "primary"},
+			{Name: "alpha_secret_export", Description: "Export", Access: "read"},
+		},
+	})
+	mgr.SetHandle("alpha")
+
+	cfg := config.DefaultConfig()
+	index := NewToolIndex(mgr, false)
+	index.SetProfilesActive(true)
+	srv, _ := New("test", mgr, cfg, index, nil, nil, nil, nil, true)
+
+	tools := srv.ListTools()
+	ts, ok := tools["tool_search"]
+	if !ok {
+		t.Fatal("tool_search should be registered")
+	}
+	if ts.Tool.Description == "" {
+		t.Error("tool_search should still have a description")
+	}
+	if strings.Contains(ts.Tool.Description, "Available tool categories") {
+		t.Errorf("tool_search description must omit category summary when profiles active, got: %q", ts.Tool.Description)
+	}
+	if strings.Contains(ts.Tool.Description, "alpha_secret_export") {
+		t.Errorf("tool_search description must not leak tool names when profiles active, got: %q", ts.Tool.Description)
 	}
 }
 
