@@ -79,21 +79,45 @@ func profileTransportOptions(cfg *config.Config, resolver *profile.Resolver, pro
 		}, nil
 	}
 
-	// stdio: identity comes from the --profile flag, resolved once.
-	if profileFlag == "" {
-		log.Printf("profiles configured but no --profile given on stdio transport; all tools visible")
+	// stdio: no client identity, so the profile is selected explicitly by
+	// the --profile flag, falling back to profiles.default from config.
+	filter, err := resolveStdioFilter(resolver, profileFlag)
+	if err != nil {
+		return nil, err
+	}
+	if filter == nil {
+		// Neither a flag nor a configured default: filtering stays inert
+		// (all tools visible), matching the no-profiles-configured behavior.
+		log.Printf("profiles configured but no --profile or profiles.default set on stdio transport; all tools visible")
 		return nil, nil
 	}
-	filter, ok := resolver.FilterByName(profileFlag)
-	if !ok {
-		return nil, fmt.Errorf("--profile %q is not a defined profile", profileFlag)
-	}
-	log.Printf("stdio profile: %s", profileFlag)
 	return []transport.Option{
 		transport.WithStdioContextFunc(func(ctx context.Context) context.Context {
 			return profile.WithFilter(ctx, filter)
 		}),
 	}, nil
+}
+
+// resolveStdioFilter selects the tool filter for the stdio transport. The
+// --profile flag takes precedence; when it is empty, profiles.default
+// (from config, exposed by the resolver) is used as the fallback. An
+// explicit flag thus overrides the configured default. It returns
+// (nil, nil) when neither is set, meaning filtering stays inert and all
+// tools are visible — the same as when no profiles are configured.
+func resolveStdioFilter(resolver *profile.Resolver, profileFlag string) (*profile.Filter, error) {
+	profileName, source := profileFlag, "--profile"
+	if profileName == "" {
+		profileName, source = resolver.DefaultProfile(), "profiles.default"
+	}
+	if profileName == "" {
+		return nil, nil
+	}
+	filter, ok := resolver.FilterByName(profileName)
+	if !ok {
+		return nil, fmt.Errorf("%s %q is not a defined profile", source, profileName)
+	}
+	log.Printf("stdio profile: %s (from %s)", profileName, source)
+	return filter, nil
 }
 
 // httpProfileContextFunc extracts the verified client identity from the

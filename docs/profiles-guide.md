@@ -10,7 +10,8 @@ same wtmcp instance.
 - **Streamable-HTTP:** agents are identified by their **TLS client
   certificate** (mTLS). The certificate's CN or SAN maps to a profile.
 - **Stdio:** a single agent selects its profile with the `--profile`
-  flag.
+  flag, or via `profiles.default` in `config.yaml` when the flag is
+  omitted.
 
 Profiles are **fail-closed on streamable-HTTP**: once any profile is
 configured, an agent that matches no rule gets *no* tools unless you
@@ -19,12 +20,13 @@ behavior is unchanged (all tools visible) — the feature is fully backward
 compatible.
 
 > **Stdio is different.** The stdio transport has no certificate identity,
-> so it selects a profile from the `--profile` flag. If profiles are
-> configured but `--profile` is omitted, stdio is **fail-open**: all tools
-> are visible. Profiles restrict a stdio session only when you pass
-> `--profile`. Do not rely on profiles as an access boundary on stdio;
-> the fail-closed guarantee applies to streamable-HTTP (mTLS) only. See
-> [Stdio transport](#stdio-transport).
+> so it selects a profile from the `--profile` flag, falling back to
+> `profiles.default` from `config.yaml` when the flag is omitted. If
+> neither is set, stdio is **fail-open**: all tools are visible. Profiles
+> restrict a stdio session only when you pass `--profile` or configure
+> `profiles.default`. Do not rely on profiles as an access boundary on
+> stdio; the fail-closed guarantee applies to streamable-HTTP (mTLS)
+> only. See [Stdio transport](#stdio-transport).
 
 > Design rationale and alternatives considered: see
 > [docs/design/profiles.md](design/profiles.md).
@@ -253,16 +255,32 @@ once at startup and applied to the session:
 wtmcp --profile code-review
 ```
 
-- If `--profile` names a profile that is not defined, startup fails.
-- If profiles are configured but `--profile` is omitted on stdio, no
-  filter is applied (all tools visible).
+When the flag is omitted, wtmcp falls back to `profiles.default` from
+`config.yaml`, so an agent harness that launches `wtmcp` with no extra
+arguments still gets a restricted tool set:
 
-> **Security caveat — stdio is fail-open without `--profile`.** Unlike
-> streamable-HTTP, an unspecified profile on stdio does **not** deny
-> tools; it shows all of them. This is intentional (stdio is a local,
-> single-user, 1:1 channel with no identity to enforce against), but it
-> means profiles are not an access boundary on stdio. If you need
-> guaranteed restriction, either always pass `--profile`, or use the
+```yaml
+# config.yaml
+profiles:
+  default: "code-review"   # applied on stdio when --profile is omitted
+```
+
+Selection precedence on stdio:
+
+- `--profile <name>` — resolved once at startup; overrides the default.
+- otherwise `profiles.default` — the configured fallback profile.
+- otherwise no filter is applied (all tools visible).
+
+If `--profile` (or `profiles.default`) names a profile that is not
+defined, startup fails.
+
+> **Security caveat — stdio is fail-open with no profile selected.**
+> Unlike streamable-HTTP, when neither `--profile` nor `profiles.default`
+> is set, stdio does **not** deny tools; it shows all of them. This is
+> intentional (stdio is a local, single-user, 1:1 channel with no
+> identity to enforce against), but it means profiles are not an access
+> boundary on stdio. If you need guaranteed restriction, set
+> `profiles.default` (or always pass `--profile`), or use the
 > streamable-HTTP transport with `client_auth: require`, which is
 > fail-closed. Consider `--read-only` as an orthogonal, always-on guard
 > for stdio sessions.
@@ -311,11 +329,11 @@ correctness).
 - **Denied calls** return an ordinary MCP "tool not found," which does
   not confirm the tool exists. The primary audit signal is the
   per-connection profile assignment logged at connect time.
-- **Stdio is fail-open without `--profile`** — profiles are an access
-  boundary on streamable-HTTP (mTLS) only. On stdio, an omitted
-  `--profile` shows all tools; always pass `--profile` (or use
-  `--read-only`) if you need restriction there. See
-  [Stdio transport](#stdio-transport).
+- **Stdio is fail-open with no profile selected** — profiles are an
+  access boundary on streamable-HTTP (mTLS) only. On stdio, when neither
+  `--profile` nor `profiles.default` is set, all tools are shown; set
+  `profiles.default`, always pass `--profile`, or use `--read-only` if
+  you need restriction there. See [Stdio transport](#stdio-transport).
 
 ## Limitations
 
