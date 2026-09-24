@@ -204,7 +204,7 @@ func TestListenHTTPmTLS(t *testing.T) {
 			},
 		},
 	}
-	waitForTLSHealthy(t, withCert, addr)
+	waitForHealthy(t, withCert, addr)
 
 	// POST to /mcp to trigger the mcp-go handler (and thus the context
 	// func that extracts the client identity). /healthz is our own
@@ -242,21 +242,4 @@ func TestListenHTTPmTLS(t *testing.T) {
 		_ = resp.Body.Close()
 		t.Errorf("request without client cert should be refused under client_auth=require")
 	}
-}
-
-// waitForTLSHealthy polls the TLS /healthz endpoint until it responds.
-func waitForTLSHealthy(t *testing.T, client *http.Client, addr string) {
-	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		resp, err := client.Get(addr + "/healthz") //nolint:noctx // test helper
-		if err == nil {
-			_ = resp.Body.Close()
-			if resp.StatusCode == http.StatusOK {
-				return
-			}
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatal("TLS server did not become healthy within 5s")
 }
