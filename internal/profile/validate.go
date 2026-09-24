@@ -2,7 +2,8 @@ package profile
 
 import (
 	"fmt"
-	"sort"
+	"maps"
+	"slices"
 
 	"github.com/LeGambiArt/wtmcp/internal/config"
 	"github.com/LeGambiArt/wtmcp/internal/plugin"
@@ -22,11 +23,7 @@ func Validate(loaded *config.ProfileLoadResult, defaultProfile string) []config.
 	errs = append(errs, loaded.Errors...)
 
 	// Compile-check tool regexps and flag wildcard-allow profiles.
-	defNames := make([]string, 0, len(loaded.Definitions))
-	for name := range loaded.Definitions {
-		defNames = append(defNames, name)
-	}
-	sort.Strings(defNames)
+	defNames := slices.Sorted(maps.Keys(loaded.Definitions))
 	for _, name := range defNames {
 		def := loaded.Definitions[name]
 		src := loaded.DefSource[name]
@@ -106,12 +103,7 @@ func validateDefinition(name, src string, def config.ProfileDefinition) []config
 	var errs []config.ProfileLoadError
 
 	checkPatterns := func(kind string, m map[string][]string) {
-		plugins := make([]string, 0, len(m))
-		for p := range m {
-			plugins = append(plugins, p)
-		}
-		sort.Strings(plugins)
-		for _, p := range plugins {
+		for _, p := range slices.Sorted(maps.Keys(m)) {
 			for _, pat := range m[p] {
 				if _, err := compileAnchored(pat); err != nil {
 					errs = append(errs, config.ProfileLoadError{
@@ -163,22 +155,11 @@ func ValidatePluginRefs(loaded *config.ProfileLoadResult, mgr PluginLister) []co
 	}
 
 	var errs []config.ProfileLoadError
-	names := make([]string, 0, len(loaded.Definitions))
-	for name := range loaded.Definitions {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-
-	for _, name := range names {
+	for _, name := range slices.Sorted(maps.Keys(loaded.Definitions)) {
 		def := loaded.Definitions[name]
 		src := loaded.DefSource[name]
 		check := func(kind string, m map[string][]string) {
-			plugins := make([]string, 0, len(m))
-			for p := range m {
-				plugins = append(plugins, p)
-			}
-			sort.Strings(plugins)
-			for _, p := range plugins {
+			for _, p := range slices.Sorted(maps.Keys(m)) {
 				if p == "*" || known[p] {
 					continue
 				}
@@ -200,12 +181,7 @@ func ValidatePluginRefs(loaded *config.ProfileLoadResult, mgr PluginLister) []co
 func closestPlugin(target string, known map[string]bool) string {
 	best := ""
 	bestDist := 3 // only suggest within distance <= 2
-	names := make([]string, 0, len(known))
-	for name := range known {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	for _, name := range names {
+	for _, name := range slices.Sorted(maps.Keys(known)) {
 		d := levenshtein(target, name)
 		if d < bestDist {
 			bestDist = d
