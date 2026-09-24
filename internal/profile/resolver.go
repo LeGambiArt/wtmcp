@@ -9,12 +9,13 @@ import (
 	"github.com/LeGambiArt/wtmcp/internal/config"
 )
 
-// Identity match field names used in rule keys and diagnostics.
+// Identity match field names used in rule keys and diagnostics. Aliased to
+// the config definitions so there is a single source of truth.
 const (
-	FieldCN       = "cn"
-	FieldSANURI   = "san_uri"
-	FieldSANDNS   = "san_dns"
-	FieldSANEmail = "san_email"
+	FieldCN       = config.FieldCN
+	FieldSANURI   = config.FieldSANURI
+	FieldSANDNS   = config.FieldSANDNS
+	FieldSANEmail = config.FieldSANEmail
 )
 
 // ruleKey is a single exact-match criterion: one identity field and its
@@ -32,26 +33,14 @@ func (k ruleKey) String() string {
 // ruleKeyOf returns the single (field, value) key for a match. It errors
 // unless exactly one field is set.
 func ruleKeyOf(m config.ProfileMatch) (ruleKey, error) {
-	var keys []ruleKey
-	if m.CN != "" {
-		keys = append(keys, ruleKey{FieldCN, m.CN})
-	}
-	if m.SANURI != "" {
-		keys = append(keys, ruleKey{FieldSANURI, m.SANURI})
-	}
-	if m.SANDNS != "" {
-		keys = append(keys, ruleKey{FieldSANDNS, m.SANDNS})
-	}
-	if m.SANEmail != "" {
-		keys = append(keys, ruleKey{FieldSANEmail, m.SANEmail})
-	}
-	switch len(keys) {
+	fields := m.Fields()
+	switch len(fields) {
 	case 0:
 		return ruleKey{}, fmt.Errorf("rule match has no field set (need exactly one of cn, san_uri, san_dns, san_email)")
 	case 1:
-		return keys[0], nil
+		return ruleKey{fields[0].Field, fields[0].Value}, nil
 	default:
-		return ruleKey{}, fmt.Errorf("rule match has %d fields set, must have exactly one", len(keys))
+		return ruleKey{}, fmt.Errorf("rule match has %d fields set, must have exactly one", len(fields))
 	}
 }
 
