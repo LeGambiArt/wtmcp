@@ -335,22 +335,10 @@ func sortedDefNames(loaded *config.ProfileLoadResult) []string {
 // matchFieldValue returns the single set (field, value) of a match, or
 // a diagnostic string when the match is not exactly one field.
 func matchFieldValue(m config.ProfileMatch) (string, string) {
-	var pairs [][2]string
-	if m.CN != "" {
-		pairs = append(pairs, [2]string{"cn", m.CN})
-	}
-	if m.SANURI != "" {
-		pairs = append(pairs, [2]string{"san_uri", m.SANURI})
-	}
-	if m.SANDNS != "" {
-		pairs = append(pairs, [2]string{"san_dns", m.SANDNS})
-	}
-	if m.SANEmail != "" {
-		pairs = append(pairs, [2]string{"san_email", m.SANEmail})
-	}
-	switch len(pairs) {
+	fields := m.Fields()
+	switch len(fields) {
 	case 1:
-		return pairs[0][0], pairs[0][1]
+		return fields[0].Field, fields[0].Value
 	case 0:
 		return "(no field)", ""
 	default:

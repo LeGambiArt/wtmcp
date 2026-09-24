@@ -47,6 +47,41 @@ type ProfileMatch struct {
 	SANEmail string `yaml:"san_email"`
 }
 
+// Identity match field names (mirror the ProfileMatch yaml tags). Used in
+// rule keys and diagnostics.
+const (
+	FieldCN       = "cn"
+	FieldSANURI   = "san_uri"
+	FieldSANDNS   = "san_dns"
+	FieldSANEmail = "san_email"
+)
+
+// MatchField is one populated identity criterion of a ProfileMatch.
+type MatchField struct {
+	Field string // FieldCN | FieldSANURI | FieldSANDNS | FieldSANEmail
+	Value string
+}
+
+// Fields returns the identity criteria set on the match, in canonical
+// order (cn, san_uri, san_dns, san_email). A well-formed rule sets exactly
+// one; enforcing that is left to the caller.
+func (m ProfileMatch) Fields() []MatchField {
+	var fields []MatchField
+	if m.CN != "" {
+		fields = append(fields, MatchField{FieldCN, m.CN})
+	}
+	if m.SANURI != "" {
+		fields = append(fields, MatchField{FieldSANURI, m.SANURI})
+	}
+	if m.SANDNS != "" {
+		fields = append(fields, MatchField{FieldSANDNS, m.SANDNS})
+	}
+	if m.SANEmail != "" {
+		fields = append(fields, MatchField{FieldSANEmail, m.SANEmail})
+	}
+	return fields
+}
+
 // ProfileLoadResult holds the merged result of loading profiles.d/.
 type ProfileLoadResult struct {
 	Definitions map[string]ProfileDefinition // merged from all files
