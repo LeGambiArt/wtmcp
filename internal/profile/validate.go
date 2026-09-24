@@ -31,38 +31,34 @@ func Validate(loaded *config.ProfileLoadResult, defaultProfile string) []config.
 	}
 
 	// Validate rules: single-field match, duplicate keys, undefined refs.
-	seenKeys := make(map[ruleKey]ruleRef)
+	// classifyRules is the shared source of rule validity (also used by
+	// NewResolver); here we report every problem instead of stopping.
+	defined := func(name string) bool { _, ok := loaded.Definitions[name]; return ok }
 	referenced := make(map[string]bool)
-	for i, rule := range loaded.Rules {
-		key, err := ruleKeyOf(rule.Match)
-		if err != nil {
+	for i, out := range classifyRules(loaded.Rules, defined) {
+		switch out.problem {
+		case ruleOK:
+			referenced[out.rule.Profile] = true
+		case ruleMalformed:
 			errs = append(errs, config.ProfileLoadError{
-				File:    rule.File,
-				Message: fmt.Sprintf("rule %d: %v", i+1, err),
+				File:    out.rule.File,
+				Message: fmt.Sprintf("rule %d: %v", i+1, out.keyErr),
 				Fatal:   true,
 			})
-			continue
-		}
-		if prev, dup := seenKeys[key]; dup {
+		case ruleDuplicateKey:
 			errs = append(errs, config.ProfileLoadError{
-				File: rule.File,
+				File: out.rule.File,
 				Message: fmt.Sprintf("duplicate rule %v: already used in %s",
-					key, prev.File),
+					out.key, out.firstUse.File),
 				Fatal: true,
 			})
-			continue
-		}
-		seenKeys[key] = ruleRef{Profile: rule.Profile, File: rule.File}
-
-		if _, ok := loaded.Definitions[rule.Profile]; !ok {
+		case ruleUndefinedProfile:
 			errs = append(errs, config.ProfileLoadError{
-				File:    rule.File,
-				Message: fmt.Sprintf("rule %v references undefined profile %q", key, rule.Profile),
+				File:    out.rule.File,
+				Message: fmt.Sprintf("rule %v references undefined profile %q", out.key, out.rule.Profile),
 				Fatal:   true,
 			})
-			continue
 		}
-		referenced[rule.Profile] = true
 	}
 
 	// Default profile must be defined.
@@ -89,12 +85,6 @@ func Validate(loaded *config.ProfileLoadResult, defaultProfile string) []config.
 	}
 
 	return errs
-}
-
-// ruleRef records where a rule key was first used.
-type ruleRef struct {
-	Profile string
-	File    string
 }
 
 // forEachAllowDeny invokes fn for every plugin entry (sorted within each
