@@ -64,13 +64,9 @@ func registerToolSearch(srv *mcpserver.MCPServer, index *ToolIndex, excludeWrite
 			// not discover tools it cannot call. tool_search itself is
 			// exempt, but its *results* are still filtered.
 			if filter := profile.FilterFromContext(ctx); filter != nil {
-				filtered := results[:0:0]
-				for _, r := range results {
-					if filter.IsAllowed(r.Plugin, r.Name) {
-						filtered = append(filtered, r)
-					}
-				}
-				results = filtered
+				results = filterInPlace(results, func(r ToolEntry) bool {
+					return filter.IsAllowed(r.Plugin, r.Name)
+				})
 			}
 
 			out := make([]searchResult, len(results))
