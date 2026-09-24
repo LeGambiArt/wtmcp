@@ -97,27 +97,42 @@ type ruleRef struct {
 	File    string
 }
 
+// forEachAllowDeny invokes fn for every plugin entry (sorted within each
+// map) of the definition's allow then deny maps, labeling which map the
+// entry came from. It centralizes the allow/deny + sorted-plugin walk
+// shared by the validation passes.
+func forEachAllowDeny(def config.ProfileDefinition, fn func(kind, plugin string, patterns []string)) {
+	sections := []struct {
+		kind string
+		m    map[string][]string
+	}{
+		{"allow", def.Allow},
+		{"deny", def.Deny},
+	}
+	for _, s := range sections {
+		for _, p := range slices.Sorted(maps.Keys(s.m)) {
+			fn(s.kind, p, s.m[p])
+		}
+	}
+}
+
 // validateDefinition compiles a definition's tool regexps (fatal on
 // invalid) and flags wildcard-allow (warning).
 func validateDefinition(name, src string, def config.ProfileDefinition) []config.ProfileLoadError {
 	var errs []config.ProfileLoadError
 
-	checkPatterns := func(kind string, m map[string][]string) {
-		for _, p := range slices.Sorted(maps.Keys(m)) {
-			for _, pat := range m[p] {
-				if _, err := compileAnchored(pat); err != nil {
-					errs = append(errs, config.ProfileLoadError{
-						File: src,
-						Message: fmt.Sprintf("profile %q: %s pattern %q on plugin %q is not a valid regexp: %v",
-							name, kind, pat, p, err),
-						Fatal: true,
-					})
-				}
+	forEachAllowDeny(def, func(kind, p string, patterns []string) {
+		for _, pat := range patterns {
+			if _, err := compileAnchored(pat); err != nil {
+				errs = append(errs, config.ProfileLoadError{
+					File: src,
+					Message: fmt.Sprintf("profile %q: %s pattern %q on plugin %q is not a valid regexp: %v",
+						name, kind, pat, p, err),
+					Fatal: true,
+				})
 			}
 		}
-	}
-	checkPatterns("allow", def.Allow)
-	checkPatterns("deny", def.Deny)
+	})
 
 	// Warning: wildcard allow grants unrestricted access.
 	for _, pat := range def.Allow["*"] {
@@ -158,20 +173,16 @@ func ValidatePluginRefs(loaded *config.ProfileLoadResult, mgr PluginLister) []co
 	for _, name := range slices.Sorted(maps.Keys(loaded.Definitions)) {
 		def := loaded.Definitions[name]
 		src := loaded.DefSource[name]
-		check := func(kind string, m map[string][]string) {
-			for _, p := range slices.Sorted(maps.Keys(m)) {
-				if p == "*" || known[p] {
-					continue
-				}
-				msg := fmt.Sprintf("profile %q: %s references unknown plugin %q", name, kind, p)
-				if suggestion := closestPlugin(p, known); suggestion != "" {
-					msg += fmt.Sprintf(" (did you mean %q?)", suggestion)
-				}
-				errs = append(errs, config.ProfileLoadError{File: src, Message: msg, Fatal: false})
+		forEachAllowDeny(def, func(kind, p string, _ []string) {
+			if p == "*" || known[p] {
+				return
 			}
-		}
-		check("allow", def.Allow)
-		check("deny", def.Deny)
+			msg := fmt.Sprintf("profile %q: %s references unknown plugin %q", name, kind, p)
+			if suggestion := closestPlugin(p, known); suggestion != "" {
+				msg += fmt.Sprintf(" (did you mean %q?)", suggestion)
+			}
+			errs = append(errs, config.ProfileLoadError{File: src, Message: msg, Fatal: false})
+		})
 	}
 	return errs
 }
