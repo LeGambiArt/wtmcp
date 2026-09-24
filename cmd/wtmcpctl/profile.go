@@ -191,7 +191,7 @@ func formatProblem(p config.ProfileLoadError) string {
 }
 
 func runProfileList(_ *cobra.Command, _ []string) error {
-	_, _, loaded, err := loadProfilesForCtl()
+	cfg, _, loaded, err := loadProfilesForCtl()
 	if err != nil {
 		return err
 	}
@@ -202,13 +202,33 @@ func runProfileList(_ *cobra.Command, _ []string) error {
 		return nil
 	}
 
+	// Compile the filters so the TOOLS column can report how many of the
+	// discovered tools each profile can actually call, rather than a raw
+	// pattern count (one ".*" pattern can match many tools, or none).
+	resolver, err := profile.NewResolver(cfg.Profiles.Default, loaded)
+	if err != nil {
+		return fmt.Errorf("profile configuration invalid: %w (run 'wtmcpctl profile check')", err)
+	}
+	manifests, err := discoverPlugins()
+	if err != nil {
+		return err
+	}
+
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
 	fmt.Fprintln(w, "PROFILE\tPLUGINS\tTOOLS\tDENY\tSOURCE") //nolint:errcheck // tabwriter, flushed below
 	for _, name := range defNames {
 		def := loaded.Definitions[name]
-		plugins, tools := allowSummary(def)
+		// TOOLS and DENY report how many discovered tools the profile can
+		// and cannot call, computed from the compiled filter, rather than
+		// raw pattern counts. Both mirror the split shown by "profile test".
+		tools, deny := "?", 0
+		if filter, ok := resolver.FilterByName(name); ok {
+			allowed, denied := classifyTools(filter, manifests)
+			tools = toolCountLabel(len(allowed), len(allowed)+len(denied))
+			deny = len(denied)
+		}
 		fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\n", //nolint:errcheck // tabwriter, flushed below
-			name, plugins, tools, countPatterns(def.Deny), loaded.DefSource[name])
+			name, pluginSummary(def), tools, deny, loaded.DefSource[name])
 	}
 	return w.Flush()
 }
@@ -274,8 +294,9 @@ func runProfileTest(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
-func printAllowedDenied(filter *profile.Filter, manifests map[string]*plugin.Manifest) {
-	var allowed, denied []string
+// classifyTools splits the discovered tools into those the filter allows
+// and those it denies. Both slices are sorted by tool name.
+func classifyTools(filter *profile.Filter, manifests map[string]*plugin.Manifest) (allowed, denied []string) {
 	for _, m := range manifests {
 		for _, t := range m.Tools {
 			if filter.IsAllowed(m.Name, t.Name) {
@@ -287,6 +308,11 @@ func printAllowedDenied(filter *profile.Filter, manifests map[string]*plugin.Man
 	}
 	sort.Strings(allowed)
 	sort.Strings(denied)
+	return allowed, denied
+}
+
+func printAllowedDenied(filter *profile.Filter, manifests map[string]*plugin.Manifest) {
+	allowed, denied := classifyTools(filter, manifests)
 
 	fmt.Printf("\nallowed tools (%d):\n", len(allowed))
 	for _, t := range allowed {
@@ -347,32 +373,23 @@ func definitionSummary(def config.ProfileDefinition) string {
 	return s
 }
 
-// allowSummary returns the PLUGINS and TOOLS columns for profile list.
-func allowSummary(def config.ProfileDefinition) (plugins, tools string) {
+// pluginSummary returns the PLUGINS column for profile list: the number of
+// allow entries, annotated with (*) when the wildcard plugin is present.
+func pluginSummary(def config.ProfileDefinition) string {
 	n := len(def.Allow)
 	if _, wild := def.Allow["*"]; wild {
-		plugins = fmt.Sprintf("%d (*)", n)
-	} else {
-		plugins = fmt.Sprintf("%d", n)
+		return fmt.Sprintf("%d (*)", n)
 	}
-	// "all" when any wildcard .* pattern is present, else the pattern count.
-	for _, patterns := range def.Allow {
-		for _, p := range patterns {
-			if p == ".*" {
-				return plugins, "all"
-			}
-		}
-	}
-	tools = fmt.Sprintf("%d", countPatterns(def.Allow))
-	return plugins, tools
+	return fmt.Sprintf("%d", n)
 }
 
-func countPatterns(m map[string][]string) int {
-	n := 0
-	for _, patterns := range m {
-		n += len(patterns)
+// toolCountLabel renders the TOOLS column: "all" when a profile grants
+// every discovered tool, otherwise the exact allowed count.
+func toolCountLabel(allowed, total int) string {
+	if total > 0 && allowed == total {
+		return "all"
 	}
-	return n
+	return fmt.Sprintf("%d", allowed)
 }
 
 func plural(n int, singular, pluralForm string) string {
