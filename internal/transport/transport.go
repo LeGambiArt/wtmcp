@@ -126,8 +126,14 @@ func listenHTTP(ctx context.Context, srv *mcpserver.MCPServer, cfg *config.Serve
 		errCh <- httpSrv.Start(addr)
 	}()
 
-	if !tlsEnabled && cfg.Host != "localhost" && cfg.Host != "127.0.0.1" && cfg.Host != "::1" {
-		logger.Warn("binding to non-loopback address with no authentication",
+	// A server TLS cert only encrypts the channel and authenticates the
+	// server to clients; it does not authenticate clients. Clients are
+	// authenticated only under mTLS with client_auth: require — request
+	// and none both let a client connect without presenting a cert. So the
+	// warning must gate on client authentication, not merely on TLS.
+	clientAuthenticated := tlsEnabled && cfg.TLS.ClientAuth == config.ClientAuthRequire
+	if !clientAuthenticated && cfg.Host != "localhost" && cfg.Host != "127.0.0.1" && cfg.Host != "::1" {
+		logger.Warn("binding to non-loopback address with no client authentication",
 			"host", cfg.Host, "port", cfg.Port)
 	}
 
