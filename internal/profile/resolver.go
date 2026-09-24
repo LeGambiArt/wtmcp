@@ -44,6 +44,66 @@ func ruleKeyOf(m config.ProfileMatch) (ruleKey, error) {
 	}
 }
 
+// ruleProblem categorizes why a rule is invalid (ruleOK when it is fine).
+type ruleProblem int
+
+const (
+	ruleOK               ruleProblem = iota
+	ruleMalformed                    // ruleKeyOf failed (0 or >1 match fields)
+	ruleDuplicateKey                 // (field,value) already used by an earlier rule
+	ruleUndefinedProfile             // Profile is not a defined profile
+)
+
+// ruleRef records where a rule key was first used.
+type ruleRef struct {
+	Profile string
+	File    string
+}
+
+// ruleOutcome is the classification of one rule from loaded.Rules.
+type ruleOutcome struct {
+	rule     config.ProfileRule
+	key      ruleKey // valid unless problem == ruleMalformed
+	problem  ruleProblem
+	keyErr   error   // set when problem == ruleMalformed
+	firstUse ruleRef // set when problem == ruleDuplicateKey (the earlier rule)
+}
+
+// classifyRules validates each rule in order and returns one outcome per
+// rule. It is the single source of rule validity shared by NewResolver
+// (which stops at the first problem) and Validate (which reports them all),
+// so the two cannot drift. Detection order per rule: malformed match, then
+// duplicate key, then undefined profile; the first rule to use a key owns
+// it, so a later collision is the duplicate. A rule's key is recorded even
+// when its profile is undefined, so a later exact repeat is still a
+// duplicate. defined reports whether a profile name is defined.
+func classifyRules(rules []config.ProfileRule, defined func(name string) bool) []ruleOutcome {
+	outcomes := make([]ruleOutcome, 0, len(rules))
+	seen := make(map[ruleKey]ruleRef)
+	for _, rule := range rules {
+		out := ruleOutcome{rule: rule}
+		key, err := ruleKeyOf(rule.Match)
+		switch {
+		case err != nil:
+			out.problem = ruleMalformed
+			out.keyErr = err
+		default:
+			out.key = key
+			if prev, dup := seen[key]; dup {
+				out.problem = ruleDuplicateKey
+				out.firstUse = prev
+			} else {
+				seen[key] = ruleRef{Profile: rule.Profile, File: rule.File}
+				if !defined(rule.Profile) {
+					out.problem = ruleUndefinedProfile
+				}
+			}
+		}
+		outcomes = append(outcomes, out)
+	}
+	return outcomes
+}
+
 // Resolver maps a verified client identity to a tool Filter, built from
 // the merged ProfileLoadResult.
 type Resolver struct {
@@ -95,19 +155,19 @@ func NewResolver(defaultProfile string, loaded *config.ProfileLoadResult) (*Reso
 		r.filters[name] = f
 	}
 
-	for _, rule := range loaded.Rules {
-		key, err := ruleKeyOf(rule.Match)
-		if err != nil {
-			return nil, err
+	defined := func(name string) bool { _, ok := r.filters[name]; return ok }
+	for _, out := range classifyRules(loaded.Rules, defined) {
+		switch out.problem {
+		case ruleOK:
+			r.rules[out.key] = out.rule.Profile
+			r.ruleFiles[out.key] = out.rule.File
+		case ruleMalformed:
+			return nil, out.keyErr
+		case ruleDuplicateKey:
+			return nil, fmt.Errorf("duplicate rule %v -> %q and %q", out.key, out.firstUse.Profile, out.rule.Profile)
+		case ruleUndefinedProfile:
+			return nil, fmt.Errorf("rule %v: undefined profile %q", out.key, out.rule.Profile)
 		}
-		if _, ok := r.filters[rule.Profile]; !ok {
-			return nil, fmt.Errorf("rule %v: undefined profile %q", key, rule.Profile)
-		}
-		if existing, dup := r.rules[key]; dup {
-			return nil, fmt.Errorf("duplicate rule %v -> %q and %q", key, existing, rule.Profile)
-		}
-		r.rules[key] = rule.Profile
-		r.ruleFiles[key] = rule.File
 	}
 
 	if defaultProfile != "" {
