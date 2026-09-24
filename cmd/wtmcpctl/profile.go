@@ -2,7 +2,9 @@ package main
 
 import (
 	"fmt"
+	"maps"
 	"os"
+	"slices"
 	"sort"
 	"text/tabwriter"
 
@@ -327,12 +329,7 @@ func printAllowedDenied(filter *profile.Filter, manifests map[string]*plugin.Man
 // --- small formatting helpers ---
 
 func sortedDefNames(loaded *config.ProfileLoadResult) []string {
-	names := make([]string, 0, len(loaded.Definitions))
-	for name := range loaded.Definitions {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names
+	return slices.Sorted(maps.Keys(loaded.Definitions))
 }
 
 // matchFieldValue returns the single set (field, value) of a match, or

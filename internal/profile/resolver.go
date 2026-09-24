@@ -3,7 +3,8 @@ package profile
 import (
 	"fmt"
 	"log"
-	"sort"
+	"maps"
+	"slices"
 
 	"github.com/LeGambiArt/wtmcp/internal/config"
 )
@@ -232,10 +233,5 @@ func (r *Resolver) DenyAll() *Filter {
 
 // profileNames returns a sorted slice of the matched profile names.
 func profileNames(m map[string]struct{}) []string {
-	names := make([]string, 0, len(m))
-	for p := range m {
-		names = append(names, p)
-	}
-	sort.Strings(names)
-	return names
+	return slices.Sorted(maps.Keys(m))
 }
