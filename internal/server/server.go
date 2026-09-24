@@ -122,6 +122,18 @@ func profileAllowsPlugin(filter *profile.Filter, manifest *plugin.Manifest) bool
 	return false
 }
 
+// filterInPlace returns a slice containing only the elements of s for which
+// keep returns true, reusing s's backing array. Order is preserved.
+func filterInPlace[T any](s []T, keep func(T) bool) []T {
+	kept := s[:0:0]
+	for _, v := range s {
+		if keep(v) {
+			kept = append(kept, v)
+		}
+	}
+	return kept
+}
+
 // New creates an MCP server with tools from all loaded plugins.
 // When sandboxBuilt is false, the server's MCP instructions warn
 // the LLM that plugins run without OS-level isolation.
@@ -696,25 +708,17 @@ func registerToolStats(srv *mcpserver.MCPServer, collector *stats.Collector, mgr
 			if groupBy == "plugin" {
 				plugins := collector.PluginSummaries()
 				if filter != nil {
-					kept := plugins[:0:0]
-					for _, p := range plugins {
-						if pluginVisible(p.PluginName) {
-							kept = append(kept, p)
-						}
-					}
-					plugins = kept
+					plugins = filterInPlace(plugins, func(p stats.PluginSummary) bool {
+						return pluginVisible(p.PluginName)
+					})
 				}
 				result["calls"] = plugins
 			} else {
 				calls := collector.Summary()
 				if filter != nil {
-					kept := calls[:0:0]
-					for _, c := range calls {
-						if filter.IsAllowed(c.PluginName, c.ToolName) {
-							kept = append(kept, c)
-						}
-					}
-					calls = kept
+					calls = filterInPlace(calls, func(c stats.ToolSummary) bool {
+						return filter.IsAllowed(c.PluginName, c.ToolName)
+					})
 				}
 				result["calls"] = calls
 			}
@@ -722,13 +726,9 @@ func registerToolStats(srv *mcpserver.MCPServer, collector *stats.Collector, mgr
 			if includeSchemas {
 				sc := collector.SchemaCost()
 				if filter != nil {
-					kept := sc.ByPlugin[:0:0]
-					for _, ps := range sc.ByPlugin {
-						if pluginVisible(ps.Plugin) {
-							kept = append(kept, ps)
-						}
-					}
-					sc.ByPlugin = kept
+					sc.ByPlugin = filterInPlace(sc.ByPlugin, func(ps stats.PluginSchemaSummary) bool {
+						return pluginVisible(ps.Plugin)
+					})
 				}
 				result["schema_cost"] = sc
 			}
@@ -736,13 +736,9 @@ func registerToolStats(srv *mcpserver.MCPServer, collector *stats.Collector, mgr
 			if includeResources {
 				resources := collector.ResourceSummary()
 				if filter != nil {
-					kept := resources[:0:0]
-					for _, r := range resources {
-						if pluginVisible(r.PluginName) {
-							kept = append(kept, r)
-						}
-					}
-					resources = kept
+					resources = filterInPlace(resources, func(r stats.ResourceEntry) bool {
+						return pluginVisible(r.PluginName)
+					})
 				}
 				result["resources"] = resources
 			}
