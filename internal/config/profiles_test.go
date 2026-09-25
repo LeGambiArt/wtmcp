@@ -152,6 +152,64 @@ definitions:
 	}
 }
 
+func TestLoadProfilesRejectsUnknownField(t *testing.T) {
+	dir := t.TempDir()
+	// "definition" (singular) is a typo for "definitions": strict decoding
+	// must reject it instead of silently loading an empty profile set.
+	writeProfileFile(t, dir, "typo-toplevel.yaml", `
+definition:
+  code-review:
+    allow: { gitlab: [".*"] }
+`)
+	// A typo in a nested field ("allowed" instead of "allow") must also fail.
+	writeProfileFile(t, dir, "typo-nested.yaml", `
+definitions:
+  p:
+    allowed: { gitlab: [".*"] }
+`)
+
+	result, err := LoadProfiles(dir)
+	if err != nil {
+		t.Fatalf("LoadProfiles: %v", err)
+	}
+	for _, name := range []string{"typo-toplevel.yaml", "typo-nested.yaml"} {
+		var sawErr bool
+		for _, e := range result.Errors {
+			if e.File == name && e.Fatal {
+				sawErr = true
+			}
+		}
+		if !sawErr {
+			t.Errorf("expected a fatal error for %s, got %v", name, result.Errors)
+		}
+	}
+	if len(result.Definitions) != 0 {
+		t.Errorf("typo'd files must not contribute definitions, got %v", result.Definitions)
+	}
+}
+
+func TestLoadProfilesRejectsNoContent(t *testing.T) {
+	dir := t.TempDir()
+	writeProfileFile(t, dir, "empty.yaml", "# just a comment, no definitions or rules\n")
+	writeProfileFile(t, dir, "explicit-empty.yaml", "definitions: {}\nrules: []\n")
+
+	result, err := LoadProfiles(dir)
+	if err != nil {
+		t.Fatalf("LoadProfiles: %v", err)
+	}
+	for _, name := range []string{"empty.yaml", "explicit-empty.yaml"} {
+		var sawErr bool
+		for _, e := range result.Errors {
+			if e.File == name && e.Fatal && strings.Contains(e.Message, "no profile definitions or rules") {
+				sawErr = true
+			}
+		}
+		if !sawErr {
+			t.Errorf("expected a 'no definitions or rules' error for %s, got %v", name, result.Errors)
+		}
+	}
+}
+
 func TestLoadProfilesMissingDir(t *testing.T) {
 	result, err := LoadProfiles(filepath.Join(t.TempDir(), "does-not-exist"))
 	if err != nil {
