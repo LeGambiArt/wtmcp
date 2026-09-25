@@ -688,9 +688,9 @@ func registerToolStats(srv *mcpserver.MCPServer, collector *stats.Collector, mgr
 			includeResources, _ := args["include_resources"].(bool)
 
 			// Filter stats by the connection's profile so an agent cannot
-			// enumerate tools/plugins it may not call. tool_stats itself
-			// is exempt, but the per-tool/plugin rows are still filtered.
-			// Aggregate totals stay global (they reveal no tool names).
+			// enumerate tools/plugins it may not call, nor infer their usage.
+			// tool_stats itself is exempt, but the per-tool/plugin rows and the
+			// aggregate totals are both scoped to the caller's allowed tools.
 			filter := profile.FilterFromContext(ctx)
 			pluginVisible := func(name string) bool {
 				if filter == nil {
@@ -738,20 +738,25 @@ func registerToolStats(srv *mcpserver.MCPServer, collector *stats.Collector, mgr
 				result["resources"] = resources
 			}
 
-			inputTk, outputTk := collector.TotalTokens()
+			// Totals are scoped to the caller's allowed tools/plugins too, so a
+			// restricted client cannot infer aggregate usage for tools it may
+			// not call. toolVisible/pluginVisible are nil-safe (no profile
+			// counts everything).
+			inputTk, outputTk := collector.TotalTokens(toolVisible)
 			totals := map[string]any{
 				"total_input_tokens":  inputTk,
 				"total_output_tokens": outputTk,
 				"total_tokens":        inputTk + outputTk,
 			}
 			if includeSchemas {
-				// Aggregate totals stay global, matching the token totals above.
-				sc := collector.SchemaCost(nil)
-				totals["schema_overhead_tokens"] = sc.TotalSchemaTokens
+				totals["schema_overhead_tokens"] = collector.SchemaCost(toolVisible).TotalSchemaTokens
 			}
 			if includeResources {
 				var resTk, resReads int
 				for _, r := range collector.ResourceSummary() {
+					if !pluginVisible(r.PluginName) {
+						continue
+					}
 					resTk += r.ContentTokens
 					resReads += r.ReadCount
 				}
