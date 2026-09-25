@@ -75,13 +75,15 @@ func (m *ToolOwnerMap) register(toolName, pluginName string) {
 	m.owners[toolName] = pluginName
 }
 
-func (m *ToolOwnerMap) removePlugin(pluginName string) {
+// removeTools drops ownership entries for the named tools. It is called in
+// step with deleting the tools' handlers during a reload, so ownership for a
+// still-callable tool is never cleared out from under the profile filter (an
+// empty owner could let a wildcard allow bypass a plugin-specific deny).
+func (m *ToolOwnerMap) removeTools(toolNames ...string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	for tool, owner := range m.owners {
-		if owner == pluginName {
-			delete(m.owners, tool)
-		}
+	for _, tool := range toolNames {
+		delete(m.owners, tool)
 	}
 }
 
@@ -839,14 +841,16 @@ func ReloadPlugin(ctx context.Context, srv *mcpserver.MCPServer, mgr *plugin.Man
 		srv.DeleteResources(oldResourceURIs...)
 	}
 
-	// Register new tools FIRST — AddTool atomically replaces the
-	// handler for existing names, eliminating the "tool not found"
-	// window that existed when we deleted before re-registering.
-	// Purge the ownership map before registering so the plugin
-	// can re-register its own tools without self-collision.
-	if toolOwners != nil {
-		toolOwners.removePlugin(name)
-	}
+	// Register new tools FIRST — AddTool atomically replaces the handler for
+	// existing names, eliminating the "tool not found" window that existed
+	// when we deleted before re-registering. Ownership is deliberately NOT
+	// purged here: register() overwrites the owner for each surviving tool in
+	// place, so the profile filter never observes an empty plugin name for a
+	// still-callable handler — an empty owner could let a wildcard allow match
+	// and bypass a plugin-specific deny during the reload window. Ownership for
+	// tools that no longer exist is removed below, in step with deleting their
+	// handlers. Re-registering the same plugin's tools does not self-collide:
+	// the collision check permits a tool already owned by the same plugin.
 
 	// Re-register tools. Check disabled first — a plugin can be in
 	// both m.manifests (discovered) and m.disabled (failed to load),
@@ -884,7 +888,13 @@ func ReloadPlugin(ctx context.Context, srv *mcpserver.MCPServer, mgr *plugin.Man
 		}
 	}
 	if len(removedTools) > 0 {
+		// Delete the handlers first, then drop their ownership — never the
+		// other way around, so no removed tool is briefly callable with an
+		// empty owner.
 		srv.DeleteTools(removedTools...)
+		if toolOwners != nil {
+			toolOwners.removeTools(removedTools...)
+		}
 	}
 
 	// Rebuild tool index and re-register tool_search so the

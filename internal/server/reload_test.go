@@ -384,7 +384,12 @@ func TestToolCollision_SecondPluginSkipped(t *testing.T) {
 	}
 }
 
-func TestToolCollision_ReloadPurgesStaleEntries(t *testing.T) {
+// TestReload_ReRegisterPreservesOwnership verifies the reload path re-registers
+// a plugin's own tools without purging ownership first. register() overwrites
+// the owner in place (same plugin => no self-collision), so the profile filter
+// never sees an empty owner for a still-callable tool — which a wildcard allow
+// could otherwise match, bypassing a plugin-specific deny.
+func TestReload_ReRegisterPreservesOwnership(t *testing.T) {
 	mgr := plugin.NewManagerForTest()
 	mgr.SetManifest("alpha", &plugin.Manifest{
 		Name:      "alpha",
@@ -399,21 +404,43 @@ func TestToolCollision_ReloadPurgesStaleEntries(t *testing.T) {
 	index := NewToolIndex(mgr, false)
 	srv, toolOwners := New("test", mgr, cfg, index, nil, nil, nil, nil, true)
 
-	tools := srv.ListTools()
-	if _, ok := tools["alpha_tool"]; !ok {
+	if _, ok := srv.ListTools()["alpha_tool"]; !ok {
 		t.Fatal("alpha_tool should be registered")
 	}
+	if got := toolOwners.owner("alpha_tool"); got != "alpha" {
+		t.Fatalf("owner = %q, want alpha", got)
+	}
 
-	oldNames := []string{"alpha_tool"}
-	srv.DeleteTools(oldNames...)
-	toolOwners.removePlugin("alpha")
-
+	// Re-register the same plugin's tools WITHOUT purging ownership (the reload
+	// path no longer purges). AddTool replaces the handler in place.
 	deps := &serverDeps{srv, mgr, cfg, index, nil, nil, nil, nil, toolOwners}
-	manifest := mgr.Manifests()["alpha"]
-	registerPluginTools(deps, manifest)
+	registerPluginTools(deps, mgr.Manifests()["alpha"])
 
-	tools = srv.ListTools()
-	if _, ok := tools["alpha_tool"]; !ok {
-		t.Fatal("alpha_tool should be re-registered after purge without self-collision")
+	if _, ok := srv.ListTools()["alpha_tool"]; !ok {
+		t.Fatal("alpha_tool should remain registered after re-registration")
+	}
+	if got := toolOwners.owner("alpha_tool"); got != "alpha" {
+		t.Fatalf("owner after re-registration = %q, want alpha (never cleared)", got)
+	}
+}
+
+// TestToolOwnerMap_RemoveTools verifies removeTools drops only the named
+// entries and leaves other tools' ownership intact.
+func TestToolOwnerMap_RemoveTools(t *testing.T) {
+	m := newToolOwnerMap()
+	m.register("a_get", "alpha")
+	m.register("a_del", "alpha")
+	m.register("b_run", "beta")
+
+	m.removeTools("a_del")
+
+	if got := m.owner("a_del"); got != "" {
+		t.Errorf("a_del owner = %q, want empty after removal", got)
+	}
+	if got := m.owner("a_get"); got != "alpha" {
+		t.Errorf("a_get owner = %q, want alpha (must survive)", got)
+	}
+	if got := m.owner("b_run"); got != "beta" {
+		t.Errorf("b_run owner = %q, want beta (must survive)", got)
 	}
 }
