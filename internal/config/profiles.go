@@ -1,7 +1,10 @@
 package config
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -217,9 +220,23 @@ func loadProfileFile(path string) (*ProfileFile, error) {
 		return nil, err
 	}
 
+	// Strict decoding: unknown keys are rejected so a typo in a top-level or
+	// nested field (e.g. "definition:" or "deny" misspelled) fails loudly
+	// instead of being silently dropped — a dropped rule can leave an agent
+	// unfiltered. KnownFields applies recursively to every struct in the file.
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
 	var pf ProfileFile
-	if err := yaml.Unmarshal(data, &pf); err != nil {
+	if err := dec.Decode(&pf); err != nil && !errors.Is(err, io.EOF) {
 		return nil, err
+	}
+
+	// A file that parses but yields nothing recognized (empty, all comments,
+	// or every key typo'd away) must not pass silently: it would contribute no
+	// definitions or rules and could leave the resolver unconfigured.
+	if len(pf.Definitions) == 0 && len(pf.Rules) == 0 {
+		return nil, fmt.Errorf("no profile definitions or rules found " +
+			"(check for typos in the top-level 'definitions' and 'rules' keys)")
 	}
 	return &pf, nil
 }
