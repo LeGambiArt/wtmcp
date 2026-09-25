@@ -1330,6 +1330,10 @@ TLS client certificates provide identity. For stdio transport:
   — §5.
 - stdio `--profile` → `profiles.default` fallback — §7.
 
+**Proposed follow-on tooling.** Certificate generation and cert↔rule
+mapping maintenance (including reviving the `wtmcpctl agent enable
+--profile` item above) are designed in §10 but not yet built.
+
 ### 9. File Changes Summary
 
 | File | Change |
@@ -1355,6 +1359,141 @@ Per-connection profile assignment is logged directly from the context
 funcs in `cmd/wtmcp/profiles.go` (no changes to `internal/audit`); the
 `Hooks.OnError` denial hook and `cmd/wtmcpctl/agent.go --profile` flag were
 not implemented (see §8).
+
+### 10. Profile Setup & Maintenance Tooling (Proposed — not yet implemented)
+
+The shipped feature can *validate* and *inspect* profiles (`wtmcpctl
+profile check`/`list`/`test`, §6), but it provides nothing to help an
+operator **stand up** the mTLS trust the streamable-http path depends on,
+nor to **keep the cert↔rule mapping healthy** over time. Both are the main
+friction points reported after the initial release, so this section
+proposes the follow-on tooling. It is a design sketch; none of it is built
+yet.
+
+#### Motivation
+
+- **The feature is gated behind manual mTLS.** Profiles on
+  streamable-http require `client_auth: require` (§2), which requires a CA,
+  a server cert, and a per-agent client cert. wtmcp ships **no
+  cert-generation helper** — operators must hand-roll these with `openssl`
+  before they can try profiles at all. This is the single biggest barrier
+  to adoption.
+- **The cert and the rule are two halves of one key.** A client cert's
+  CN / SAN *is* the join value for a `ProfileRule` (§1), matched by **exact
+  string equality**. Today those two artifacts are authored in separate
+  tools with no cross-check, so a typo silently resolves to deny-all (or to
+  the `default` profile) with no error — exactly the failure the
+  fail-closed design (§1) makes invisible by intent.
+- **No drift detection.** Once running, certs expire and rules go stale;
+  nothing surfaces "this cert matches no rule" or "this rule matches no
+  known cert".
+
+#### Design decisions
+
+- **Native `crypto/x509`, no `openssl` dependency.** A small new
+  `internal/pki` package (`GenerateCA`, `IssueServerCert`,
+  `IssueClientCert`) does the signing in pure Go. This keeps wtmcpctl
+  self-contained and cross-platform, and reuses the same x509 vocabulary as
+  the existing `profile.ExtractIdentity` (§3), so what the issuer writes
+  into a cert and what the resolver reads back cannot drift.
+- **Dev-convenience first, prod-capable API.** The initial commands ship
+  with fixed sane defaults (long-lived CA, standard key usage / EKU,
+  P-256 or RSA-2048 keys) aimed at local development and demos, and the
+  docs steer production users at their real PKI. But the `internal/pki`
+  signing helpers take an options struct from day one (key type/size,
+  validity, external-CA signing material) so production knobs can be
+  exposed later without reworking callers.
+- **Profile-aware, not a generic cert tool.** The value is in the
+  round-trip with `profiles.d/`, so the agent-cert command and the rule it
+  needs are produced together (below), not as two disconnected steps.
+
+#### 10.1 Certificate generation — `wtmcpctl profile cert`
+
+A `cert` subcommand group under `profile`, backed by `internal/pki`:
+
+| Command | Behavior |
+|---------|----------|
+| `profile cert init-ca` | Create `ca.crt`/`ca.key` in the workdir. Idempotent; refuses to clobber an existing CA without `--force`. `--common-name`, `--days`. |
+| `profile cert server --dns … --ip …` | Issue the server cert/key signed by the CA, with the SANs the client will verify. `--out` dir; optionally print the `server.tls` block (`cert_file`/`key_file`/`ca_file`/`client_auth: require`) to paste into `config.yaml`. |
+| `profile cert agent <name> --profile P [--cn … \| --san-uri … \| --san-dns … \| --san-email …]` | Issue a client cert whose identity matches profile `P`, **and** append the corresponding `ProfileRule` to `profiles.d/` in the same operation. |
+| `profile cert list` | Enumerate issued certs with CN/SAN, expiry, and the profile each currently resolves to (via `Resolver`); flag expired / soon-to-expire. |
+
+The important command is `cert agent`. It closes the exact-match footgun
+by construction: the identity burned into the cert and the identity written
+into the rule come from one input, so they cannot disagree. Before writing,
+it runs the same duplicate-rule-key check the loader uses (§1) so it never
+produces a config that would abort startup.
+
+```
+$ wtmcpctl profile cert agent ci --profile ci-automation \
+      --san-uri spiffe://example.com/agent/ci
+
+issued: agents/ci.crt, agents/ci.key   (SAN URI spiffe://example.com/agent/ci, expires 2027-09-25)
+appended rule to profiles.d/ci-automation.yaml:
+  - match: { san_uri: "spiffe://example.com/agent/ci" }
+    profile: ci-automation
+
+verify: wtmcpctl profile test --cert agents/ci.crt   → ci-automation ✓
+```
+
+#### 10.2 Guided setup — `wtmcpctl profile setup`
+
+An optional wrapper that runs the whole zero-to-working chain: `init-ca` →
+`cert server` → first `cert agent` → matching rule → emit/patch the
+`server.tls` block. This turns "possible" into "easy" and is cheap once
+§10.1 exists. It is convenience over the primitives, not a separate code
+path.
+
+#### 10.3 Mapping maintenance
+
+Once profiles are running, the recurring work is keeping certs and rules in
+sync. These reuse existing building blocks (`ExtractIdentity`, `Resolver`)
+and add no new crypto:
+
+- **`profile test --cert <file>`** — extend the existing `test` (§6) to
+  accept a real PEM/cert file, run `ExtractIdentity` on it, and show the
+  resolved profile. Answers "does *this actual cert* get the profile I
+  expect?" rather than re-typing `--cn`/`--san-*` by hand.
+- **`profile rule add --profile P (--san-uri … | --cn … | --from-cert f)`**
+  — safely append/merge a rule into a `profiles.d/` file, rejecting a
+  duplicate `(field,value)` key up front (which is otherwise fatal at load,
+  §1).
+- **`profile map`** — a reconciliation view that lists every issued agent
+  cert alongside its resolved profile and flags orphans **in both
+  directions**: a cert matching no rule (→ deny-all / default at runtime),
+  and a rule matching no known cert (→ dead config). This is the direct
+  answer to "what is the current agent→profile mapping, and is it healthy?"
+- **`profile doctor`** — one command that runs `profile check` (§6), the
+  §10 orphan/expiry checks, and the `client_auth: require` invariant (§2,
+  currently only surfaced at server startup) so problems are caught before
+  deploy.
+
+#### Sequencing
+
+The recommended build order maximizes benefit per unit of work:
+
+1. **§10.1 cert trio** (`init-ca` / `server` / `agent` + the rule
+   round-trip). This alone flips profiles-on-HTTP from "theoretically
+   supported" to "actually adoptable", and is the foundation the rest
+   reuse.
+2. **§10.3 maintenance** (`test --cert`, `map`, `doctor`) — small,
+   no-new-crypto, high recurring value.
+3. **§10.2 guided `setup`** — sugar over the §10.1 primitives.
+
+This also revives the deferred Phase 6 item "`wtmcpctl agent enable
+--profile`" (§8): once agent certs exist, `agent enable` can inject
+`--profile` into the generated client config, which additionally closes the
+stdio fail-open gap (§7) ergonomically — the client is configured with a
+profile rather than silently seeing everything.
+
+#### File changes (proposed)
+
+| File | Change |
+|------|--------|
+| `internal/pki/pki.go` | New: `GenerateCA`, `IssueServerCert`, `IssueClientCert` over `crypto/x509`, options-struct based |
+| `cmd/wtmcpctl/profile_cert.go` | New: `profile cert init-ca`/`server`/`agent`/`list`, and the optional `profile setup` wrapper |
+| `cmd/wtmcpctl/profile.go` | Extend `profile test` with `--cert`; add `profile rule add`, `profile map`, `profile doctor` |
+| `cmd/wtmcpctl/agent.go` | Add `--profile` to `agent enable` (deferred Phase 6 item, §8) |
 
 ## Alternatives Considered
 
@@ -1606,3 +1745,10 @@ visibility filtering with far less complexity and no per-session state.
    are size-capped (1 MB), and are decoded strictly so a malformed file
    fails loudly (§1). Permission-mode warnings remain a possible future
    addition.
+
+8. **Certificate provisioning & mapping maintenance?** *(Designed — see
+   §10, not yet built.)* wtmcp ships no helper to generate the CA / server
+   / agent certs that the mTLS path depends on, nor to keep the cert↔rule
+   mapping in sync. §10 proposes a `wtmcpctl profile cert` group (native
+   `crypto/x509`), a guided `profile setup`, and maintenance commands
+   (`profile test --cert`, `profile map`, `profile doctor`).
