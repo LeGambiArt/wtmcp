@@ -9,11 +9,34 @@
 > profile` command reference, see
 > [README-wtmcpctl.md](../../README-wtmcpctl.md#profile). This document
 > is retained as the design rationale (including alternatives
-> considered). A few implementation details differ from the sketches
-> below — notably, TLS reuses mcp-go's `WithTLSCert` plus a `TLSConfig`
-> on the injected `http.Server` rather than taking over the listener,
-> and the `WithToolFilter` closure is built inside `server.New` (so
-> `ToolOwnerMap.owner` stayed unexported).
+> considered) and has been reconciled with the shipped code. The code
+> sketches below are illustrative, not verbatim; the notable ways the
+> implementation diverged from the original proposal are:
+>
+> - **TLS listener ownership** — rather than taking over the listener
+>   with our own `ListenAndServeTLS`, the transport keeps mcp-go's
+>   `StreamableHTTPServer.Start` and injects an `http.Server` (carrying
+>   the `TLSConfig` with `ClientCAs`/`ClientAuth`) via
+>   `WithStreamableHTTPServer`, loading the server cert through mcp-go's
+>   `WithTLSCert`. See §2.
+> - **Filter wiring** — the `WithToolFilter` closure is built inside
+>   `server.New` (`newToolFilter`), so `ToolOwnerMap.owner` stayed
+>   unexported. See §4.
+> - **Broader output filtering** — profile filtering is applied not only
+>   to `tool_search` results but also to the `plugin_list` and
+>   `tool_stats` output, and the static `tool_search` description drops
+>   its global catalog summary when profiles are active. See §5.
+> - **stdio default fallback** — the stdio `--profile` flag falls back to
+>   `profiles.default`; with neither set, filtering stays inert (all
+>   tools visible — fail-open). See §7.
+> - **Config hardening** — profile files are decoded strictly (unknown
+>   keys and empty files are fatal), symlinks are rejected, and file
+>   size is capped; `ServerTLSConfig.Validate` adds internal-consistency
+>   checks. See §1 and §2.
+> - **Not built** — the optional Phase 6 polish (`profile_info` tool,
+>   `wtmcpctl agent enable --profile`, profile validation inside `wtmcp
+>   check`, and `Hooks.OnError` denial auditing) was not implemented.
+>   See §8.
 
 ## Problem Statement
 
@@ -312,6 +335,7 @@ type ProfileDefinition struct {
 type ProfileRule struct {
     Match   ProfileMatch `yaml:"match"`
     Profile string       `yaml:"profile"`
+    File    string       `yaml:"-"` // source filename, set during loading (diagnostics)
 }
 
 // ProfileMatch defines identity matching criteria. Exactly one field
@@ -329,7 +353,15 @@ type ProfileLoadResult struct {
     Definitions map[string]ProfileDefinition // merged from all files
     Rules       []ProfileRule                // collected from all files; order irrelevant (matching is a set lookup)
     Errors      []ProfileLoadError           // per-file and cross-file errors
+    DefSource   map[string]string            // profile name -> file that first defined it (diagnostics)
+    Files       []string                     // profile filenames scanned (sorted), parsed or not
 }
+
+// Identity match field names live in the config package (FieldCN,
+// FieldSANURI, FieldSANDNS, FieldSANEmail) as a single source of truth,
+// and ProfileMatch.Fields() enumerates the criteria set on a match in
+// canonical order. The profile package aliases these constants and reuses
+// Fields() so rule-key derivation and validation cannot drift.
 
 // ProfileLoadError describes a problem found during profile loading.
 type ProfileLoadError struct {
@@ -410,6 +442,24 @@ func LoadProfiles(profilesDir string) (*ProfileLoadResult, error) {
 }
 ```
 
+**Per-file hardening (`loadProfileFile`).** Because profile files are
+security policy, the loader is defensive about each file it reads:
+
+- **Symlinks are rejected** (`RejectSymlink`) — a profile file may not be
+  a symlink into an attacker-controlled location.
+- **Size is capped** at 1 MB per file.
+- **Strict YAML decoding** (`yaml.Decoder.KnownFields(true)`) — an unknown
+  or misspelled key (e.g. `definition:` or a typo'd `deny`) is a **fatal
+  parse error**, not silently dropped. A silently dropped rule could
+  leave an agent unfiltered, so the file must fail loudly.
+- **Empty / no-op files are rejected** — a file that parses but yields
+  zero definitions and zero rules (empty, all comments, or every key
+  typo'd away) is a fatal error, since it would contribute nothing and
+  could leave the resolver unconfigured by mistake.
+
+These checks were not in the original sketch; they were added so a
+malformed drop-in file fails at load rather than silently widening access.
+
 #### Duplicate Detection
 
 There is **no profile hierarchy, override, or merge** — the design
@@ -487,6 +537,11 @@ Backward compatibility is preserved because fail-closed only engages
 when `profiles.d/` is non-empty; existing deployments with no profiles
 behave exactly as before.
 
+This table governs the **streamable-http** path, where identity comes from
+a verified client certificate. The **stdio** transport has no certificate
+and selects a profile differently (`--profile` flag → `profiles.default` →
+inert); notably it is **fail-open** when neither is set. See §7.
+
 ### 2. TLS Infrastructure
 
 Add mTLS support to the streamable-http transport.
@@ -511,50 +566,63 @@ type ServerTLSConfig struct {
 
 #### Changes to `internal/transport/transport.go`
 
-**Listener ownership.** Today `listenHTTP` calls `httpSrv.Start(addr)`
-(mcp-go owns the listen loop) and `httpSrv.Shutdown(ctx)`. Whether
-`Start` honors a `TLSConfig` on the injected `http.Server` is an
-mcp-go internal we should not depend on. The simple, robust approach:
-**we own the `http.Server`**, set its `TLSConfig`, mount the mcp-go
-handler on the mux (it is already an `http.Handler`), and call
-`ListenAndServeTLS`/`ListenAndServe` ourselves. `WithHTTPContextFunc`
-still runs because it executes inside the handler's `ServeHTTP`,
-independent of who owns the listener. Graceful shutdown calls both the
-`http.Server.Shutdown` (stop accepting) and `httpSrv.Shutdown` (drain
-MCP sessions).
+**Listener ownership (as built).** The original sketch proposed that
+wtmcp own the `http.Server` and call `ListenAndServeTLS`/`ListenAndServe`
+itself. The shipped code is simpler: it keeps mcp-go's
+`StreamableHTTPServer.Start(addr)` for the listen loop and *injects* an
+`http.Server` (carrying the `TLSConfig`) via `WithStreamableHTTPServer`,
+while loading the server cert/key through mcp-go's `WithTLSCert`. mcp-go
+then calls `ListenAndServeTLS` internally when a cert is configured. This
+keeps closer to the pre-existing code and still lets us set
+`ClientCAs`/`ClientAuth` on the injected server. `WithHTTPContextFunc`
+runs inside the handler's `ServeHTTP` regardless. Graceful shutdown stays
+`httpSrv.Shutdown(ctx)` as before.
 
 ```go
 func listenHTTP(ctx context.Context, srv *mcpserver.MCPServer,
     cfg *config.ServerConfig, logger *slog.Logger,
     contextFunc mcpserver.HTTPContextFunc) error {
 
+    addr := net.JoinHostPort(cfg.Host, fmt.Sprintf("%d", cfg.Port))
     mux := http.NewServeMux()
     httpServer := &http.Server{
         Handler:           mux,
         ReadHeaderTimeout: 10 * time.Second,
     }
 
-    opts := []mcpserver.StreamableHTTPOption{ /* heartbeat, TTL, logger */ }
+    opts := []mcpserver.StreamableHTTPOption{
+        mcpserver.WithSessionIdleTTL(30 * time.Minute),
+        mcpserver.WithHeartbeatInterval(30 * time.Second),
+        mcpserver.WithStreamableHTTPLogger(logger),
+        mcpserver.WithStreamableHTTPServer(httpServer), // inject our server
+    }
     if contextFunc != nil {
         opts = append(opts, mcpserver.WithHTTPContextFunc(contextFunc))
     }
-    httpSrv := mcpserver.NewStreamableHTTPServer(srv, opts...)
-    mux.Handle("/mcp", httpSrv)
-    mux.HandleFunc("/healthz", handleHealthz)
 
-    if cfg.TLS != nil && cfg.TLS.CertFile != "" {
+    tlsEnabled := cfg.TLS != nil && cfg.TLS.CertFile != ""
+    if tlsEnabled {
         tlsConfig, err := buildServerTLS(cfg.TLS)
         if err != nil {
             return fmt.Errorf("server TLS: %w", err)
         }
         httpServer.TLSConfig = tlsConfig
+        opts = append(opts, mcpserver.WithTLSCert(cfg.TLS.CertFile, cfg.TLS.KeyFile))
     }
 
-    // ... run httpServer.ListenAndServeTLS / ListenAndServe in a
-    // goroutine; on ctx.Done() call httpServer.Shutdown then
-    // httpSrv.Shutdown (same select/errCh structure as today) ...
+    httpSrv := mcpserver.NewStreamableHTTPServer(srv, opts...)
+    mux.Handle("/mcp", httpSrv)
+    mux.HandleFunc("/healthz", handleHealthz)
+
+    // ... run httpSrv.Start(addr) in a goroutine; on ctx.Done() call
+    // httpSrv.Shutdown (same select/errCh structure as before). If the
+    // bind is non-loopback and clients are not authenticated
+    // (client_auth != require), log a warning — see Security §.
 }
 
+// buildServerTLS builds the *tls.Config for client-auth (ClientCAs +
+// ClientAuth). The server cert itself is loaded by mcp-go via
+// WithTLSCert, so this config carries no Certificates.
 func buildServerTLS(cfg *config.ServerTLSConfig) (*tls.Config, error) {
     tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12}
 
@@ -571,9 +639,9 @@ func buildServerTLS(cfg *config.ServerTLSConfig) (*tls.Config, error) {
     }
 
     switch cfg.ClientAuth {
-    case "require":
+    case config.ClientAuthRequire:
         tlsCfg.ClientAuth = tls.RequireAndVerifyClientCert
-    case "request":
+    case config.ClientAuthRequest:
         tlsCfg.ClientAuth = tls.VerifyClientCertIfGiven
     default:
         tlsCfg.ClientAuth = tls.NoClientCert
@@ -595,6 +663,23 @@ validation is restrictive:
 > If any profile is configured **and** the transport is
 > `streamable-http`, then `server.tls.client_auth` **must** be
 > `require`. Anything else is a fatal config error at startup.
+
+**Where the check lives (as built).** This transport-dependent check runs
+in `profileTransportOptions` (`cmd/wtmcp/profiles.go`) rather than in
+`config.Validate`, because it must see the *effective* transport after CLI
+flag overrides (`--transport`) are applied. It fires only when the
+resolver is `Configured()`.
+
+Independently, `ServerTLSConfig.Validate` enforces internal consistency of
+the TLS block itself (transport-agnostic), added beyond the original
+sketch:
+
+- `cert_file` and `key_file` must both be set or both empty.
+- `client_auth` must be one of `require`, `request`, `none` (or empty).
+- When `client_auth` is `require` or `request`, `ca_file` is required
+  (there must be a CA to verify client certs against), **and** `cert_file`
+  is required — without a server cert the transport would silently serve
+  plaintext HTTP and never request client certs, a fail-open trap.
 
 Combined with fail-closed defaults (§1), an agent must present a
 CA-verified cert that matches a rule to get any tools.
@@ -721,6 +806,22 @@ func (r *Resolver) FilterFor(id Identity) *Filter {
 }
 ```
 
+**Resolver API (as built).** The shipped `Resolver` carries a few helpers
+beyond `FilterFor` to support diagnostics and the stdio path:
+
+- `Resolve(id) Resolution` — the full decision (matched profile, matched
+  field/value/file, ambiguity, whether the default was used). `FilterFor`
+  is a thin wrapper returning `Resolve(id).Filter`. `wtmcpctl profile
+  test` uses `Resolve` to explain *why* an identity matched.
+- `FilterByName(name)` — resolve a filter by profile name, used by the
+  stdio `--profile` flag (§7).
+- `DefaultProfile()`, `DenyAll()`, `Configured()` — accessors used by the
+  main wiring.
+
+Rule validity is centralized in `classifyRules`, shared by `NewResolver`
+(stops at the first problem) and `Validate` (reports them all), so the two
+paths cannot drift.
+
 ```go
 // Filter determines whether a tool is visible/callable in a profile.
 // The zero-allow Filter produced by newDenyAllFilter() permits only
@@ -785,28 +886,39 @@ separate middleware layer — it would run after mcp-go has already
 rejected the call and could neither enforce nor observe denials.
 
 ```go
-// In internal/server/server.go, when creating MCPServer.
-// NB: ToolOwnerMap.owner() must be exported as ToolOwnerMap.Owner().
-toolFilter := func(ctx context.Context, tools []mcp.Tool) []mcp.Tool {
-    filter := profile.FilterFromContext(ctx)
-    if filter == nil {
-        return tools // no profiles configured — unfiltered (backward compat)
-    }
-    allowed := make([]mcp.Tool, 0, len(tools))
-    for _, tool := range tools {
-        if filter.IsAllowed(toolOwners.Owner(tool.Name), tool.Name) {
-            allowed = append(allowed, tool)
+// In internal/server/server.go. The closure is built by newToolFilter
+// inside server.New, so ToolOwnerMap.owner() stayed unexported (the
+// original sketch proposed exporting it as Owner()).
+func newToolFilter(toolOwners *ToolOwnerMap) mcpserver.ToolFilterFunc {
+    return func(ctx context.Context, tools []mcp.Tool) []mcp.Tool {
+        filter := profile.FilterFromContext(ctx)
+        if filter == nil {
+            return tools // no profiles configured — unfiltered (backward compat)
         }
+        allowed := make([]mcp.Tool, 0, len(tools))
+        for _, tool := range tools {
+            if filter.IsAllowed(toolOwners.owner(tool.Name), tool.Name) {
+                allowed = append(allowed, tool)
+            }
+        }
+        return allowed
     }
-    return allowed
 }
 
 srv := mcpserver.NewMCPServer("wtmcp", version,
     mcpserver.WithToolCapabilities(true),
-    mcpserver.WithToolFilter(toolFilter),
+    mcpserver.WithToolFilter(newToolFilter(toolOwners)),
     // ... existing options ...
 )
 ```
+
+**Tool ownership across reload.** The filter maps a tool name to its
+owning plugin via `ToolOwnerMap`. During a plugin reload, ownership is
+overwritten in place for surviving tools and dropped only *after* a tool's
+handler is deleted — never purged up front. If a still-callable tool
+briefly had an empty owner, a wildcard `allow` could match it and bypass a
+plugin-specific `deny`, so ownership is kept in step with handler
+registration to close that window.
 
 **Denied calls and audit.** When a client calls a tool its profile
 forbids, mcp-go rejects it with `ErrToolNotFound` before any handler
@@ -817,7 +929,32 @@ per-call denial auditing is required, attach mcp-go's `Hooks.OnError`
 (the custom `frameErrorResult`/`ProfileDenied` middleware from earlier
 drafts cannot fire, since the native filter rejects first).
 
-### 5. tool_search Profile Awareness
+### 5. Discovery/Introspection Profile Awareness
+
+The three exempt introspection tools (`plugin_list`, `tool_stats`,
+`tool_search`) are always *callable*, but their **output is
+profile-filtered** so a restricted agent cannot enumerate tools or plugins
+it may not use. The original design called this out only for `tool_search`;
+in the shipped code it applies to all three:
+
+- **`tool_search`** — results are filtered by `filter.IsAllowed` (below).
+- **`plugin_list`** — plugins the profile does not permit are omitted, and
+  the advertised per-plugin tool counts reflect only profile-allowed tools
+  (via `profileAllowsPlugin`).
+- **`tool_stats`** — usage is scoped to profile-allowed tools/plugins;
+  aggregate totals and per-plugin summaries exclude denied tools so they
+  cannot leak usage of tools the caller's profile denies.
+- **`tool_search` description** — the static tool description normally
+  includes a global category/catalog summary of available tools. That
+  description is registered once and cannot be filtered per connection, so
+  when profiles are active (`ToolIndex.SetProfilesActive(true)`) the
+  summary is **omitted** entirely to avoid leaking tool names to every
+  agent regardless of profile.
+
+A nil filter (no profiles configured) leaves all of the above unfiltered,
+preserving current behavior.
+
+#### tool_search result filtering
 
 This is **not** a secondary concern. Tool discovery defaults to
 `progressive` mode (`config.go` `Discovery: "progressive"`), where
@@ -1083,15 +1220,28 @@ Profiles are primarily designed for the streamable-http transport where
 TLS client certificates provide identity. For stdio transport:
 
 - **Single agent** — stdio is a 1:1 connection, so there's only one
-  agent. A profile could be specified via CLI flag:
+  agent. A profile is specified via the CLI flag:
   `wtmcp --profile code-review`
 - **No TLS** — identity comes from the CLI flag, not a certificate.
-  The `--profile` value is resolved to a `Filter` once at startup and
-  injected via mcp-go's `WithStdioContextFunc` (verified present in
-  v0.58.0: `func(ctx) context.Context`, called once at `Listen`). The
-  same `WithToolFilter` then enforces it. `WithStdioContextFunc` is the
-  concrete mechanism — earlier drafts hand-waved this as a "default
-  filter" with no way to reach the filter's context.
+  The resolved `Filter` is injected once at startup via mcp-go's
+  `SetContextFunc`/`WithStdioContextFunc` (`func(ctx) context.Context`,
+  called once at `Listen`). The same `WithToolFilter` then enforces it.
+- **Profile selection (as built)** — `resolveStdioFilter` picks the
+  profile in this order:
+  1. the `--profile` flag, if set (must name a defined profile, else fatal);
+  2. otherwise `profiles.default` from config, if set;
+  3. otherwise **no filter** — filtering stays inert and all tools are
+     visible.
+
+  Step 3 is a deliberate **fail-open on stdio**: unlike the HTTP path
+  (which fails closed once profiles exist), a stdio session with no
+  `--profile` and no `profiles.default` sees everything. The rationale is
+  that stdio is a local, single, already-trusted 1:1 connection with no
+  identity to authenticate; fail-closing it would break existing stdio
+  deployments the moment any `profiles.d/` file is dropped in. Operators
+  who want stdio locked down must set `--profile` or `profiles.default`.
+  This is called out in the user guide so it is a visible choice, not a
+  surprise.
 - **Future**: the stdio transport could read a profile name from the
   MCP `initialize` request's client info.
 
@@ -1130,7 +1280,11 @@ TLS client certificates provide identity. For stdio transport:
 12. Add `wtmcpctl profile test` — test identity-to-profile matching.
 13. Implement `profile.Validate()` and `profile.ValidatePluginRefs()`
     functions used by both the server startup path and `wtmcpctl`.
-14. Add profile validation to `wtmcp check` (server-side diagnostic).
+14. ~~Add profile validation to `wtmcp check` (server-side diagnostic).~~
+    **Not implemented.** Profile validation runs during `serve` startup
+    (`setupProfiles`, fatal errors abort) and offline via `wtmcpctl
+    profile check`; `wtmcp check` was left as a config/plugins diagnostic
+    only.
 
 #### Phase 4: TLS Infrastructure
 
@@ -1156,11 +1310,25 @@ TLS client certificates provide identity. For stdio transport:
 
 #### Phase 6: Observability & Polish
 
-23. Audit the per-connection profile assignment (matched identity →
-    profile). Optionally attach `Hooks.OnError` to record denied calls.
-24. Add `profile_info` management tool (shows current profile name
-    and allowed tool count).
-25. Update `wtmcpctl agent enable` to support `--profile` flag.
+23. **Done (partial).** The per-connection profile assignment (matched
+    identity → profile) is logged in the HTTP context func
+    (`CN=%q -> <filter>`) and the stdio profile at startup. The optional
+    `Hooks.OnError` per-call denial auditing was **not** implemented.
+24. ~~Add `profile_info` management tool (shows current profile name
+    and allowed tool count).~~ **Not implemented.**
+25. ~~Update `wtmcpctl agent enable` to support `--profile` flag.~~
+    **Not implemented.**
+
+**Additional hardening shipped beyond the original plan:**
+
+- Strict/defensive profile file loading (unknown-field rejection, empty-
+  file rejection, symlink rejection, size cap) — §1.
+- `ServerTLSConfig.Validate` internal-consistency checks — §2.
+- Non-loopback bind warning when clients are not authenticated — Security §.
+- Profile-filtered output for `plugin_list` and `tool_stats`, and
+  omission of the `tool_search` catalog summary when profiles are active
+  — §5.
+- stdio `--profile` → `profiles.default` fallback — §7.
 
 ### 9. File Changes Summary
 
@@ -1175,13 +1343,18 @@ TLS client certificates provide identity. For stdio transport:
 | `internal/profile/context.go` | New: context key helpers (`WithFilter`, `FilterFromContext`) |
 | `internal/profile/validate.go` | New: `Validate()`, `ValidatePluginRefs()` — comprehensive checks |
 | `internal/transport/transport.go` | Add TLS config, `buildServerTLS`, `WithHTTPContextFunc` wiring |
-| `internal/server/server.go` | Add single `WithToolFilter` to `New()`; export `ToolOwnerMap.Owner` |
+| `internal/server/server.go` | Add single `WithToolFilter` to `New()` via `newToolFilter` (`ToolOwnerMap.owner` stayed unexported); profile-filter `plugin_list`/`tool_stats` output; keep tool ownership in step with reload |
 | `internal/server/discovery.go` | Filter `tool_search` results by profile |
-| `internal/audit/audit.go` | Log per-connection profile assignment (and optionally denied calls via `Hooks.OnError`) |
-| `cmd/wtmcp/main.go` | Add `--profile` flag, load profiles.d/, create `Resolver` |
+| `internal/server/toolindex.go` | Add `SetProfilesActive`/`ProfilesActive` so `tool_search` drops its catalog summary when profiles are active |
+| `cmd/wtmcp/main.go` | Add `--profile` flag; wire `setupProfiles`/`profileTransportOptions`; `SetProfilesActive` |
+| `cmd/wtmcp/profiles.go` | New: `setupProfiles`, `profileTransportOptions`, `resolveStdioFilter`, `httpProfileContextFunc` |
 | `cmd/wtmcpctl/profile.go` | New: `profile check`, `profile list`, `profile test` subcommands |
 | `cmd/wtmcpctl/main.go` | Register `profileCmd` |
-| `cmd/wtmcpctl/agent.go` | Add `--profile` flag to `agent enable` |
+
+Per-connection profile assignment is logged directly from the context
+funcs in `cmd/wtmcp/profiles.go` (no changes to `internal/audit`); the
+`Hooks.OnError` denial hook and `cmd/wtmcpctl/agent.go --profile` flag were
+not implemented (see §8).
 
 ## Alternatives Considered
 
@@ -1330,11 +1503,14 @@ visibility filtering with far less complexity and no per-session state.
    call before the handler runs). There is no gap between "hidden" and
    "callable", and no second layer to keep in sync.
 
-2. **Fail closed** — once any profile exists, an identity that matches
-   no rule (or matches two profiles) receives *no* tools unless the
-   operator explicitly opts into fail-open by setting `default`. The
-   secure posture is the default one, not something you must remember
-   to configure.
+2. **Fail closed (streamable-http)** — once any profile exists, an
+   identity that matches no rule (or matches two profiles) receives *no*
+   tools unless the operator explicitly opts into fail-open by setting
+   `default`. The secure posture is the default one, not something you must
+   remember to configure. **Exception — stdio is fail-open:** a stdio
+   session with neither `--profile` nor `profiles.default` sees all tools,
+   because it is a local, unauthenticated 1:1 connection with no identity
+   (see §7). Lock stdio down by setting `--profile` or `profiles.default`.
 
 3. **Verified mTLS identity only** — config validation requires
    `client_auth: require` whenever profiles are configured, so a client
@@ -1370,9 +1546,17 @@ visibility filtering with far less complexity and no per-session state.
    unexpired cert would still match its rule until then.
 
 10. **Audit trail** — the per-connection profile assignment (matched
-    identity → profile) is logged. Denied calls surface as mcp-go
-    tool-not-found errors and can additionally be recorded via
-    `Hooks.OnError` if explicit denial auditing is required.
+    identity → profile) is logged from the context func (HTTP: `CN=... ->
+    <filter>`; stdio: the startup profile). Denied calls surface as mcp-go
+    tool-not-found errors; the optional `Hooks.OnError` per-call denial
+    auditing described earlier was not implemented.
+
+11. **Non-loopback bind warning** — if the server binds to a non-loopback
+    address while clients are not authenticated (TLS absent, or
+    `client_auth` is `request`/`none`), the transport logs a warning at
+    startup. A server cert alone encrypts the channel but does not
+    authenticate clients, so the warning gates on `client_auth: require`,
+    not merely on TLS being enabled.
 
 ## Open Questions
 
@@ -1386,11 +1570,12 @@ visibility filtering with far less complexity and no per-session state.
    tools it cannot call.
 
 3. **Hot-reload of profiles?** If `profiles.d/` files change, should
-   profiles update without restart? Recommendation: yes, via the
-   existing `control/commands/` reload mechanism. A `reload-profiles`
-   control command would re-scan `profiles.d/`, rebuild the
-   `Resolver`, and apply to subsequent connections. Existing sessions
-   would keep their current profile until reconnection.
+   profiles update without restart? *(Still open — not implemented.)* The
+   `Resolver` is built once at startup; changing profiles requires a
+   restart. The recommendation stands: add a `reload-profiles` control
+   command that re-scans `profiles.d/`, rebuilds the `Resolver`, and
+   applies to subsequent connections (existing sessions keep their current
+   profile until reconnection).
 
 4. **Multiple identity matches?** *(Decided — kept restrictive.)* Rule
    matching is order-independent: each rule is one exact `(field,
@@ -1414,9 +1599,10 @@ visibility filtering with far less complexity and no per-session state.
    documented (env vars `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`,
    or claude settings).
 
-7. **File permissions on profiles.d/?** Should we enforce strict
-   permissions (0700/0600) on the directory and files like `env.d/`
-   does? Profile files don't contain secrets, but they are security
-   policy. Recommendation: warn on group/other-writable permissions
-   but don't refuse to load (unlike `env.d/` which contains
-   credentials).
+7. **File permissions on profiles.d/?** *(Resolved differently than the
+   original recommendation.)* The implementation does **not** warn on
+   group/other-writable permissions. Instead it hardens loading in a
+   different way: profile files may not be **symlinks** (`RejectSymlink`),
+   are size-capped (1 MB), and are decoded strictly so a malformed file
+   fails loudly (§1). Permission-mode warnings remain a possible future
+   addition.
