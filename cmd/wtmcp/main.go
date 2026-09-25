@@ -406,9 +406,9 @@ func run(forceStdio bool) error {
 	log.Printf("wtmcp %s starting (workdir: %s, transport: %s)", Version, wd, cfg.Server.Transport)
 
 	logger := slog.New(slog.NewTextHandler(log.Writer(), &slog.HandlerOptions{Level: slog.LevelInfo}))
-	err = transport.ListenAndServe(ctx, srv, &cfg.Server, logger, os.Stdin, os.Stdout, transportOpts...)
-
-	<-cleanupDone // ensure no reload in progress
+	err = serveAndWait(stop, cleanupDone, func() error {
+		return transport.ListenAndServe(ctx, srv, &cfg.Server, logger, os.Stdin, os.Stdout, transportOpts...)
+	})
 
 	// Sequential shutdown: transport drained, now safe to tear down.
 	log.Println("shutting down plugins...")
@@ -419,6 +419,20 @@ func run(forceStdio bool) error {
 	}
 	auditor.Close() //nolint:errcheck,gosec // best-effort on shutdown
 
+	return err
+}
+
+// serveAndWait runs serve and then guarantees the context-driven cleanup
+// goroutine can finish before returning. serve may return before any shutdown
+// signal — e.g. a TLS misconfiguration fails during startup — so stop() is
+// called unconditionally to cancel the signal context; without it the receive
+// on cleanupDone would block until a signal arrives (or forever), leaving
+// startup hung on an early error. stop() is idempotent, so the normal
+// signal-driven shutdown path is unaffected.
+func serveAndWait(stop context.CancelFunc, cleanupDone <-chan struct{}, serve func() error) error {
+	err := serve()
+	stop()
+	<-cleanupDone
 	return err
 }
 
