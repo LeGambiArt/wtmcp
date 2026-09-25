@@ -336,7 +336,10 @@ func (c *Collector) Summary() []ToolSummary {
 }
 
 // PluginSummaries returns per-plugin aggregated stats sorted by plugin name.
-func (c *Collector) PluginSummaries() []PluginSummary {
+// If keep is non-nil, only tools for which keep(pluginName, toolName) reports
+// true contribute to their plugin's totals, and plugins with no kept tools are
+// omitted. A nil keep includes every tool.
+func (c *Collector) PluginSummaries(keep func(pluginName, toolName string) bool) []PluginSummary {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -344,6 +347,9 @@ func (c *Collector) PluginSummaries() []PluginSummary {
 	toolCounts := make(map[string]map[string]bool)
 
 	for toolName, agg := range c.aggregates {
+		if keep != nil && !keep(agg.PluginName, toolName) {
+			continue
+		}
 		ps, ok := byPlugin[agg.PluginName]
 		if !ok {
 			ps = &PluginSummary{PluginName: agg.PluginName}
@@ -373,15 +379,23 @@ func (c *Collector) PluginSummaries() []PluginSummary {
 }
 
 // SchemaCost returns the total token cost of registered tool schemas.
-func (c *Collector) SchemaCost() SchemaCostSummary {
+// If keep is non-nil, only tools for which keep(pluginName, toolName) reports
+// true contribute to the totals and per-plugin rows, and plugins with no kept
+// tools are omitted. A nil keep includes every tool.
+func (c *Collector) SchemaCost(keep func(pluginName, toolName string) bool) SchemaCostSummary {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	byPlugin := make(map[string]*PluginSchemaSummary)
 	total := 0
+	totalTools := 0
 
 	for _, s := range c.schemas {
+		if keep != nil && !keep(s.PluginName, s.ToolName) {
+			continue
+		}
 		total += s.TotalTokens
+		totalTools++
 		ps, ok := byPlugin[s.PluginName]
 		if !ok {
 			ps = &PluginSchemaSummary{Plugin: s.PluginName}
@@ -400,7 +414,7 @@ func (c *Collector) SchemaCost() SchemaCostSummary {
 	})
 
 	return SchemaCostSummary{
-		TotalTools:        len(c.schemas),
+		TotalTools:        totalTools,
 		TotalSchemaTokens: total,
 		ByPlugin:          plugins,
 	}

@@ -699,6 +699,13 @@ func registerToolStats(srv *mcpserver.MCPServer, collector *stats.Collector, mgr
 				manifest, ok := mgr.Manifests()[name]
 				return ok && profileAllowsPlugin(filter, manifest)
 			}
+			// toolVisible drives per-plugin aggregations so their totals never
+			// leak usage from tools the caller's profile denies. Nil (no
+			// profile) includes every tool.
+			var toolVisible func(pluginName, toolName string) bool
+			if filter != nil {
+				toolVisible = filter.IsAllowed
+			}
 
 			result := map[string]any{
 				"tokenizer":      collector.TokenizerName(),
@@ -706,13 +713,7 @@ func registerToolStats(srv *mcpserver.MCPServer, collector *stats.Collector, mgr
 			}
 
 			if groupBy == "plugin" {
-				plugins := collector.PluginSummaries()
-				if filter != nil {
-					plugins = filterInPlace(plugins, func(p stats.PluginSummary) bool {
-						return pluginVisible(p.PluginName)
-					})
-				}
-				result["calls"] = plugins
+				result["calls"] = collector.PluginSummaries(toolVisible)
 			} else {
 				calls := collector.Summary()
 				if filter != nil {
@@ -724,13 +725,7 @@ func registerToolStats(srv *mcpserver.MCPServer, collector *stats.Collector, mgr
 			}
 
 			if includeSchemas {
-				sc := collector.SchemaCost()
-				if filter != nil {
-					sc.ByPlugin = filterInPlace(sc.ByPlugin, func(ps stats.PluginSchemaSummary) bool {
-						return pluginVisible(ps.Plugin)
-					})
-				}
-				result["schema_cost"] = sc
+				result["schema_cost"] = collector.SchemaCost(toolVisible)
 			}
 
 			if includeResources {
@@ -750,7 +745,8 @@ func registerToolStats(srv *mcpserver.MCPServer, collector *stats.Collector, mgr
 				"total_tokens":        inputTk + outputTk,
 			}
 			if includeSchemas {
-				sc := collector.SchemaCost()
+				// Aggregate totals stay global, matching the token totals above.
+				sc := collector.SchemaCost(nil)
 				totals["schema_overhead_tokens"] = sc.TotalSchemaTokens
 			}
 			if includeResources {
