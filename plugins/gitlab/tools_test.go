@@ -231,7 +231,7 @@ func setupGitLabTest(t *testing.T, handler func(w http.ResponseWriter, r *http.R
 		t.Fatal(err)
 	}
 	instances = map[string]*instance{
-		"default": {Name: "default", URL: ts.URL, Client: client},
+		"default": {Name: "default", URL: ts.URL, Client: client, Authenticated: true},
 	}
 	defaultInstance = "default"
 }
@@ -456,6 +456,25 @@ func TestToolListMergeRequestsProject(t *testing.T) {
 	}
 }
 
+func TestToolListMergeRequestsAnonymousScopes(t *testing.T) {
+	setupGitLabTest(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v4/merge_requests" {
+			jsonResponse(w, `[]`)
+			return
+		}
+		http.NotFound(w, r)
+	})
+	instances["default"].Authenticated = false
+
+	if _, err := toolListMergeRequests(mustJSON(t, map[string]any{}), nil); err != nil {
+		t.Fatalf("non-user-scoped anonymous query failed: %v", err)
+	}
+	_, err := toolListMergeRequests(mustJSON(t, map[string]any{"scope": "assigned_to_me"}), nil)
+	if err == nil || !strings.Contains(err.Error(), "authentication required") {
+		t.Fatalf("user-scoped anonymous query should require authentication, got %v", err)
+	}
+}
+
 func TestToolMyIssues(t *testing.T) {
 	setupGitLabTest(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/v4/issues" {
@@ -483,6 +502,30 @@ func TestToolMyIssues(t *testing.T) {
 	issues := m["issues"].([]map[string]any)
 	if issues[0]["title"] != "Fix bug" {
 		t.Errorf("title = %v", issues[0]["title"])
+	}
+}
+
+func TestToolMyIssuesRequiresAuthentication(t *testing.T) {
+	setupGitLabTest(t, func(http.ResponseWriter, *http.Request) {
+		t.Error("unauthenticated user-specific query should not reach GitLab")
+	})
+	instances["default"].Authenticated = false
+
+	_, err := toolMyIssues(mustJSON(t, map[string]any{}), nil)
+	if err == nil || !strings.Contains(err.Error(), "authentication required") {
+		t.Fatalf("anonymous my issues should require authentication, got %v", err)
+	}
+}
+
+func TestToolGetTodosRequiresAuthentication(t *testing.T) {
+	setupGitLabTest(t, func(http.ResponseWriter, *http.Request) {
+		t.Error("unauthenticated todos query should not reach GitLab")
+	})
+	instances["default"].Authenticated = false
+
+	_, err := toolGetTodos(mustJSON(t, map[string]any{}), nil)
+	if err == nil || !strings.Contains(err.Error(), "authentication required") {
+		t.Fatalf("anonymous todos should require authentication, got %v", err)
 	}
 }
 

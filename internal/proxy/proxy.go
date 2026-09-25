@@ -63,7 +63,10 @@ func (t TLSConfig) HasConfig() bool {
 
 // PluginAuth holds the resolved auth and HTTP config for a plugin.
 type PluginAuth struct {
-	Provider        auth.Provider
+	Provider auth.Provider
+	// AuthConfigured keeps transport and mutation safeguards active when
+	// optional credentials are unavailable and Provider is nil.
+	AuthConfigured  bool
 	BaseURL         string
 	AllowedDomains  []string
 	AllowPrivateIPs bool
@@ -383,6 +386,13 @@ func (p *Proxy) Execute(ctx context.Context, pluginName string, req protocol.Mes
 		return errResponse(req.ID, "method_not_allowed",
 			fmt.Sprintf("read-only tool cannot use %s method", method))
 	}
+	if ToolAccessFromContext(ctx) == "write" && !isReadOnlyMethod(method) && pa.AuthConfigured {
+		authAvailable := pa.IsKerberos || (pa.Provider != nil && pa.Provider.Available())
+		if req.NoAuth || !authAvailable {
+			return errResponse(req.ID, "auth_required",
+				fmt.Sprintf("authentication is required for %s requests", method))
+		}
+	}
 
 	// Select HTTP client (used for all attempts).
 	//
@@ -546,8 +556,8 @@ func (p *Proxy) resolveURL(pluginName string, pa *PluginAuth, req protocol.Messa
 	// requests could leak ambient cookies or be intercepted. Plugins
 	// needing HTTP for unauthenticated endpoints should be configured
 	// without auth.
-	hasHeaderAuth := pa.Provider != nil || pa.IsKerberos
-	if hasHeaderAuth && parsed.Scheme != "https" {
+	authConfigured := pa.AuthConfigured || pa.Provider != nil || pa.IsKerberos
+	if authConfigured && parsed.Scheme != "https" {
 		return "", fmt.Errorf("HTTPS required when auth is configured")
 	}
 

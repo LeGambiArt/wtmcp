@@ -719,6 +719,7 @@ func (m *Manager) preparePlugin(ctx context.Context, name string) (*Handle, erro
 		BaseURL:         resolvedBaseURL,
 		AllowedDomains:  domains,
 		AllowPrivateIPs: manifest.Services.HTTP.AllowPrivateIPs,
+		AuthConfigured:  manifest.Services.Auth.Type != "" || len(manifest.Services.Auth.Variants) > 0,
 		TLS:             tlsCfg,
 	}
 
