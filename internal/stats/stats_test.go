@@ -250,12 +250,23 @@ func TestCollector_TotalTokens(t *testing.T) {
 	c.Record("tool1", "p", time.Now(), []byte("input"), "output text here", false)
 	c.Record("tool2", "p", time.Now(), []byte("more"), "more output", false)
 
-	input, output := c.TotalTokens()
+	input, output := c.TotalTokens(nil)
 	if input == 0 {
 		t.Error("total input tokens should be > 0")
 	}
 	if output == 0 {
 		t.Error("total output tokens should be > 0")
+	}
+
+	// A keep predicate scopes the totals to matching tools only.
+	in1, out1 := c.TotalTokens(func(_, tool string) bool {
+		return tool == "tool1"
+	})
+	if in1 == 0 || out1 == 0 {
+		t.Error("tool1 totals should be > 0")
+	}
+	if in1 >= input || out1 >= output {
+		t.Errorf("scoped totals (%d,%d) should be less than global (%d,%d)", in1, out1, input, output)
 	}
 }
 
