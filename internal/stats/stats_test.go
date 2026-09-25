@@ -82,7 +82,7 @@ func TestCollector_RecordSchema(t *testing.T) {
 
 	c.RecordSchema("get_issues", "jira", "Get Jira issues", []byte(`{"type":"object"}`))
 
-	cost := c.SchemaCost()
+	cost := c.SchemaCost(nil)
 	if cost.TotalTools != 1 {
 		t.Errorf("TotalTools = %d, want 1", cost.TotalTools)
 	}
@@ -103,9 +103,32 @@ func TestCollector_RecordSchema_OverwriteOnReload(t *testing.T) {
 	c.RecordSchema("get_issues", "jira", "v1 description", []byte(`{"v":1}`))
 	c.RecordSchema("get_issues", "jira", "v2 description with more text", []byte(`{"v":2,"extra":"field"}`))
 
-	cost := c.SchemaCost()
+	cost := c.SchemaCost(nil)
 	if cost.TotalTools != 1 {
 		t.Errorf("TotalTools = %d, want 1 (should overwrite)", cost.TotalTools)
+	}
+}
+
+func TestCollector_SchemaCost_Keep(t *testing.T) {
+	c := NewCollector(CharsTokenizer{}, false)
+
+	c.RecordSchema("get_issues", "jira", "desc", []byte(`{}`))
+	c.RecordSchema("create_issue", "jira", "desc", []byte(`{}`))
+	c.RecordSchema("list_agents", "keylime", "desc", []byte(`{}`))
+
+	// Keep only jira/get_issues: jira's row and totals must exclude
+	// create_issue, and keylime must drop out entirely.
+	cost := c.SchemaCost(func(plugin, tool string) bool {
+		return plugin == "jira" && tool == "get_issues"
+	})
+	if cost.TotalTools != 1 {
+		t.Errorf("TotalTools = %d, want 1", cost.TotalTools)
+	}
+	if len(cost.ByPlugin) != 1 {
+		t.Fatalf("expected 1 plugin, got %d", len(cost.ByPlugin))
+	}
+	if cost.ByPlugin[0].Plugin != "jira" || cost.ByPlugin[0].Tools != 1 {
+		t.Errorf("jira: plugin=%q tools=%d, want jira,1", cost.ByPlugin[0].Plugin, cost.ByPlugin[0].Tools)
 	}
 }
 
@@ -118,7 +141,7 @@ func TestCollector_RemovePluginSchemas(t *testing.T) {
 
 	c.RemovePluginSchemas("jira")
 
-	cost := c.SchemaCost()
+	cost := c.SchemaCost(nil)
 	if cost.TotalTools != 1 {
 		t.Errorf("TotalTools = %d, want 1 after removing jira schemas", cost.TotalTools)
 	}
@@ -187,7 +210,7 @@ func TestCollector_PluginSummaries(t *testing.T) {
 	c.Record("create_issue", "jira", time.Now(), nil, "ok", false)
 	c.Record("list_agents", "keylime", time.Now(), nil, "ok", false)
 
-	ps := c.PluginSummaries()
+	ps := c.PluginSummaries(nil)
 	if len(ps) != 2 {
 		t.Fatalf("expected 2 plugins, got %d", len(ps))
 	}
@@ -198,6 +221,26 @@ func TestCollector_PluginSummaries(t *testing.T) {
 	}
 	if ps[1].PluginName != "keylime" || ps[1].CallCount != 1 || ps[1].ToolCount != 1 {
 		t.Errorf("keylime: calls=%d tools=%d, want 1,1", ps[1].CallCount, ps[1].ToolCount)
+	}
+}
+
+func TestCollector_PluginSummaries_Keep(t *testing.T) {
+	c := NewCollector(CharsTokenizer{}, false)
+
+	c.Record("get_issues", "jira", time.Now(), nil, "ok", false)
+	c.Record("create_issue", "jira", time.Now(), nil, "ok", false)
+	c.Record("list_agents", "keylime", time.Now(), nil, "ok", false)
+
+	// Allow only jira/get_issues: jira's totals must exclude create_issue and
+	// keylime must drop out entirely since none of its tools are kept.
+	ps := c.PluginSummaries(func(plugin, tool string) bool {
+		return plugin == "jira" && tool == "get_issues"
+	})
+	if len(ps) != 1 {
+		t.Fatalf("expected 1 plugin, got %d", len(ps))
+	}
+	if ps[0].PluginName != "jira" || ps[0].CallCount != 1 || ps[0].ToolCount != 1 {
+		t.Errorf("jira: calls=%d tools=%d, want 1,1", ps[0].CallCount, ps[0].ToolCount)
 	}
 }
 
