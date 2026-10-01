@@ -7,20 +7,30 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
+
+	"github.com/LeGambiArt/wtmcp/internal/profile"
 )
 
 // registerToolSearch adds the tool_search meta-tool for discovering
 // tools by keyword. Useful in both full and progressive modes.
 func registerToolSearch(srv *mcpserver.MCPServer, index *ToolIndex, excludeWrite bool) {
-	categorySummary := index.CategorySummary()
+	description := "Search for available tools by keyword. Returns tool " +
+		"names, descriptions, and parameter schemas. Found tools can be " +
+		"called directly by name."
+
+	// The category summary is a single global string baked into the tool
+	// description, so it cannot be filtered per connection. When profiles
+	// are active it would advertise tool names and counts a restricted
+	// agent may not call, so omit it; agents still discover their allowed
+	// tools via primary tools/list entries and keyword searches (whose
+	// results are profile-filtered below). Without profiles there is
+	// nothing to hide, so keep the summary as a discovery aid.
+	if !index.ProfilesActive() {
+		description += "\n\nAvailable tool categories:\n" + index.CategorySummary()
+	}
 
 	tool := mcp.NewTool("tool_search",
-		mcp.WithDescription(
-			"Search for available tools by keyword. Returns tool "+
-				"names, descriptions, and parameter schemas. Found "+
-				"tools can be called directly by name.\n\n"+
-				"Available tool categories:\n"+categorySummary,
-		),
+		mcp.WithDescription(description),
 		mcp.WithString("query",
 			mcp.Required(),
 			mcp.Description("Search keywords (matches tool names, "+
@@ -39,7 +49,7 @@ func registerToolSearch(srv *mcpserver.MCPServer, index *ToolIndex, excludeWrite
 	tool.Annotations.ReadOnlyHint = &readOnly
 
 	srv.AddTool(tool,
-		func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			args := req.GetArguments()
 			query, _ := args["query"].(string)
 			pluginFilter, _ := args["plugin_name"].(string)
@@ -49,6 +59,15 @@ func registerToolSearch(srv *mcpserver.MCPServer, index *ToolIndex, excludeWrite
 			}
 
 			results := index.Search(query, pluginFilter, limit, excludeWrite)
+
+			// Filter results by the connection's profile so an agent does
+			// not discover tools it cannot call. tool_search itself is
+			// exempt, but its *results* are still filtered.
+			if filter := profile.FilterFromContext(ctx); filter != nil {
+				results = filterInPlace(results, func(r ToolEntry) bool {
+					return filter.IsAllowed(r.Plugin, r.Name)
+				})
+			}
 
 			out := make([]searchResult, len(results))
 			for i, r := range results {

@@ -53,11 +53,17 @@ func freePort(t *testing.T) int {
 	return port
 }
 
-func waitForHealthy(t *testing.T, addr string) {
+// waitForHealthy polls the /healthz endpoint until it returns 200. A nil
+// client uses http.DefaultClient; pass a client configured with a CA/cert
+// to poll a TLS (or mTLS) server.
+func waitForHealthy(t *testing.T, client *http.Client, addr string) {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
+	if client == nil {
+		client = http.DefaultClient
+	}
+	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		resp, err := http.Get(addr + "/healthz") //nolint:noctx // test helper
+		resp, err := client.Get(addr + "/healthz") //nolint:noctx // test helper
 		if err == nil {
 			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
@@ -66,7 +72,7 @@ func waitForHealthy(t *testing.T, addr string) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatal("server did not become healthy within 3s")
+	t.Fatalf("server at %s did not become healthy within 5s", addr)
 }
 
 func TestListenAndServeStdioReturnsOnCancel(t *testing.T) {
@@ -120,7 +126,7 @@ func TestListenAndServeHTTPStartAndHealth(t *testing.T) {
 	}()
 
 	addr := fmt.Sprintf("http://localhost:%d", port)
-	waitForHealthy(t, addr)
+	waitForHealthy(t, nil, addr)
 
 	resp, err := http.Get(addr + "/healthz") //nolint:noctx // test
 	if err != nil {
@@ -194,7 +200,7 @@ func TestListenAndServeHTTPMCPEndpoint(t *testing.T) {
 	}()
 
 	addr := fmt.Sprintf("http://localhost:%d", port)
-	waitForHealthy(t, addr)
+	waitForHealthy(t, nil, addr)
 
 	initReq := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`
 	resp, err := http.Post(addr+"/mcp", "application/json", strings.NewReader(initReq)) //nolint:noctx // test
@@ -261,7 +267,7 @@ func TestListenAndServeHTTPConcurrentSessions(t *testing.T) {
 	}()
 
 	addr := fmt.Sprintf("http://localhost:%d", port)
-	waitForHealthy(t, addr)
+	waitForHealthy(t, nil, addr)
 
 	const numClients = 5
 	var wg sync.WaitGroup
@@ -346,7 +352,7 @@ func TestListenAndServeHTTPDrainBeforeShutdown(t *testing.T) {
 	}()
 
 	addr := fmt.Sprintf("http://localhost:%d", port)
-	waitForHealthy(t, addr)
+	waitForHealthy(t, nil, addr)
 
 	// Initialize a session
 	initReq := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`

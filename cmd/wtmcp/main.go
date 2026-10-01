@@ -46,6 +46,7 @@ var (
 	transportFlag string
 	hostFlag      string
 	portFlag      int
+	profileFlag   string
 )
 
 var rootCmd = &cobra.Command{
@@ -89,6 +90,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&configPath, "config", "", "Config file path")
 	rootCmd.PersistentFlags().StringVar(&workdir, "workdir", "", "Working directory")
 	rootCmd.PersistentFlags().BoolVar(&readOnly, "read-only", false, "Only register read-access tools (no write tools)")
+	rootCmd.PersistentFlags().StringVar(&profileFlag, "profile", "", "Apply a named profile's tool filter on stdio (overrides profiles.default from config)")
 	if err := rootCmd.MarkPersistentFlagDirname("workdir"); err != nil {
 		panic(err)
 	}
@@ -329,6 +331,18 @@ func run(forceStdio bool) error {
 	if !sandbox.Built() {
 		log.Println("WARNING: binary built without sandbox support — plugins run without OS-level isolation. This mode is intended for development and debugging only.")
 	}
+
+	// Load and validate agent profiles before the server is built: the
+	// tool_search description drops its global category summary when
+	// profiles are active, so the index must know before New registers
+	// the tool. Transport-dependent validation (client_auth) happens
+	// later, after CLI flag overrides, via profileTransportOptions.
+	resolver, err := setupProfiles(cfg, wd)
+	if err != nil {
+		return err
+	}
+	index.SetProfilesActive(resolver.Configured())
+
 	srv, toolOwners := server.New(Version, mgr, cfg, index, collector, auditor, pluginRL, framer, sandbox.Built())
 
 	// Phase 2 (background): start plugin processes. The MCP server
@@ -339,7 +353,7 @@ func run(forceStdio bool) error {
 		// Post-load: swap tools for plugins that failed to start
 		// from normal registrations to [DISABLED] stubs, register
 		// plugin-provided resources, and rebuild the tool index.
-		server.SwapStartFailedTools(srv, mgr, cfg, auditor)
+		server.SwapStartFailedTools(srv, mgr, cfg, auditor, toolOwners)
 		server.RegisterPluginResources(srv, mgr, collector)
 		index.Rebuild(mgr)
 		log.Printf("all plugins loaded (%d)", len(mgr.LoadedPlugins()))
@@ -364,6 +378,14 @@ func run(forceStdio bool) error {
 		return fmt.Errorf("server config: %w", err)
 	}
 
+	// Build the transport options that inject per-connection tool filters
+	// from the resolver loaded above. Must come after CLI flag overrides
+	// so the client_auth check sees the real transport.
+	transportOpts, err := profileTransportOptions(cfg, resolver, profileFlag)
+	if err != nil {
+		return err
+	}
+
 	// Start control directory watcher for external reload triggers.
 	// Must come after CLI flag overrides so listenURL reflects the actual transport.
 	listenURL := transport.ListenURL(&cfg.Server)
@@ -384,9 +406,9 @@ func run(forceStdio bool) error {
 	log.Printf("wtmcp %s starting (workdir: %s, transport: %s)", Version, wd, cfg.Server.Transport)
 
 	logger := slog.New(slog.NewTextHandler(log.Writer(), &slog.HandlerOptions{Level: slog.LevelInfo}))
-	err = transport.ListenAndServe(ctx, srv, &cfg.Server, logger, os.Stdin, os.Stdout)
-
-	<-cleanupDone // ensure no reload in progress
+	err = serveAndWait(stop, cleanupDone, func() error {
+		return transport.ListenAndServe(ctx, srv, &cfg.Server, logger, os.Stdin, os.Stdout, transportOpts...)
+	})
 
 	// Sequential shutdown: transport drained, now safe to tear down.
 	log.Println("shutting down plugins...")
@@ -397,6 +419,20 @@ func run(forceStdio bool) error {
 	}
 	auditor.Close() //nolint:errcheck,gosec // best-effort on shutdown
 
+	return err
+}
+
+// serveAndWait runs serve and then guarantees the context-driven cleanup
+// goroutine can finish before returning. serve may return before any shutdown
+// signal — e.g. a TLS misconfiguration fails during startup — so stop() is
+// called unconditionally to cancel the signal context; without it the receive
+// on cleanupDone would block until a signal arrives (or forever), leaving
+// startup hung on an early error. stop() is idempotent, so the normal
+// signal-driven shutdown path is unaffected.
+func serveAndWait(stop context.CancelFunc, cleanupDone <-chan struct{}, serve func() error) error {
+	err := serve()
+	stop()
+	<-cleanupDone
 	return err
 }
 

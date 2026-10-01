@@ -1,0 +1,152 @@
+# Agent Profiles Implementation Plan
+
+## Context
+
+Implements the design from `docs/design/profiles.md` (#214). Today, every MCP client sees all tools from all plugins. This feature adds per-connection tool filtering via named profiles, identified by TLS client certificates (mTLS). The design uses mcp-go's `WithToolFilter` (enforces on both `tools/list` and `tools/call`) and `WithHTTPContextFunc`/`SetContextFunc` for identity extraction.
+
+## Implementation Strategy
+
+The work is split into 6 tasks. Tasks 1-2 (foundational packages) are done sequentially first. Tasks 3-6 (integration, CLI, tests, docs) are distributed to parallel agents since they touch separate files.
+
+---
+
+### Task 1: Config Types & Profile Loading (`internal/config/`)
+
+**Files:** `internal/config/config.go`, `internal/config/profiles.go` (new)
+
+1. Add to `config.go`:
+   - `ProfilesConfig` struct (`Dir`, `Default` fields) to `Config`
+   - `ServerTLSConfig` struct (`CertFile`, `KeyFile`, `CAFile`, `ClientAuth`) to `ServerConfig`
+   - Add `TLS *ServerTLSConfig` field to `ServerConfig`
+   - Add `Profiles ProfilesConfig` field to `Config`
+   - Add `ProfilesDir` field to `StandardPaths` and populate in `Paths()`
+
+2. Create `internal/config/profiles.go`:
+   - `ProfileFile`, `ProfileDefinition`, `ProfileRule`, `ProfileMatch` structs
+   - `ProfileLoadResult`, `ProfileLoadError` structs
+   - `LoadProfiles(profilesDir string) (*ProfileLoadResult, error)` — reads `profiles.d/*.yaml`, merges definitions, collects rules, detects duplicate profile names
+   - `ResolveProfilesDir(cfg *Config, workdir string) string` helper
+   - Follow the `LoadEnvGroups` pattern: sorted file iteration, per-file error handling
+
+### Task 2: Profile Package (`internal/profile/`)
+
+**Files:** All new — `identity.go`, `filter.go`, `resolver.go`, `context.go`, `validate.go`
+
+1. `identity.go`: `Identity` struct (CN, SANURIs, SANDNSs, SANEmails), `ExtractIdentity(cert *x509.Certificate) Identity`
+
+2. `filter.go`:
+   - `Filter` struct with compiled `pluginMatcher` (anchored regexps)
+   - `Filter.IsAllowed(pluginName, toolName string) bool` — allow/deny with exempt introspection tools
+   - `Filter.Name() string`
+   - `newDenyAllFilter() *Filter`
+   - `compileFilter(name string, def config.ProfileDefinition) (*Filter, error)`
+   - `isExemptTool(name string) bool` — exempts `plugin_list`, `tool_stats`, `tool_search`
+   - `FilterName(f *Filter) string` — returns name or "deny-all" or "none" for logging
+
+3. `resolver.go`:
+   - `ruleKey` struct (`field`, `value` strings)
+   - `Resolver` struct with `configured bool`, `defaultProfile`, `rules map[ruleKey]string`, `filters map[string]*Filter`, `denyAll *Filter`
+   - `NewResolver(defaultProfile string, loaded *config.ProfileLoadResult) (*Resolver, error)` — validates: exactly-one-field per rule match, no duplicate rule keys, all rules reference defined profiles, default references defined profile
+   - `Resolver.FilterFor(id Identity) *Filter` — implements the decision table (no profiles → nil, match → filter, ambiguous → denyAll, no match → default or denyAll)
+   - `Resolver.Configured() bool`
+
+4. `context.go`: Context key type and `WithFilter(ctx, *Filter) context.Context`, `FilterFromContext(ctx) *Filter`
+
+5. `validate.go`:
+   - `Validate(loaded *config.ProfileLoadResult, defaultProfile string) []config.ProfileLoadError` — comprehensive checks (duplicate rule keys, undefined refs, invalid regexps, single-field match, warnings for unreferenced profiles, wildcard allow)
+   - `ValidatePluginRefs(loaded *config.ProfileLoadResult, mgr PluginLister) []config.ProfileLoadError` — checks allow/deny plugin names against discovered plugins
+
+### Task 3: Transport TLS & Hook Wiring (`internal/transport/`)
+
+**Files:** `internal/transport/transport.go`
+
+**Deviation from design doc:** mcp-go v0.58.0 has `WithTLSCert(certFile, keyFile)` and `Start()` calls `ListenAndServeTLS` when cert files are set. We can set `TLSConfig` (with `ClientCAs` and `ClientAuth`) on the injected `http.Server`, and use `WithTLSCert` for server cert/key — no need to take over listener ownership from mcp-go. This is simpler and keeps closer to existing code.
+
+Changes to `listenHTTP`:
+1. Accept `contextFunc mcpserver.HTTPContextFunc` parameter
+2. If `contextFunc != nil`, add `mcpserver.WithHTTPContextFunc(contextFunc)` to options
+3. If `cfg.TLS != nil && cfg.TLS.CertFile != ""`:
+   - Call `buildServerTLS(cfg.TLS)` to create `*tls.Config` with client auth settings
+   - Set `TLSConfig` on the `http.Server` passed to `WithStreamableHTTPServer`
+   - Add `mcpserver.WithTLSCert(cfg.TLS.CertFile, cfg.TLS.KeyFile)` to options
+   - Update `listenURL` from `http://` to `https://`
+
+Add `buildServerTLS(cfg *config.ServerTLSConfig) (*tls.Config, error)` function.
+
+Changes to `listenStdio`:
+1. Accept `contextFunc mcpserver.StdioContextFunc` parameter (typed as `func(context.Context) context.Context`)
+2. If non-nil, call `stdioSrv.SetContextFunc(contextFunc)` before `Listen`
+
+Update `ListenAndServe` signature to accept both context funcs.
+
+### Task 4: Server-Side Filtering & Main Wiring
+
+**Files:** `internal/server/server.go`, `internal/server/discovery.go`, `cmd/wtmcp/main.go`
+
+1. `server.go`:
+   - Export `ToolOwnerMap.Owner()` method (rename `owner()` → `Owner()`, keep lowercase as alias if needed internally)
+   - Add `WithToolFilter` option to `NewMCPServer` in `New()` — accepts an optional `mcpserver.ToolFilterFunc` parameter
+   - Update `New()` signature to accept the tool filter
+
+2. `discovery.go`:
+   - In `registerToolSearch`, add profile filtering to results: after `index.Search()`, if `profile.FilterFromContext(ctx) != nil`, filter results by `filter.IsAllowed(r.Plugin, r.Name)`
+   - Import `internal/profile` package
+
+3. `main.go`:
+   - Add `--profile` flag to root/serve commands
+   - After loading config and before creating MCP server:
+     - Call `config.LoadProfiles(profilesDir)`
+     - Run `profile.Validate()`, abort on fatal errors
+     - Create `profile.NewResolver(cfg.Profiles.Default, loaded)`
+   - Build the context funcs:
+     - HTTP: extract identity from `r.TLS.PeerCertificates[0]`, call `resolver.FilterFor(id)`, store via `profile.WithFilter`
+     - Stdio: if `--profile` flag set, resolve filter once, inject via context func
+   - Build the tool filter func: read `profile.FilterFromContext(ctx)`, filter by `filter.IsAllowed(toolOwners.Owner(name), name)`
+   - Pass tool filter to `server.New()`, pass context funcs to `transport.ListenAndServe()`
+   - Add config validation: profiles configured + streamable-http → `client_auth` must be `require`
+
+### Task 5: wtmcpctl Profile Commands
+
+**Files:** `cmd/wtmcpctl/profile.go` (new), `cmd/wtmcpctl/main.go`
+
+1. Create `cmd/wtmcpctl/profile.go` with cobra commands following existing patterns:
+   - `profileCmd` — parent command `profile`
+   - `profileCheckCmd` — `profile check [--with-plugins]`
+   - `profileListCmd` — `profile list`
+   - `profileTestCmd` — `profile test --cn X --san-uri Y --san-dns Z --san-email W`
+
+2. Register in `main.go`: add `profileCmd` to `rootCmd.AddCommand()`
+
+3. Implementations:
+   - `profile check`: load profiles.d, run `profile.Validate()`, print report with file-by-file status, definitions summary, rules list, errors/warnings
+   - `profile list`: load profiles.d, print table of profiles with plugin/tool/deny counts
+   - `profile test`: load profiles.d, build resolver, create Identity from flags, call `FilterFor`, print matched rule/profile and allowed/denied tools
+
+### Task 6: Unit Tests
+
+**Files:** `internal/config/profiles_test.go` (new), `internal/profile/*_test.go` (new)
+
+Config tests:
+- Valid profile files, merge from multiple files
+- Duplicate profile name detection
+- YAML parse error handling
+- Empty/missing profiles.d directory
+- `.yml` extension support
+
+Profile package tests:
+- `ExtractIdentity` from x509 cert (CN, SANs)
+- `NewResolver` validation (single-field match, duplicate rule keys, undefined profile refs, undefined default)
+- `FilterFor` resolution (exact match, order-independence, fail-closed on no-match, fail-closed on ambiguous, default fallback)
+- `Filter.IsAllowed` (allow, deny, deny-takes-precedence, wildcard plugin, anchored regexps, exempt tools, `plugin_reload` NOT exempt)
+- `Validate` comprehensive checks (all error types, warnings)
+- Context helpers roundtrip
+
+---
+
+## Verification
+
+1. `make build` — compiles with new code
+2. `make test` — all existing + new tests pass
+3. `make lint` — no linter issues
+4. Manual: create `profiles.d/` with test profiles, run `wtmcpctl profile check`, `profile list`, `profile test`
+5. Manual: start wtmcp with `--profile code-review` (stdio) and verify tool filtering
