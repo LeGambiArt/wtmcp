@@ -19,16 +19,19 @@ import (
 
 // Pre-compiled regexps used across tool functions.
 var (
-	reDocURL        = regexp.MustCompile(`/document/d/([A-Za-z0-9_-]+)`)
-	reDocIDParam    = regexp.MustCompile(`[?&]id=([A-Za-z0-9_-]+)`)
-	reDocIDPlain    = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
-	reUnsafeChars   = regexp.MustCompile(`[<>:"/\\|?*]`)
-	reDocsURL       = regexp.MustCompile(`https?://docs\.google\.com/document/[\w\-/\?=&#%.]+`)
-	reOrderedList   = regexp.MustCompile(`^(\s*)\d+\.\s+(.+)$`)
-	reUnorderedList = regexp.MustCompile(`^(\s*)([-*+])\s+(.+)$`)
-	reDateChip      = regexp.MustCompile(`@date\((\d{4}-\d{2}-\d{2})\)`)
-	rePersonChip    = regexp.MustCompile(`@\(([^)]+)\)`)
-	reLinkInline    = regexp.MustCompile(`\[([^\]]+)\]\(((?:[^\s()]*(?:\([^\s()]*\))?)*)\)`)
+	reDocURL                = regexp.MustCompile(`/document/d/([A-Za-z0-9_-]+)`)
+	reDocIDParam            = regexp.MustCompile(`[?&]id=([A-Za-z0-9_-]+)`)
+	reDocIDPlain            = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+	reUnsafeChars           = regexp.MustCompile(`[<>:"/\\|?*]`)
+	reDocsURL               = regexp.MustCompile(`https?://docs\.google\.com/document/[\w\-/\?=&#%.]+`)
+	reOrderedList           = regexp.MustCompile(`^(\s*)\d+\.\s+(.+)$`)
+	reUnorderedList         = regexp.MustCompile(`^(\s*)([-*+])\s+(.+)$`)
+	reOrderedContinuation   = regexp.MustCompile(`^(\s*)(\d+\.)(\s+)(.+)$`)
+	reUnorderedContinuation = regexp.MustCompile(`^(\s*)([-*+])(\s+)(.+)$`)
+	reEmptyListMarker       = regexp.MustCompile(`^(?:\d+\.|[-*+])$`)
+	reDateChip              = regexp.MustCompile(`@date\((\d{4}-\d{2}-\d{2})\)`)
+	rePersonChip            = regexp.MustCompile(`@\(([^)]+)\)`)
+	reLinkInline            = regexp.MustCompile(`\[([^\]]+)\]\(((?:[^\s()]*(?:\([^\s()]*\))?)*)\)`)
 	// Table detection patterns
 	reTableRow       = regexp.MustCompile(`^\s*\|(.+\|)+\s*$`)
 	reTableSeparator = regexp.MustCompile(`^\s*\|[\s\-:]*\-[\s\-:]*(\|[\s\-:]*\-[\s\-:]*)*\|\s*$`)
@@ -844,7 +847,7 @@ func parseMarkdown(markdown string) []markdownSegment {
 	markdown = strings.ReplaceAll(markdown, "\r", "\n")
 
 	var segments []markdownSegment
-	lines := strings.Split(markdown, "\n")
+	lines := joinListContinuations(strings.Split(markdown, "\n"))
 
 	lastWasHeading := false
 	nextHeadingLineID := 1
@@ -1084,6 +1087,87 @@ func parseMarkdown(markdown string) []markdownSegment {
 	}
 
 	return segments
+}
+
+// joinListContinuations joins the space-indented hard wraps emitted by the
+// source Markdown shape. Other continuation forms retain their existing
+// parsing behavior.
+func joinListContinuations(lines []string) []string {
+	joined := make([]string, 0, len(lines))
+	continuationIndent := -1
+	inCodeBlock := false
+
+	for _, line := range lines {
+		if strings.HasPrefix(strings.TrimSpace(line), "```") {
+			joined = append(joined, line)
+			continuationIndent = -1
+			inCodeBlock = !inCodeBlock
+			continue
+		}
+		if inCodeBlock {
+			joined = append(joined, line)
+			continue
+		}
+
+		if continuationIndent >= 0 && isListContinuationLine(line, continuationIndent) {
+			joined[len(joined)-1] += " " + strings.TrimSpace(line)
+			continue
+		}
+
+		joined = append(joined, line)
+		continuationIndent = listContentIndent(line)
+	}
+
+	return joined
+}
+
+func listContentIndent(line string) int {
+	if ordered := reOrderedContinuation.FindStringSubmatch(line); ordered != nil {
+		return len(ordered[1]) + len(ordered[2]) + len(ordered[3])
+	}
+	if unordered := reUnorderedContinuation.FindStringSubmatch(line); unordered != nil {
+		return len(unordered[1]) + len(unordered[2]) + len(unordered[3])
+	}
+	return -1
+}
+
+func isListContinuationLine(line string, contentIndent int) bool {
+	if contentIndent < 0 || strings.TrimSpace(line) == "" {
+		return false
+	}
+	leadingWhitespace := len(line) - len(strings.TrimLeft(line, " \t"))
+	if leadingWhitespace != contentIndent || strings.HasPrefix(strings.TrimSpace(line), ">") {
+		return false
+	}
+	trimmed := strings.TrimSpace(line)
+	if isATXHeading(trimmed) {
+		return false
+	}
+	if reTableRow.MatchString(escapeTablePipes(line)) {
+		return false
+	}
+	if reOrderedList.MatchString(line) || reUnorderedList.MatchString(line) {
+		return false
+	}
+	if strings.HasPrefix(strings.TrimSpace(line), "```") {
+		return false
+	}
+	if reEmptyListMarker.MatchString(trimmed) {
+		return false
+	}
+	if len(trimmed) >= 3 &&
+		(strings.Trim(trimmed, "-") == "" || strings.Trim(trimmed, "*") == "" || strings.Trim(trimmed, "_") == "") {
+		return false
+	}
+	return leadingWhitespace < contentIndent+4
+}
+
+func isATXHeading(line string) bool {
+	level := 0
+	for level < len(line) && line[level] == '#' {
+		level++
+	}
+	return level > 0 && level <= 6 && level < len(line) && line[level] == ' '
 }
 
 // parseMarkdownTable parses a markdown table from buffered lines.
@@ -2012,6 +2096,10 @@ type deferredAnchor struct {
 	slug          string
 }
 
+func isValidListRange(startIndex, endIndex int64) bool {
+	return startIndex >= 1 && startIndex < endIndex
+}
+
 // convertMarkdownToRequests converts markdown segments to Google Docs API requests.
 // When stripTrailingNewline is true, the trailing \n is removed from the last
 // text segment to avoid an unwanted empty paragraph at the document end.
@@ -2643,8 +2731,14 @@ func convertMarkdownToRequests(segments []markdownSegment, startIndex int64, str
 		})
 	}
 
-	// Apply list formatting to collected ranges (do this after all text insertion)
-	for _, lr := range listRanges {
+	// Apply list formatting to collected ranges in reverse document order.
+	// CreateParagraphBullets removes the temporary nesting tabs, so formatting a
+	// later range first keeps earlier ranges' indices stable.
+	for i := len(listRanges) - 1; i >= 0; i-- {
+		lr := listRanges[i]
+		if !isValidListRange(lr.startIndex, lr.endIndex) {
+			continue
+		}
 		bulletPreset := "BULLET_DISC_CIRCLE_SQUARE"
 		if lr.isOrdered {
 			bulletPreset = "NUMBERED_DECIMAL_ALPHA_ROMAN"
