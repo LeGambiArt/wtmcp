@@ -518,6 +518,39 @@ services:
 	}
 }
 
+func TestManifestOptionalAuth(t *testing.T) {
+	dir := t.TempDir()
+	handlerPath := filepath.Join(dir, "handler")
+	if err := os.WriteFile(handlerPath, []byte("#!/bin/bash\n"), 0o755); err != nil { //nolint:gosec // test needs executable
+		t.Fatal(err)
+	}
+
+	manifest := `
+name: optional-auth
+version: "1.0.0"
+description: "Optional authentication test"
+handler: ./handler
+tools: []
+services:
+  auth:
+    type: bearer
+    optional: true
+    token: "${API_TOKEN}"
+`
+	path := filepath.Join(dir, "plugin.yaml")
+	if err := os.WriteFile(path, []byte(manifest), 0o644); err != nil { //nolint:gosec // test config file
+		t.Fatal(err)
+	}
+
+	m, err := LoadManifest(path)
+	if err != nil {
+		t.Fatalf("LoadManifest failed: %v", err)
+	}
+	if !m.Services.Auth.Optional {
+		t.Fatal("services.auth.optional = false, want true")
+	}
+}
+
 func TestProvidesAuth(t *testing.T) {
 	m := &Manifest{}
 	if m.ProvidesAuth() {

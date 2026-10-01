@@ -1261,6 +1261,33 @@ func TestResolveAuthRejectsMissingCredentialsFile(t *testing.T) {
 	}
 }
 
+func TestResolveAuthOptionalBearerAllowsAnonymousAccess(t *testing.T) {
+	cfg := config.DefaultConfig()
+	authReg := auth.NewRegistry()
+	cacheStore := cache.NewMemoryStore()
+	p := proxy.New(nil, cfg.Plugins.MaxMessageSize, cfg.HTTP.Timeout)
+	m := NewManager(authReg, p, cacheStore, cfg, nil, nil, "", "", "", config.EnvLoadOptions{}, "")
+	manifest := &Manifest{
+		Name: "public-api-plugin",
+		Services: ServiceConfig{
+			Auth: AuthServiceConfig{
+				Type:     "bearer",
+				Optional: true,
+			},
+			HTTP: HTTPServiceConfig{BaseURL: "https://example.com"},
+		},
+	}
+
+	if provider := m.resolveAuth("public-api-plugin", manifest); provider != nil {
+		t.Fatalf("resolveAuth returned %s, want anonymous access", provider.Name())
+	}
+
+	manifest.Services.Auth.Token = "configured-token"
+	if provider := m.resolveAuth("public-api-plugin", manifest); provider == nil || !provider.Available() {
+		t.Fatalf("resolveAuth returned %v, want configured auth provider", provider)
+	}
+}
+
 func TestResolveAuthIgnoresMissingUnusedPrivateKeyFile(t *testing.T) {
 	credDir := t.TempDir()
 	groupDir := filepath.Join(credDir, "missing-key")

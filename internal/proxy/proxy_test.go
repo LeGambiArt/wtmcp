@@ -1274,6 +1274,24 @@ func TestNoAuthWithoutProviderAllowsHTTP(t *testing.T) {
 	}
 }
 
+func TestConfiguredAuthWithoutProviderRequiresHTTPS(t *testing.T) {
+	p := newTestProxy(nil)
+	pa := testPluginAuth("http://api.example.com")
+	pa.AuthConfigured = true
+	p.RegisterPlugin("test", pa)
+
+	resp := p.Execute(context.Background(), "test", protocol.Message{
+		ID:     "req-http-missing-provider",
+		Type:   protocol.TypeHTTPRequest,
+		Method: "GET",
+		URL:    "http://api.example.com/public",
+	})
+
+	if resp.Error == nil || !strings.Contains(resp.Error.Message, "HTTPS required") {
+		t.Errorf("configured auth without a provider should still require HTTPS, got %v", resp.Error)
+	}
+}
+
 func TestHTTPSRequiredWithClientCert(t *testing.T) {
 	p := newTestProxy(nil)
 	pa := testPluginAuth("https://service.example.com")
@@ -2271,6 +2289,53 @@ func TestExecuteWriteAccessAllowsMutatingMethods(t *testing.T) {
 	})
 	if resp.Error != nil {
 		t.Errorf("write-access tool POST should be allowed, got error=%v", resp.Error)
+	}
+}
+
+func TestExecuteWriteAccessRequiresConfiguredAuthForMutation(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("unauthenticated mutation should not reach the server")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	p := newTestProxy(srv.Client())
+	pa := testPluginAuth(srv.URL)
+	pa.AuthConfigured = true
+	p.RegisterPlugin("test", pa)
+
+	ctx := WithToolAccess(context.Background(), "write")
+	resp := p.Execute(ctx, "test", protocol.Message{
+		ID: "wa-auth-1", Type: protocol.TypeHTTPRequest,
+		Method: "POST", Path: "/api/create",
+	})
+	if resp.Error == nil || resp.Error.Code != "auth_required" {
+		t.Fatalf("unauthenticated write should require auth, got error=%v", resp.Error)
+	}
+	if !strings.Contains(resp.Error.Message, "authentication is required") {
+		t.Errorf("error should explain that authentication is required: %v", resp.Error)
+	}
+}
+
+func TestExecuteWriteAccessAllowsAnonymousRead(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+
+	p := newTestProxy(srv.Client())
+	pa := testPluginAuth(srv.URL)
+	pa.AuthConfigured = true
+	p.RegisterPlugin("test", pa)
+
+	ctx := WithToolAccess(context.Background(), "write")
+	resp := p.Execute(ctx, "test", protocol.Message{
+		ID: "wa-auth-read-1", Type: protocol.TypeHTTPRequest,
+		Method: "GET", Path: "/api/read",
+	})
+	if resp.Error != nil {
+		t.Errorf("write tool should be able to make anonymous read requests, got error=%v", resp.Error)
 	}
 }
 

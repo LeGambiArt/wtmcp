@@ -13,9 +13,10 @@ import (
 
 // instance holds a named GitLab client.
 type instance struct {
-	Name   string
-	URL    string
-	Client *gogitlab.Client
+	Name          string
+	URL           string
+	Client        *gogitlab.Client
+	Authenticated bool
 }
 
 // instances maps instance names to their clients.
@@ -103,7 +104,7 @@ func setupMultiInstance(p *handler.Plugin, httpClient *http.Client, entries []mu
 		if err != nil {
 			return fmt.Errorf("instance %s: %w", e.Name, err)
 		}
-		instances[e.Name] = &instance{Name: e.Name, URL: e.URL, Client: client}
+		instances[e.Name] = &instance{Name: e.Name, URL: e.URL, Client: client, Authenticated: true}
 
 		if host := extractHost(e.URL); host != "" {
 			domains = append(domains, host)
@@ -140,7 +141,12 @@ func setupSingleInstance(p *handler.Plugin, httpClient *http.Client) error {
 	}
 
 	instances = map[string]*instance{
-		"default": {Name: "default", URL: gitlabURL, Client: client},
+		"default": {
+			Name:          "default",
+			URL:           gitlabURL,
+			Client:        client,
+			Authenticated: os.Getenv("GITLAB_TOKEN") != "",
+		},
 	}
 	defaultInstance = "default"
 
@@ -154,6 +160,25 @@ func setupSingleInstance(p *handler.Plugin, httpClient *http.Client) error {
 // resolveInstance returns the client for the given instance name.
 // If name is empty, returns the default (only works with single instance).
 func resolveInstance(name string) (*gogitlab.Client, error) {
+	inst, err := resolveInstanceConfig(name)
+	if err != nil {
+		return nil, err
+	}
+	return inst.Client, nil
+}
+
+func resolveAuthenticatedInstance(name string) (*gogitlab.Client, error) {
+	inst, err := resolveInstanceConfig(name)
+	if err != nil {
+		return nil, err
+	}
+	if !inst.Authenticated {
+		return nil, fmt.Errorf("authentication required for this GitLab operation; configure a token for instance %q", inst.Name)
+	}
+	return inst.Client, nil
+}
+
+func resolveInstanceConfig(name string) (*instance, error) {
 	if name == "" {
 		if defaultInstance == "" {
 			names := make([]string, 0, len(instances))
@@ -173,7 +198,7 @@ func resolveInstance(name string) (*gogitlab.Client, error) {
 		}
 		return nil, fmt.Errorf("unknown instance %q (available: %s)", name, strings.Join(names, ", "))
 	}
-	return inst.Client, nil
+	return inst, nil
 }
 
 // extractHost returns the hostname from a URL string.

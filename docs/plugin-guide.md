@@ -927,6 +927,20 @@ in README.md for setup details.
 Without `credential_group`, all `${VAR}` references resolve to empty
 strings and no credentials are passed to the handler.
 
+Authentication can be made optional for APIs that expose public data:
+
+```yaml
+services:
+  auth:
+    type: bearer
+    optional: true
+    token: "${API_TOKEN}"
+```
+
+With `optional: true`, unavailable credentials are treated as an expected
+anonymous-access fallback and the core sends no authentication header.
+Manifests that omit the field retain their existing behavior.
+
 ### env: list
 
 The `env:` field lists which vars from the credential group's env.d

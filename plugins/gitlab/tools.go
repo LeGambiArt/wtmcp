@@ -609,7 +609,7 @@ func toolMyIssues(params, _ json.RawMessage) (any, error) {
 		p.Sort = "desc"
 	}
 
-	client, err := resolveInstance(p.Instance)
+	client, err := resolveAuthenticatedInstance(p.Instance)
 	if err != nil {
 		return nil, err
 	}
@@ -674,7 +674,7 @@ func toolGetTodos(params, _ json.RawMessage) (any, error) {
 		p.Page = 1
 	}
 
-	client, err := resolveInstance(p.Instance)
+	client, err := resolveAuthenticatedInstance(p.Instance)
 	if err != nil {
 		return nil, err
 	}
@@ -799,7 +799,11 @@ func toolListMergeRequests(params, _ json.RawMessage) (any, error) {
 		p.Sort = "desc"
 	}
 
-	client, err := resolveInstance(p.Instance)
+	resolve := resolveInstance
+	if p.Scope == "assigned_to_me" || p.Scope == "created_by_me" {
+		resolve = resolveAuthenticatedInstance
+	}
+	client, err := resolve(p.Instance)
 	if err != nil {
 		return nil, err
 	}
