@@ -439,7 +439,7 @@ func TestIntegration_OAuthTokenMigration_PlaintextToEncrypted(t *testing.T) {
 	}
 
 	// Step 2: Migrate.
-	if err := te.MigrateUnencryptedToken(group, plugin); err != nil {
+	if err := te.MigrateUnencryptedToken(group, plugin, "token-"+plugin+".json"); err != nil {
 		t.Fatalf("MigrateUnencryptedToken: %v", err)
 	}
 	t.Cleanup(func() {
@@ -471,7 +471,7 @@ func TestIntegration_OAuthTokenMigration_PlaintextToEncrypted(t *testing.T) {
 	}
 
 	// Step 6: Subsequent migration should be a no-op.
-	if err := te.MigrateUnencryptedToken(group, plugin); err != nil {
+	if err := te.MigrateUnencryptedToken(group, plugin, "token-"+plugin+".json"); err != nil {
 		t.Fatalf("second MigrateUnencryptedToken should be no-op: %v", err)
 	}
 }

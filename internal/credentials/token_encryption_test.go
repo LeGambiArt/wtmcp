@@ -215,7 +215,7 @@ func TestTokenEncryption_MigrateUnencryptedToken(t *testing.T) {
 	}
 
 	// Migrate.
-	if err := te.MigrateUnencryptedToken(group, plugin); err != nil {
+	if err := te.MigrateUnencryptedToken(group, plugin, "token-"+plugin+".json"); err != nil {
 		t.Fatalf("MigrateUnencryptedToken: %v", err)
 	}
 
@@ -255,10 +255,60 @@ func TestTokenEncryption_MigrateAlreadyMigrated(t *testing.T) {
 	te, _ := newTestTokenEncryption(t)
 
 	// No plaintext file exists. Should be a no-op.
-	err := te.MigrateUnencryptedToken("nonexistent-group", "nonexistent-plugin")
+	err := te.MigrateUnencryptedToken("nonexistent-group", "nonexistent-plugin", "token-nonexistent-plugin.json")
 	if err != nil {
 		t.Errorf("MigrateUnencryptedToken for non-existent file: %v", err)
 	}
+}
+
+func TestTokenEncryption_MigrateUsesTokenFile(t *testing.T) {
+	te, tokensDir := newTestTokenEncryption(t)
+
+	group := "google"
+	plugin := "google-gmail"
+	tokenFile := "token-gmail.json" //nolint:gosec // test fixture filename, not a credential
+
+	groupDir := filepath.Join(tokensDir, group)
+	if err := os.MkdirAll(groupDir, 0o700); err != nil {
+		t.Fatalf("create group dir: %v", err)
+	}
+
+	plaintextToken := oauth2.Token{
+		AccessToken:  "access-tok",
+		RefreshToken: "refresh-tok",
+		TokenType:    "Bearer",
+	}
+	data, _ := json.Marshal(plaintextToken) //nolint:gosec // test fixture
+	plaintextPath := filepath.Join(groupDir, tokenFile)
+	if err := os.WriteFile(plaintextPath, data, 0o600); err != nil {
+		t.Fatalf("write plaintext: %v", err)
+	}
+
+	wrongPath := filepath.Join(groupDir, "token-"+plugin+".json")
+	if _, err := os.Stat(wrongPath); !os.IsNotExist(err) {
+		t.Fatal("wrong-name file should not exist")
+	}
+
+	if err := te.MigrateUnencryptedToken(group, plugin, tokenFile); err != nil {
+		t.Fatalf("MigrateUnencryptedToken: %v", err)
+	}
+
+	if _, err := os.Stat(plaintextPath); !os.IsNotExist(err) {
+		t.Error("plaintext file should be deleted after migration")
+	}
+
+	loaded, err := te.LoadToken(group, plugin)
+	if err != nil {
+		t.Fatalf("LoadToken: %v", err)
+	}
+	if loaded.RefreshToken != "refresh-tok" {
+		t.Errorf("RefreshToken = %q, want %q", loaded.RefreshToken, "refresh-tok")
+	}
+
+	t.Cleanup(func() {
+		_ = te.keyringStore.Delete(group, "__encryption_key")
+		_ = te.keyringStore.Delete(group, "__oauth_access_"+plugin)
+	})
 }
 
 // --- Test: Error - Missing encryption key on LoadToken ---
@@ -785,4 +835,74 @@ func TestTokenEncryption_AccessTokenInKeyring(t *testing.T) {
 		_ = te.keyringStore.Delete(group, "__encryption_key")
 		_ = te.keyringStore.Delete(group, accessKeyName)
 	})
+}
+
+func TestTokenPathCLIServerAgreement(t *testing.T) {
+	workdir := t.TempDir()
+	credRoot := filepath.Join(workdir, "credentials")
+	if err := os.MkdirAll(filepath.Join(credRoot, "google"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	store := NewKeyringStore()
+	te := NewTokenEncryption(store, nil, credRoot)
+
+	token := &oauth2.Token{
+		AccessToken:  "cli-access",
+		RefreshToken: "cli-refresh",
+		TokenType:    "Bearer",
+	}
+	if err := te.SaveToken("google", "google-gmail", token); err != nil {
+		t.Fatalf("SaveToken: %v", err)
+	}
+
+	encPath := filepath.Join(credRoot, "google", "token-google-gmail.json.enc")
+	if _, err := os.Stat(encPath); err != nil {
+		t.Fatalf("encrypted token not at expected path %s: %v", encPath, err)
+	}
+
+	loaded, err := te.LoadToken("google", "google-gmail")
+	if err != nil {
+		t.Fatalf("LoadToken: %v", err)
+	}
+	if loaded.RefreshToken != "cli-refresh" {
+		t.Errorf("RefreshToken = %q, want %q", loaded.RefreshToken, "cli-refresh")
+	}
+	if loaded.AccessToken != "cli-access" {
+		t.Errorf("AccessToken = %q, want %q", loaded.AccessToken, "cli-access")
+	}
+}
+
+func TestMigrateRejectsTraversalTokenFile(t *testing.T) {
+	te, tokensDir := newTestTokenEncryption(t)
+
+	group := "google"
+	groupDir := filepath.Join(tokensDir, group)
+	if err := os.MkdirAll(groupDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	traversals := []string{
+		"../../other-group/token.json",
+		"../token.json",
+	}
+	for _, tf := range traversals {
+		t.Run(tf, func(t *testing.T) {
+			err := te.MigrateUnencryptedToken(group, "test-plugin", tf)
+			if err == nil {
+				t.Errorf("MigrateUnencryptedToken(%q) should have returned an error", tf)
+			}
+		})
+	}
+
+	err := te.MigrateUnencryptedToken(group, "test-plugin", "token-test.json")
+	if err != nil && !os.IsNotExist(err) && !errors.Is(err, os.ErrNotExist) {
+		if !isNoPlaintextErr(err) {
+			t.Errorf("plain filename should not be rejected: %v", err)
+		}
+	}
+}
+
+func isNoPlaintextErr(err error) bool {
+	return err == nil || os.IsNotExist(err) || errors.Is(err, os.ErrNotExist)
 }

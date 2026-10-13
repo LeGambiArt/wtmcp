@@ -1549,3 +1549,52 @@ func TestValidateArrayWithItemsUnchanged(t *testing.T) {
 		t.Errorf("Items.Type = %q, want \"integer\" (should not be overwritten)", param.Items.Type)
 	}
 }
+
+func TestValidate_TokenFileTraversal(t *testing.T) {
+	base := func(tokenFile string) *Manifest {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "handler"), []byte("#!/bin/bash\n"), 0o755); err != nil { //nolint:gosec // test needs executable
+			t.Fatal(err)
+		}
+		return &Manifest{
+			Name:      "test",
+			Handler:   "handler",
+			Execution: "oneshot",
+			Dir:       dir,
+			Tools:     []ToolDef{{Name: "t", Description: "d"}},
+			Services: ServiceConfig{
+				Auth: AuthServiceConfig{
+					Type:      "oauth2",
+					TokenFile: tokenFile,
+				},
+			},
+		}
+	}
+
+	rejected := []string{
+		"../token.json",
+		"../../other-group/token.json",
+		"foo/bar.json",
+		"/absolute/path.json",
+	}
+	for _, tf := range rejected {
+		t.Run("reject_"+tf, func(t *testing.T) {
+			if err := base(tf).Validate(); err == nil {
+				t.Errorf("Validate() should reject token_file=%q", tf)
+			}
+		})
+	}
+
+	accepted := []string{
+		"",
+		"token-gmail.json",
+		"token-test.json",
+	}
+	for _, tf := range accepted {
+		t.Run("accept_"+tf, func(t *testing.T) {
+			if err := base(tf).Validate(); err != nil {
+				t.Errorf("Validate() should accept token_file=%q: %v", tf, err)
+			}
+		})
+	}
+}

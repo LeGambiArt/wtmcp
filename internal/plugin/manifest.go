@@ -523,6 +523,14 @@ func (m *Manifest) Validate() error {
 		return fmt.Errorf("client_cert (mTLS) and services.auth cannot both be set")
 	}
 
+	// Validate token_file — must be a plain filename (no path separators
+	// or traversal). Empty is allowed (most plugins don't use it).
+	if tf := m.Services.Auth.TokenFile; tf != "" {
+		if filepath.Base(tf) != tf {
+			return fmt.Errorf("token_file must be a plain filename, got %q", tf)
+		}
+	}
+
 	// allow_private_ips requires domain restrictions as defense in depth.
 	// Domains come from either explicit allowed_domains or the base_url
 	// hostname (auto-added at load time by manager.go).

@@ -26,6 +26,7 @@ type OAuth2Options struct {
 	TokenEncryption *credentials.TokenEncryption
 	CredentialGroup string
 	PluginName      string
+	TokenFileName   string // manifest token_file (e.g., "token-gmail.json")
 }
 
 // OAuth2Provider manages OAuth2 tokens with automatic refresh.
@@ -46,6 +47,7 @@ type OAuth2Provider struct {
 	tokenEncryption *credentials.TokenEncryption
 	credentialGroup string
 	pluginName      string
+	tokenFileName   string // manifest token_file for migration
 }
 
 // NewOAuth2Provider creates an OAuth2 auth provider.
@@ -74,6 +76,7 @@ func NewOAuth2Provider(tokenFile, credentialsFile string, scopes []string, crede
 		p.tokenEncryption = opts[0].TokenEncryption
 		p.credentialGroup = opts[0].CredentialGroup
 		p.pluginName = opts[0].PluginName
+		p.tokenFileName = opts[0].TokenFileName
 	}
 
 	// Load OAuth2 client config from credentials file
@@ -92,7 +95,7 @@ func NewOAuth2Provider(tokenFile, credentialsFile string, scopes []string, crede
 		token, err := p.tokenEncryption.LoadToken(p.credentialGroup, p.pluginName)
 		if err != nil {
 			// Try auto-migration from plaintext.
-			migErr := p.tokenEncryption.MigrateUnencryptedToken(p.credentialGroup, p.pluginName)
+			migErr := p.tokenEncryption.MigrateUnencryptedToken(p.credentialGroup, p.pluginName, p.tokenFileName)
 			if migErr == nil {
 				// Retry encrypted load after migration.
 				var retryErr error
@@ -136,6 +139,7 @@ func newOAuth2ProviderFromSecureFile(tokenFile string, credentialsFile *securefi
 		p.tokenEncryption = opts[0].TokenEncryption
 		p.credentialGroup = opts[0].CredentialGroup
 		p.pluginName = opts[0].PluginName
+		p.tokenFileName = opts[0].TokenFileName
 	}
 	config, err := loadOAuth2ConfigFromSecureFile(credentialsFile, scopes)
 	if err != nil {
@@ -212,13 +216,11 @@ func (o *OAuth2Provider) refreshLocked(ctx context.Context) error {
 	o.token = newToken
 
 	// Save the refreshed token — encrypted if available, plaintext otherwise.
+	// When encryption is configured, never fall back to plaintext — a
+	// transient failure should not recreate a plaintext token file.
 	if o.tokenEncryption != nil && o.credentialGroup != "" {
 		if err := o.tokenEncryption.SaveToken(o.credentialGroup, o.pluginName, newToken); err != nil {
-			log.Printf("oauth2: failed to save encrypted token: %v", err)
-			// Fall back to plaintext save.
-			if err := saveToken(o.tokenFile, newToken); err != nil {
-				log.Printf("oauth2: failed to save refreshed token: %v", err)
-			}
+			log.Printf("oauth2: failed to save encrypted token (token kept in memory, will retry on next refresh): %v", err)
 		}
 	} else {
 		if err := saveToken(o.tokenFile, newToken); err != nil {
