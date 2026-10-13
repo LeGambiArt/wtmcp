@@ -367,6 +367,17 @@ func encryptAndRemovePlaintext(credDir string, plugin *OAuthPlugin, token *oauth
 		return fmt.Errorf("encrypt token: %w", err)
 	}
 
+	loaded, loadErr := te.LoadToken(plugin.CredentialGroup, plugin.Name)
+	if loadErr != nil {
+		return fmt.Errorf("round-trip verification failed: %w", loadErr)
+	}
+	if loaded.RefreshToken != token.RefreshToken {
+		return fmt.Errorf("round-trip verification failed: refresh token mismatch")
+	}
+	if token.AccessToken != "" && loaded.AccessToken != token.AccessToken {
+		return fmt.Errorf("round-trip verification failed: access token mismatch")
+	}
+
 	plaintext := filepath.Join(credDir, plugin.TokenFile)
 	if err := os.Remove(plaintext); err != nil && !os.IsNotExist(err) {
 		log.Printf("WARNING: encrypted token saved but could not remove plaintext: %v", err)

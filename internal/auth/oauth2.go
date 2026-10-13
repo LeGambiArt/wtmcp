@@ -147,9 +147,14 @@ func newOAuth2ProviderFromSecureFile(tokenFile string, credentialsFile *securefi
 	}
 	p.config = config
 	if p.tokenEncryption != nil && p.credentialGroup != "" {
-		if token, loadErr := p.tokenEncryption.LoadToken(p.credentialGroup, p.pluginName); loadErr == nil {
-			p.token = token
+		token, err := p.tokenEncryption.LoadToken(p.credentialGroup, p.pluginName)
+		if err != nil {
+			migErr := p.tokenEncryption.MigrateUnencryptedToken(p.credentialGroup, p.pluginName, p.tokenFileName)
+			if migErr == nil {
+				token, _ = p.tokenEncryption.LoadToken(p.credentialGroup, p.pluginName)
+			}
 		}
+		p.token = token
 	}
 	if p.token == nil {
 		if token, loadErr := loadToken(p.tokenFile); loadErr == nil {
