@@ -766,3 +766,48 @@ func TestReadLoopRejectsCacheDelFlushWithoutToolContext(t *testing.T) {
 		})
 	}
 }
+
+func TestReadLoopRejectsCacheWriteInDryRunContext(t *testing.T) {
+	cacheSet := protocol.Message{ID: "cs-dr-1", Type: protocol.TypeCacheSet, Key: "k", Value: json.RawMessage(`"v"`), ParentID: "call-dr"}
+	toolResult := protocol.Message{ID: "req-1", Type: protocol.TypeToolResult, Result: json.RawMessage(`{}`)}
+
+	var lines []string
+	for _, msg := range []protocol.Message{cacheSet, toolResult} {
+		data, _ := json.Marshal(msg)
+		lines = append(lines, string(data))
+	}
+	pluginStdout := strings.NewReader(strings.Join(lines, "\n") + "\n")
+
+	var pluginStdin bytes.Buffer
+	tr := NewTransport(&pluginStdin, pluginStdout, strings.NewReader(""), 1024*1024)
+
+	dryRunCtx := proxy.WithDryRun(proxy.WithToolAccess(context.Background(), "read"), true)
+	tr.SetToolContext("call-dr", &dryRunCtx)
+
+	cacheCalled := false
+	handler := &mockServiceHandler{
+		cacheHandler: func(_ context.Context, _ string, _ protocol.Message) protocol.Message {
+			cacheCalled = true
+			return protocol.Message{}
+		},
+	}
+
+	ch := make(chan protocol.Message, 1)
+	tr.pending.Store("req-1", ch)
+
+	go tr.ReadLoop("test-plugin", 1, handler)
+
+	select {
+	case <-ch:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for tool_result")
+	}
+
+	if cacheCalled {
+		t.Error("HandleCache should NOT be called for cache_set in dry-run context")
+	}
+	output := pluginStdin.String()
+	if !strings.Contains(output, "dry-run") {
+		t.Errorf("error should mention dry-run context, got: %s", output)
+	}
+}

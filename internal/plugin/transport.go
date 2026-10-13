@@ -197,6 +197,13 @@ func (t *Transport) ReadLoop(pluginName string, concurrency int, serviceHandler 
 				}
 				continue
 			}
+			if proxy.IsDryRun(ctx) {
+				resp := transportCacheError(msg.ID, msg.Type, "cache writes not allowed during dry-run")
+				if err := t.Send(resp); err != nil {
+					log.Printf("[%s] failed to send cache error: %v", pluginName, err)
+				}
+				continue
+			}
 			if concurrency <= 1 {
 				resp := serviceHandler.HandleCache(ctx, pluginName, msg)
 				if err := t.Send(resp); err != nil {

@@ -39,6 +39,21 @@ func LocalWriteFromContext(ctx context.Context) bool {
 	return v
 }
 
+type dryRunKey struct{}
+
+// WithDryRun marks the context as a dry-run preview call. Cache
+// writes are blocked for dry-run calls but allowed for normal
+// read-only tools that use caching.
+func WithDryRun(ctx context.Context, v bool) context.Context {
+	return context.WithValue(ctx, dryRunKey{}, v)
+}
+
+// IsDryRun returns true if the context is marked as a dry-run call.
+func IsDryRun(ctx context.Context) bool {
+	v, _ := ctx.Value(dryRunKey{}).(bool)
+	return v
+}
+
 var readOnlyMethods = map[string]bool{
 	http.MethodGet:     true,
 	http.MethodHead:    true,
