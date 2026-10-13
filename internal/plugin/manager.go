@@ -832,7 +832,21 @@ func (m *Manager) preparePlugin(ctx context.Context, name string) (*Handle, erro
 	handle.resolvedConfig = cfgJSON
 	handle.sessionDir = m.sessionDir
 	if m.sessionDir != "" {
-		handle.outputDir = filepath.Join(m.sessionDir, dataDir, name)
+		if err := fileio.ValidateOutputDir(m.sessionDir, dataDir, name); err != nil {
+			log.Printf("WARNING: [%s] output directory rejected: %v — file I/O disabled for this plugin", name, err)
+			// Strip _output_dir from the resolved config so plugins
+			// cannot use a rejected symlinked path as a read root.
+			var cfgMap map[string]any
+			if json.Unmarshal(cfgJSON, &cfgMap) == nil {
+				delete(cfgMap, "_output_dir")
+				if patched, err := json.Marshal(cfgMap); err == nil {
+					cfgJSON = patched
+					handle.resolvedConfig = cfgJSON
+				}
+			}
+		} else {
+			handle.outputDir = filepath.Join(m.sessionDir, dataDir, name)
+		}
 	}
 	if m.sbMgr != nil {
 		handle.SetSandbox(m.sbMgr)

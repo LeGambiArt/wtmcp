@@ -18,10 +18,13 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode"
 	"unicode/utf8"
 )
+
+var rootAtomicCounter atomic.Int64
 
 // WriteRequest holds the parameters for a file write operation.
 type WriteRequest struct {
@@ -79,6 +82,64 @@ var (
 	TestHookBeforeSourceCleanup func() // fires before os.Remove of source file
 )
 
+// ValidateOutputDir checks that neither the data directory nor the
+// plugin subdirectory component is a symlink. Returns an error if
+// either component is a symlink (including dangling). Non-existent
+// components are allowed (they will be created as directories).
+func ValidateOutputDir(sessionDir, dataDir, pluginName string) error {
+	dataDirPath := filepath.Join(sessionDir, dataDir)
+	pluginDirPath := filepath.Join(dataDirPath, pluginName)
+	for _, p := range []string{dataDirPath, pluginDirPath} {
+		info, err := os.Lstat(p)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return fmt.Errorf("cannot stat %q: %w", filepath.Base(p), err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("%q is a symlink", filepath.Base(p))
+		}
+	}
+	return nil
+}
+
+// resolveBaseNoSymlinks resolves an outputDir path, rejecting symlinks
+// at both the parent (.wtmcp-data) and the leaf (<plugin>) components.
+// System-level symlinks (/var → /private/var) in the session root are
+// still followed via EvalSymlinks.
+func resolveBaseNoSymlinks(outputDir string) (string, error) {
+	cleaned := filepath.Clean(outputDir)
+
+	// Check both the parent (.wtmcp-data) and the leaf (<plugin>)
+	// for symlinks, not just the leaf.
+	for _, p := range []string{filepath.Dir(cleaned), cleaned} {
+		info, err := os.Lstat(p)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return "", err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return "", fmt.Errorf("output directory component %q is a symlink", filepath.Base(p))
+		}
+	}
+
+	info, err := os.Lstat(cleaned)
+	if err != nil {
+		return "", err
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("output directory is not a directory")
+	}
+	resolved, err := filepath.EvalSymlinks(cleaned)
+	if err != nil {
+		return "", err
+	}
+	return resolved, nil
+}
+
 // WriteFile writes content to a file under outputDir with path
 // confinement, atomic writes, and permission enforcement.
 func WriteFile(cfg Config, req WriteRequest) (*WriteResult, error) {
@@ -106,7 +167,7 @@ func WriteFile(cfg Config, req WriteRequest) (*WriteResult, error) {
 	// Validate target path and permissions FIRST — before reading
 	// source content. This ensures source_path files are not deleted
 	// if path validation fails (preserved for retry).
-	finalPath, err := resolvePath(cfg.OutputDir, req.Path, req.Mkdir)
+	finalPath, resolvedBase, err := resolvePath(cfg.OutputDir, req.Path, req.Mkdir)
 	if err != nil {
 		return nil, err
 	}
@@ -131,8 +192,22 @@ func WriteFile(cfg Config, req WriteRequest) (*WriteResult, error) {
 		}
 	}
 
-	// Atomic write.
-	if err := atomicWrite(finalPath, data, mode); err != nil {
+	// Atomic write using os.Root for descriptor-relative operations.
+	// This anchors the write to the validated output directory,
+	// preventing TOCTOU attacks between the component walk and the
+	// actual file open (a directory swapped for a symlink after
+	// validation would not affect the already-opened descriptor).
+	root, err := os.OpenRoot(resolvedBase)
+	if err != nil {
+		return nil, fmt.Errorf("open output root: %w", err)
+	}
+	defer root.Close() //nolint:errcheck
+
+	relPath, err := filepath.Rel(resolvedBase, finalPath)
+	if err != nil {
+		return nil, fmt.Errorf("compute relative path: %w", err)
+	}
+	if err := rootAtomicWrite(root, relPath, data, mode); err != nil {
 		return nil, fmt.Errorf("write: %w", err)
 	}
 
@@ -160,15 +235,32 @@ func ReadFile(cfg Config, req ReadRequest) (*ReadResult, error) {
 		sizeLimit = defaultSizeLimit
 	}
 
-	// Validate and resolve the path (read-specific: full EvalSymlinks
-	// on the target since it must exist).
+	// Validate and resolve the path (read-specific: full component
+	// walk on the target since it must exist).
 	finalPath, err := resolveReadPath(cfg.OutputDir, req.Path)
 	if err != nil {
 		return nil, err
 	}
 
+	// Open the output directory as os.Root for descriptor-relative
+	// reads, preventing TOCTOU between the component walk and open.
+	readBase, baseErr := resolveBaseNoSymlinks(cfg.OutputDir)
+	if baseErr != nil {
+		return nil, fmt.Errorf("resolve output directory: %w", baseErr)
+	}
+	root, rootErr := os.OpenRoot(readBase)
+	if rootErr != nil {
+		return nil, fmt.Errorf("open output root: %w", rootErr)
+	}
+	defer root.Close() //nolint:errcheck
+
+	relPath, relErr := filepath.Rel(readBase, finalPath)
+	if relErr != nil {
+		return nil, fmt.Errorf("compute relative path: %w", relErr)
+	}
+
 	// Check size before reading to prevent unbounded allocation.
-	info, err := os.Stat(finalPath)
+	info, err := root.Lstat(relPath)
 	if err != nil {
 		return nil, fmt.Errorf("stat: %w", err)
 	}
@@ -177,7 +269,7 @@ func ReadFile(cfg Config, req ReadRequest) (*ReadResult, error) {
 	}
 
 	// Read the file with bounded size (defense against concurrent growth).
-	f, err := os.Open(finalPath) //nolint:gosec // path validated by resolveReadPath
+	f, err := root.Open(relPath)
 	if err != nil {
 		return nil, fmt.Errorf("read: %w", err)
 	}
@@ -212,62 +304,62 @@ func ReadFile(cfg Config, req ReadRequest) (*ReadResult, error) {
 }
 
 // resolvePath validates and resolves a relative path under outputDir.
-// This implements the 10-step path validation algorithm from the plan.
-func resolvePath(outputDir, path string, mkdir *bool) (string, error) {
+// Returns the absolute final path and the resolved base directory
+// (for opening as os.Root).
+func resolvePath(outputDir, path string, mkdir *bool) (string, string, error) {
 	// Step 0: Reject empty and degenerate paths.
 	if path == "" {
-		return "", fmt.Errorf("path is required")
+		return "", "", fmt.Errorf("path is required")
 	}
 	if path == "." || path == ".." {
-		return "", fmt.Errorf("invalid path")
+		return "", "", fmt.Errorf("invalid path")
 	}
 
 	// Step 1: Reject null bytes.
 	if strings.ContainsRune(path, 0) {
-		return "", fmt.Errorf("path contains null byte")
+		return "", "", fmt.Errorf("path contains null byte")
 	}
 
 	// Step 2: Reject absolute paths and paths that clean to ".".
 	if filepath.IsAbs(path) {
-		return "", fmt.Errorf("path escapes allowed directory")
+		return "", "", fmt.Errorf("path escapes allowed directory")
 	}
 	if filepath.Clean(path) == "." {
-		return "", fmt.Errorf("invalid path")
+		return "", "", fmt.Errorf("invalid path")
 	}
 
-	// Step 4: Resolve outputDir base. If it doesn't exist, create it
-	// lazily (no eager creation at startup since Phase 5).
-	resolvedBase, err := filepath.EvalSymlinks(outputDir)
+	// Step 4: Resolve outputDir base without following symlinks.
+	// If it doesn't exist, create it lazily.
+	resolvedBase, err := resolveBaseNoSymlinks(outputDir)
 	if err != nil && os.IsNotExist(err) {
 		if mkErr := os.MkdirAll(outputDir, dirMode); mkErr != nil {
-			return "", fmt.Errorf("create output directory failed")
+			return "", "", fmt.Errorf("create output directory failed")
 		}
-		resolvedBase, err = filepath.EvalSymlinks(outputDir)
+		resolvedBase, err = resolveBaseNoSymlinks(outputDir)
 	}
 	if err != nil {
-		return "", fmt.Errorf("resolve output directory failed")
+		return "", "", fmt.Errorf("resolve output directory failed: %w", err)
 	}
 
-	// Step 3: Clean and join using resolved base — makes the function
-	// self-contained regardless of whether the caller pre-resolved.
+	// Step 3: Clean and join using resolved base.
 	cleaned := filepath.Clean(filepath.Join(resolvedBase, path))
 
 	// Step 5: Lexical prefix check (pre-mkdir).
 	if !strings.HasPrefix(cleaned, resolvedBase+string(os.PathSeparator)) {
-		return "", fmt.Errorf("path escapes allowed directory")
+		return "", "", fmt.Errorf("path escapes allowed directory")
 	}
 
 	// Step 6: Sanitize final filename component.
 	filename := filepath.Base(cleaned)
 	if err := validateFilename(filename); err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	// Step 7: Create parent directories (if mkdir enabled).
 	parentDir := filepath.Dir(cleaned)
 	if mkdir == nil || *mkdir {
 		if err := os.MkdirAll(parentDir, dirMode); err != nil {
-			return "", fmt.Errorf("create parent directory failed")
+			return "", "", fmt.Errorf("create parent directory failed")
 		}
 	}
 
@@ -275,17 +367,30 @@ func resolvePath(outputDir, path string, mkdir *bool) (string, error) {
 		TestHookAfterMkdir()
 	}
 
-	// Step 8: Post-mkdir symlink re-check.
-	resolvedParent, err := filepath.EvalSymlinks(parentDir)
-	if err != nil {
-		return "", fmt.Errorf("resolve parent directory failed")
+	// Step 8: Post-mkdir symlink re-check — walk each component
+	// between resolvedBase and parentDir to detect symlinks injected
+	// between the pre-mkdir check and now (TOCTOU second layer).
+	rel, err := filepath.Rel(resolvedBase, parentDir)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return "", "", fmt.Errorf("path escapes allowed directory")
 	}
-	if !strings.HasPrefix(resolvedParent, resolvedBase+string(os.PathSeparator)) && resolvedParent != resolvedBase {
-		return "", fmt.Errorf("path escapes allowed directory")
+	walkPath := resolvedBase
+	for _, comp := range strings.Split(rel, string(os.PathSeparator)) {
+		if comp == "." {
+			continue
+		}
+		walkPath = filepath.Join(walkPath, comp)
+		info, lErr := os.Lstat(walkPath)
+		if lErr != nil {
+			return "", "", fmt.Errorf("resolve parent directory failed")
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return "", "", fmt.Errorf("path escapes allowed directory")
+		}
 	}
 
 	// Step 9: Construct final path.
-	return filepath.Join(resolvedParent, filename), nil
+	return filepath.Join(parentDir, filename), resolvedBase, nil
 }
 
 // resolveReadPath validates a path for reading. The target file must
@@ -308,42 +413,49 @@ func resolveReadPath(outputDir, path string) (string, error) {
 		return "", fmt.Errorf("invalid path")
 	}
 
-	// Resolve base. If outputDir doesn't exist, no files can exist
-	// there — return "file not found" rather than a confusing
-	// resolution error.
-	resolvedBase, err := filepath.EvalSymlinks(outputDir)
+	// Resolve base without following symlinks.
+	resolvedBase, err := resolveBaseNoSymlinks(outputDir)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return "", fmt.Errorf("file not found")
 		}
-		return "", fmt.Errorf("resolve output directory failed")
+		return "", fmt.Errorf("resolve output directory failed: %w", err)
 	}
 	cleaned := filepath.Clean(filepath.Join(resolvedBase, path))
 
-	// Resolve the full path (must exist for reads).
-	resolved, err := filepath.EvalSymlinks(cleaned)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return "", fmt.Errorf("file not found")
-		}
-		return "", fmt.Errorf("resolve path failed")
-	}
-
-	// Prefix check on the fully resolved path.
-	if !strings.HasPrefix(resolved, resolvedBase+string(os.PathSeparator)) {
+	// Prefix check before stat.
+	if !strings.HasPrefix(cleaned, resolvedBase+string(os.PathSeparator)) {
 		return "", fmt.Errorf("path escapes allowed directory")
 	}
 
-	// Verify it is a regular file.
-	info, err := os.Lstat(resolved)
-	if err != nil {
-		return "", fmt.Errorf("stat: %w", err)
+	// Walk each component to reject symlinks in the path.
+	rel, err := filepath.Rel(resolvedBase, cleaned)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return "", fmt.Errorf("path escapes allowed directory")
 	}
-	if !info.Mode().IsRegular() {
-		return "", fmt.Errorf("not a regular file")
+	walkPath := resolvedBase
+	parts := strings.Split(rel, string(os.PathSeparator))
+	for i, comp := range parts {
+		if comp == "." {
+			continue
+		}
+		walkPath = filepath.Join(walkPath, comp)
+		info, lErr := os.Lstat(walkPath)
+		if lErr != nil {
+			if os.IsNotExist(lErr) {
+				return "", fmt.Errorf("file not found")
+			}
+			return "", fmt.Errorf("resolve path failed")
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return "", fmt.Errorf("path escapes allowed directory")
+		}
+		if i == len(parts)-1 && !info.Mode().IsRegular() {
+			return "", fmt.Errorf("not a regular file")
+		}
 	}
 
-	return resolved, nil
+	return cleaned, nil
 }
 
 // validateFilename checks the final filename component for dangerous
@@ -456,14 +568,19 @@ func parsePermissions(s string) (os.FileMode, error) {
 	return os.FileMode(mode), nil
 }
 
-// atomicWrite writes data to path using temp + chmod + fsync + rename.
-func atomicWrite(path string, data []byte, mode os.FileMode) error {
-	dir := filepath.Dir(path)
-	f, err := os.CreateTemp(dir, tempFilePrefix+"*.tmp")
+// rootAtomicWrite writes data using temp + chmod + fsync + rename,
+// with all operations relative to the given os.Root descriptor.
+// This prevents TOCTOU attacks between path validation and file open.
+func rootAtomicWrite(root *os.Root, relPath string, data []byte, mode os.FileMode) error {
+	dir := filepath.Dir(relPath)
+	suffix := strconv.FormatInt(time.Now().UnixNano(), 36) + "-" + strconv.FormatInt(rootAtomicCounter.Add(1), 36)
+	tempName := filepath.Join(dir, tempFilePrefix+suffix+".tmp")
+
+	f, err := root.OpenFile(tempName, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		return fmt.Errorf("create temp: %w", err)
 	}
-	defer os.Remove(f.Name()) //nolint:errcheck // cleanup on failure; harmless ENOENT after rename
+	defer root.Remove(tempName) //nolint:errcheck // cleanup on failure; harmless ENOENT after rename
 
 	if err := f.Chmod(mode); err != nil {
 		f.Close() //nolint:errcheck,gosec
@@ -488,7 +605,7 @@ func atomicWrite(path string, data []byte, mode os.FileMode) error {
 		TestHookAfterSync()
 	}
 
-	if err := os.Rename(f.Name(), path); err != nil {
+	if err := root.Rename(tempName, relPath); err != nil {
 		return fmt.Errorf("rename: %w", err)
 	}
 
