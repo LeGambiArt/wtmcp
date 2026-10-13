@@ -48,6 +48,26 @@ def _normalize_export_path(file_path):
     return str(path)
 
 
+def _reject_sensitive_path(path, base_dir):
+    """Reject paths with dot-prefixed components or credential directories.
+
+    .wtmcp-data/ is exempted since exported artifacts are intentional.
+    Also blocks .github/, .editorconfig etc. — users can copy such files
+    to .wtmcp-data/<plugin>/ as a workaround.
+    """
+    try:
+        rel = Path(path).relative_to(Path(base_dir).resolve())
+    except ValueError:
+        raise ValueError("path is not under session directory")
+    for part in rel.parts:
+        if part == ".wtmcp-data":
+            return
+        if part.startswith(".") and part != ".":
+            raise ValueError(f"path contains sensitive component '{part}'")
+        if part == "env.d":
+            raise ValueError(f"path contains credential directory '{part}'")
+
+
 def _validate_read_path(file_path):
     """Validate and resolve a read path within session or output directory."""
     if not file_path:
@@ -62,10 +82,11 @@ def _validate_read_path(file_path):
         base = Path(base_dir).resolve()
         try:
             resolved.relative_to(base)
-            if resolved.is_file():
-                return resolved
         except ValueError:
             continue
+        _reject_sensitive_path(resolved, base)
+        if resolved.is_file():
+            return resolved
 
     if not _get_session_dir() and not _get_output_dir():
         raise ValueError("file_path requires a configured session directory")

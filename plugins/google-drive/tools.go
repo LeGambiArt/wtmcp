@@ -540,6 +540,9 @@ func confineToSessionDir(filePath string) (string, error) {
 		absFile != absSession {
 		return "", fmt.Errorf("file_path must be under the session directory")
 	}
+	if err := pathutil.RejectSensitivePath(absFile, absSession); err != nil {
+		return "", err
+	}
 	return absFile, nil
 }
 

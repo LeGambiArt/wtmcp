@@ -134,6 +134,38 @@ func TestResolvePath_PermissionDeniedFallback(t *testing.T) {
 	}
 }
 
+func TestRejectSensitivePath(t *testing.T) {
+	session := "/home/user/project"
+	tests := []struct {
+		path    string
+		wantErr bool
+	}{
+		{"src/main.go", false},
+		{"data/report.csv", false},
+		{".ssh/id_rsa", true},
+		{".env", true},
+		{".gnupg/pubring.gpg", true},
+		{".config/wtmcp/env.d/creds.env", true},
+		{".kube/config", true},
+		{".docker/config.json", true},
+		{"env.d/creds.env", true},
+		{".wtmcp-data/google-drive/export.txt", false},
+		{".wtmcp-data/jira/cache.json", false},
+		{filepath.Join(session, ".ssh", "key"), true},
+		{filepath.Join(session, "src", "main.go"), false},
+		{filepath.Join(session, ".wtmcp-data", "p", "f.txt"), false},
+		{"foo/../../.ssh/key", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			err := RejectSensitivePath(tt.path, session)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("RejectSensitivePath(%q) error = %v, wantErr %v", tt.path, err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestResolvePath_Directory(t *testing.T) {
 	dir := t.TempDir()
 
