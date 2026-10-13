@@ -2771,6 +2771,9 @@ func readFileForWrite(filePath string) ([]byte, error) {
 		absFile != absSession {
 		return nil, fmt.Errorf("file path escapes session directory")
 	}
+	if err := pathutil.RejectSensitivePath(absFile, absSession); err != nil {
+		return nil, err
+	}
 
 	info, err := os.Stat(absFile)
 	if err != nil {

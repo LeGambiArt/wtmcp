@@ -231,6 +231,9 @@ func confineRead(filePath string, allowedDirs ...string) (string, error) {
 			continue
 		}
 		if strings.HasPrefix(absFile, absDir+string(os.PathSeparator)) {
+			if err := pathutil.RejectSensitivePath(absFile, absDir); err != nil {
+				return "", err
+			}
 			info, err := os.Stat(absFile)
 			if err != nil {
 				return "", fmt.Errorf("stat: %w", err)
