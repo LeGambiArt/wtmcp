@@ -397,7 +397,7 @@ func (p *Proxy) Execute(ctx context.Context, pluginName string, req protocol.Mes
 		return errResponse(req.ID, "method_not_allowed",
 			fmt.Sprintf("read-only tool cannot use %s method", method))
 	}
-	if ToolAccessFromContext(ctx) == "write" && !isReadOnlyMethod(method) && pa.AuthConfigured {
+	if ToolAccessFromContext(ctx) != "read" && !isReadOnlyMethod(method) && pa.AuthConfigured {
 		authAvailable := pa.IsKerberos || (pa.Provider != nil && pa.Provider.Available())
 		if req.NoAuth || !authAvailable {
 			return errResponse(req.ID, "auth_required",
@@ -573,14 +573,13 @@ func (p *Proxy) resolveURL(pluginName string, pa *PluginAuth, req protocol.Messa
 		return "", fmt.Errorf("HTTPS required when client certificates are configured")
 	}
 
-	// HTTPS is always required when auth is configured, even with
-	// no_auth. The plugin's credential provider is active and HTTP
-	// requests could leak ambient cookies or be intercepted. Plugins
-	// needing HTTP for unauthenticated endpoints should be configured
-	// without auth.
-	authConfigured := pa.AuthConfigured || pa.Provider != nil || pa.IsKerberos
-	if authConfigured && parsed.Scheme != "https" {
-		return "", fmt.Errorf("HTTPS required when auth is configured")
+	// HTTPS required when a credential provider is available (could
+	// send credentials), regardless of no_auth on this request.
+	// Skip only when auth is declared but no provider exists (e.g.,
+	// anonymous-only access to an HTTP-only server).
+	authAvailable := pa.IsKerberos || (pa.Provider != nil && pa.Provider.Available())
+	if authAvailable && parsed.Scheme != "https" {
+		return "", fmt.Errorf("HTTPS required when credentials are available")
 	}
 
 	return fullURL, nil

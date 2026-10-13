@@ -1274,7 +1274,7 @@ func TestNoAuthWithoutProviderAllowsHTTP(t *testing.T) {
 	}
 }
 
-func TestConfiguredAuthWithoutProviderRequiresHTTPS(t *testing.T) {
+func TestConfiguredAuthWithoutProviderAllowsHTTP(t *testing.T) {
 	p := newTestProxy(nil)
 	pa := testPluginAuth("http://api.example.com")
 	pa.AuthConfigured = true
@@ -1287,8 +1287,10 @@ func TestConfiguredAuthWithoutProviderRequiresHTTPS(t *testing.T) {
 		URL:    "http://api.example.com/public",
 	})
 
-	if resp.Error == nil || !strings.Contains(resp.Error.Message, "HTTPS required") {
-		t.Errorf("configured auth without a provider should still require HTTPS, got %v", resp.Error)
+	// Auth is declared but no provider exists — no credentials to
+	// protect, so HTTP is allowed for anonymous-only access.
+	if resp.Error != nil && strings.Contains(resp.Error.Message, "HTTPS required") {
+		t.Error("configured auth without a provider should allow HTTP for anonymous access")
 	}
 }
 
