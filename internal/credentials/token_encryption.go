@@ -11,6 +11,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -210,32 +211,46 @@ func (te *TokenEncryption) LoadToken(group, pluginName string) (*oauth2.Token, e
 	return token, nil
 }
 
-// MigrateUnencryptedToken migrates a plaintext token file to
-// encrypted format. If no plaintext file exists, this is a no-op.
-func (te *TokenEncryption) MigrateUnencryptedToken(group, pluginName string) error {
-	plaintextPath := filepath.Join(te.tokensDir, group, fmt.Sprintf("token-%s.json", pluginName))
+// MigrateUnencryptedToken migrates a plaintext token file to encrypted
+// format. tokenFile is the manifest's token_file value (e.g.,
+// "token-gmail.json"), used to locate the actual plaintext file.
+// If no plaintext file exists, this is a no-op.
+func (te *TokenEncryption) MigrateUnencryptedToken(group, pluginName, tokenFile string) error {
+	plaintextPath := filepath.Clean(filepath.Join(te.tokensDir, group, tokenFile))
+	expectedPrefix := filepath.Join(te.tokensDir, group) + string(filepath.Separator)
+	if !strings.HasPrefix(plaintextPath, expectedPrefix) {
+		return fmt.Errorf("token_file path escapes credential group directory")
+	}
 
-	// Check if plaintext file exists.
-	data, err := os.ReadFile(plaintextPath) //nolint:gosec // token file path
+	data, err := os.ReadFile(plaintextPath) //nolint:gosec // validated above
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil // Already migrated or never existed.
+			return nil
 		}
 		return fmt.Errorf("read plaintext token: %w", err)
 	}
 
-	// Parse the plaintext token.
 	var token oauth2.Token
 	if err := json.Unmarshal(data, &token); err != nil {
 		return fmt.Errorf("parse plaintext token: %w", err)
 	}
 
-	// Save as encrypted.
 	if err := te.SaveToken(group, pluginName, &token); err != nil {
 		return fmt.Errorf("save encrypted token: %w", err)
 	}
 
-	// Remove the plaintext file.
+	// Round-trip verification: decrypt and compare before deleting.
+	loaded, err := te.LoadToken(group, pluginName)
+	if err != nil {
+		log.Printf("[credentials] WARNING: encrypted round-trip failed for %s/%s: %v — preserving plaintext", group, pluginName, err)
+		return nil
+	}
+	if loaded.RefreshToken != token.RefreshToken ||
+		(token.AccessToken != "" && loaded.AccessToken != token.AccessToken) {
+		log.Printf("[credentials] WARNING: encrypted round-trip mismatch for %s/%s — preserving plaintext", group, pluginName)
+		return nil
+	}
+
 	if err := os.Remove(plaintextPath); err != nil {
 		return fmt.Errorf("remove plaintext token: %w", err)
 	}

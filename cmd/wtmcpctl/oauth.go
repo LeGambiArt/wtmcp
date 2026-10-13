@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 
@@ -11,8 +12,11 @@ import (
 	"github.com/charmbracelet/x/term"
 	"github.com/spf13/cobra"
 
+	"golang.org/x/oauth2"
+
 	"github.com/LeGambiArt/oauth2flow"
 
+	"github.com/LeGambiArt/wtmcp/internal/credentials"
 	googleauth "github.com/LeGambiArt/wtmcp/internal/google"
 )
 
@@ -21,6 +25,7 @@ type OAuthPlugin struct {
 	Name            string
 	TokenFile       string
 	CredentialsFile string
+	CredentialGroup string
 	Scopes          []string
 }
 
@@ -164,6 +169,7 @@ func discoverOAuthPlugins() ([]OAuthPlugin, error) {
 				Name:            manifest.Name,
 				TokenFile:       manifest.Services.Auth.TokenFile,
 				CredentialsFile: manifest.Services.Auth.CredentialsFile,
+				CredentialGroup: manifest.CredentialGroup,
 				Scopes:          manifest.Services.Auth.Scopes,
 			})
 		}
@@ -172,21 +178,31 @@ func discoverOAuthPlugins() ([]OAuthPlugin, error) {
 	return plugins, nil
 }
 
-// isAuthenticated checks if a plugin has a valid or refreshable token.
+// isAuthenticated checks if a plugin has a valid or refreshable token,
+// checking both plaintext and encrypted token files.
 func isAuthenticated(credDir string, plugin *OAuthPlugin) bool {
 	tokenPath := filepath.Join(credDir, plugin.TokenFile)
-
-	if _, err := os.Stat(tokenPath); err != nil {
-		return false
+	if _, err := os.Stat(tokenPath); err == nil {
+		tok, err := googleauth.LoadToken(tokenPath)
+		if err == nil && (tok.Valid() || tok.RefreshToken != "") {
+			return true
+		}
 	}
 
-	tok, err := googleauth.LoadToken(tokenPath)
-	if err != nil {
-		return false
+	encPath := filepath.Join(credDir, fmt.Sprintf("token-%s.json.enc", plugin.Name))
+	if _, err := os.Stat(encPath); err == nil {
+		credRoot, rootErr := getCredentialsRoot()
+		if rootErr != nil {
+			return false
+		}
+		te, teErr := newTokenEncryption(credRoot)
+		if teErr == nil {
+			if tok, loadErr := te.LoadToken(plugin.CredentialGroup, plugin.Name); loadErr == nil {
+				return tok.Valid() || tok.RefreshToken != ""
+			}
+		}
 	}
-
-	// Consider authenticated if valid or has refresh token
-	return tok.Valid() || tok.RefreshToken != ""
+	return false
 }
 
 func oauthList() error {
@@ -210,9 +226,12 @@ func oauthList() error {
 	data := make([][]string, len(plugins))
 	for i, p := range plugins {
 		tokenPath := filepath.Join(credDir, p.TokenFile)
+		encPath := filepath.Join(credDir, fmt.Sprintf("token-%s.json.enc", p.Name))
 		status := disabledStyle.Render("not authenticated")
 
-		if _, err := os.Stat(tokenPath); err == nil {
+		if _, err := os.Stat(encPath); err == nil {
+			status = enabledStyle.Render("authenticated (encrypted)")
+		} else if _, err := os.Stat(tokenPath); err == nil {
 			tok, loadErr := googleauth.LoadToken(tokenPath)
 			switch {
 			case loadErr != nil:
@@ -301,8 +320,57 @@ func oauthAuth(pluginName string, plugins []OAuthPlugin) error {
 		return fmt.Errorf("oauth2 flow completed but no token received")
 	}
 
+	// Encrypt the token if keyring is available, then delete plaintext.
+	if plugin.CredentialGroup != "" {
+		if err := encryptAndRemovePlaintext(credDir, plugin, token); err != nil {
+			log.Printf("WARNING: could not encrypt token: %v (plaintext retained at %s)", err, tokenPath)
+		}
+	}
+
 	fmt.Println()
 	fmt.Printf("✓ Successfully authenticated %s\n", plugin.Name)
-	fmt.Printf("Token saved to: %s\n", tokenPath)
+	return nil
+}
+
+func newTokenEncryption(credRoot string) (*credentials.TokenEncryption, error) {
+	ks := credentials.NewKeyringStore()
+	migrationFile := filepath.Join(credRoot, ".migration.yaml")
+	ms, err := credentials.LoadMigrationState(migrationFile)
+	if err != nil {
+		return nil, fmt.Errorf("load migration state: %w", err)
+	}
+	return credentials.NewTokenEncryption(ks, ms, credRoot), nil
+}
+
+func getCredentialsRoot() (string, error) {
+	result, err := getDiscoveryResult()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(result.Workdir, "credentials"), nil
+}
+
+// encryptAndRemovePlaintext encrypts a newly acquired token and removes
+// the plaintext file, so re-authentication does not leave credentials
+// readable by plugin code.
+func encryptAndRemovePlaintext(credDir string, plugin *OAuthPlugin, token *oauth2.Token) error {
+	credRoot, err := getCredentialsRoot()
+	if err != nil {
+		return fmt.Errorf("credentials root: %w", err)
+	}
+	te, err := newTokenEncryption(credRoot)
+	if err != nil {
+		return fmt.Errorf("token encryption: %w", err)
+	}
+
+	if err := te.SaveToken(plugin.CredentialGroup, plugin.Name, token); err != nil {
+		return fmt.Errorf("encrypt token: %w", err)
+	}
+
+	plaintext := filepath.Join(credDir, plugin.TokenFile)
+	if err := os.Remove(plaintext); err != nil && !os.IsNotExist(err) {
+		log.Printf("WARNING: encrypted token saved but could not remove plaintext: %v", err)
+	}
+	fmt.Printf("Token encrypted (plaintext removed)\n")
 	return nil
 }

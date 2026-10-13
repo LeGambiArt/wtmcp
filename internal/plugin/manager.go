@@ -1652,6 +1652,7 @@ func (m *Manager) resolveAuth(pluginName string, manifest *Manifest) auth.Provid
 			TokenEncryption: m.tokenEncryption,
 			CredentialGroup: manifest.CredentialGroup,
 			PluginName:      manifest.Name,
+			TokenFileName:   manifest.Services.Auth.TokenFile,
 		}
 	}
 
