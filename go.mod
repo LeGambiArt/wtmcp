@@ -30,6 +30,7 @@ require (
 	golang.org/x/text v0.43.0
 	golang.org/x/time v0.16.0
 	google.golang.org/api v0.297.0
+	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 )
 
 require (
