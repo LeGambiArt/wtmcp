@@ -10,6 +10,7 @@
 package kerberos
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log"
@@ -18,6 +19,21 @@ import (
 	"sync"
 	"time"
 )
+
+type redirectOriginKey struct{}
+
+// WithRedirectOrigin records the initial request's hostname for
+// cross-host redirect detection. Set by the proxy before client.Do().
+func WithRedirectOrigin(ctx context.Context, hostname string) context.Context {
+	return context.WithValue(ctx, redirectOriginKey{}, hostname)
+}
+
+func redirectOriginFromContext(ctx context.Context) string {
+	if v, ok := ctx.Value(redirectOriginKey{}).(string); ok {
+		return v
+	}
+	return ""
+}
 
 const (
 	skipHostTTL             = 5 * time.Minute
@@ -92,15 +108,22 @@ func NewSPNEGORoundTripper(spn string, next http.RoundTripper, proactiveTimeout 
 //  3. If the server returns 401 + WWW-Authenticate: Negotiate,
 //     generate a fresh token and retry (reactive fallback)
 func (s *SPNEGORoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	hostname := req.URL.Hostname()
+
+	// Suppress Kerberos tokens after a cross-host redirect.
+	if origin := redirectOriginFromContext(req.Context()); origin != "" && origin != hostname {
+		log.Printf("kerberos: suppressing token for %s (redirected from %s)", hostname, origin) //nolint:gosec // hostname from parsed URL
+		return s.next.RoundTrip(req)
+	}
+
 	spn := s.spn
 	if spn == "" {
-		spn = "HTTP@" + req.URL.Hostname()
+		spn = "HTTP@" + hostname
 	}
 
 	// Proactive: try to attach Negotiate token on first request.
 	// Skip if proactive is disabled or this host previously failed.
 	authReq := req.Clone(req.Context())
-	hostname := req.URL.Hostname()
 
 	skip := !s.proactive
 	if !skip {
