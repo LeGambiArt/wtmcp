@@ -19,6 +19,8 @@ jenkins_version = "unknown"
 # Runtime Jenkins URL (set per-request by tools)
 _jenkins_url = ""
 
+_current_call_id = None
+
 
 def _send(msg):
     """Write a JSON message to stdout (core reads it)."""
@@ -102,6 +104,8 @@ def http(method, path, query=None, body=None, headers=None, url=None):
         msg["body"] = body
     if headers:
         msg["headers"] = headers
+    if _current_call_id:
+        msg["parent_id"] = _current_call_id
     _send(msg)
     resp = _recv()
     status = resp.get("status", 0)
@@ -114,7 +118,10 @@ def http(method, path, query=None, body=None, headers=None, url=None):
 
 def cache_get(key):
     """Get a value from the core cache. Returns value or None."""
-    _send({"id": _gen_id("cache"), "type": "cache_get", "key": key})
+    msg = {"id": _gen_id("cache"), "type": "cache_get", "key": key}
+    if _current_call_id:
+        msg["parent_id"] = _current_call_id
+    _send(msg)
     resp = _recv()
     if resp.get("hit"):
         return resp["value"]
@@ -137,13 +144,18 @@ def cache_set(key, value, ttl=None):
     }
     if ttl is not None:
         msg["ttl"] = ttl
+    if _current_call_id:
+        msg["parent_id"] = _current_call_id
     _send(msg)
     _recv()  # Wait for acknowledgment
 
 
 def cache_del(key):
     """Delete a value from the core cache."""
-    _send({"id": _gen_id("cache"), "type": "cache_del", "key": key})
+    msg = {"id": _gen_id("cache"), "type": "cache_del", "key": key}
+    if _current_call_id:
+        msg["parent_id"] = _current_call_id
+    _send(msg)
     _recv()
 
 
@@ -154,6 +166,8 @@ def cache_flush(namespace):
         "type": "cache_flush",
         "namespace": namespace,
     }
+    if _current_call_id:
+        msg["parent_id"] = _current_call_id
     _send(msg)
     resp = _recv()
     return resp.get("ok", False)
@@ -183,41 +197,49 @@ def main():
 
     # Valid tools whitelist (defense-in-depth against core bugs)
     TOOLS = tools_read.TOOLS
+    global _current_call_id
 
     while True:
         msg = _recv()
+        msg_id = msg.get("id")
         msg_type = msg.get("type", "")
 
         if msg_type == "init":
-            _init(msg)
-            _send({"id": msg.get("id"), "type": "init_ok"})
+            _current_call_id = msg_id
+            try:
+                _init(msg)
+                _send({"id": msg_id, "type": "init_ok"})
+            finally:
+                _current_call_id = None
         elif msg_type == "shutdown":
             _shutdown(msg)
-            _send({"id": msg.get("id"), "type": "shutdown_ok"})
+            _send({"id": msg_id, "type": "shutdown_ok"})
             break
         elif msg_type == "tool_call":
             tool = msg.get("tool", "")
             params = msg.get("params", {})
 
-            # Tool dispatch with whitelist check and error handling
             if tool in TOOLS:
+                _current_call_id = msg_id
                 try:
                     func = TOOLS[tool]
                     result = func(params)
-                    _send({"id": msg["id"], "type": "tool_result", "result": result})
+                    _send({"id": msg_id, "type": "tool_result", "result": result})
                 except Exception as e:
                     log(f"ERROR: tool {tool} failed: {e}")
                     _send(
                         {
-                            "id": msg["id"],
+                            "id": msg_id,
                             "type": "tool_result",
                             "result": {"error": "handler_error", "detail": f"Tool execution failed: {str(e)}"},
                         }
                     )
+                finally:
+                    _current_call_id = None
             else:
-                _send({"id": msg["id"], "type": "tool_result", "result": {"error": f"unknown tool: {tool}"}})
+                _send({"id": msg_id, "type": "tool_result", "result": {"error": f"unknown tool: {tool}"}})
         else:
-            _send({"id": msg.get("id"), "type": "error", "error": f"unknown message type: {msg_type}"})
+            _send({"id": msg_id, "type": "error", "error": f"unknown message type: {msg_type}"})
 
 
 if __name__ == "__main__":

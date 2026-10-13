@@ -234,6 +234,9 @@ func run(forceStdio bool) error {
 		CleanupInterval:     cfg.Cache.CleanupInterval,
 	})
 	httpProxy := proxy.New(nil, cfg.Plugins.MaxMessageSize, cfg.HTTP.Timeout)
+	if cfg.ReadOnly {
+		httpProxy.SetReadOnly(true)
+	}
 
 	// Initialize credential service for keyring-backed credential
 	// resolution. Non-fatal: if it fails, plugins continue using

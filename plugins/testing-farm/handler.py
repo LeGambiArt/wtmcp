@@ -20,6 +20,7 @@ import time
 import xml.etree.ElementTree as ET
 
 _next_id = 0
+_current_call_id = None
 
 # Plugin state set during init.
 config = {}
@@ -79,6 +80,8 @@ def http(method, path, query=None, body=None, headers=None, url=None):
         "method": method,
         "path": path,
     }
+    if _current_call_id:
+        msg["parent_id"] = _current_call_id
     if url:
         msg["url"] = url
     if query:
@@ -101,7 +104,10 @@ def http(method, path, query=None, body=None, headers=None, url=None):
 
 def cache_get(key):
     """Get a value from the core cache. Returns value or None."""
-    _send({"id": _gen_id("cache"), "type": "cache_get", "key": key})
+    msg = {"id": _gen_id("cache"), "type": "cache_get", "key": key}
+    if _current_call_id:
+        msg["parent_id"] = _current_call_id
+    _send(msg)
     resp = _recv()
     if resp.get("hit"):
         return resp["value"]
@@ -116,6 +122,8 @@ def cache_set(key, value, ttl=None):
         "key": key,
         "value": value,
     }
+    if _current_call_id:
+        msg["parent_id"] = _current_call_id
     if ttl is not None:
         msg["ttl"] = ttl
     _send(msg)
@@ -124,7 +132,10 @@ def cache_set(key, value, ttl=None):
 
 def cache_del(key):
     """Delete a value from the core cache."""
-    _send({"id": _gen_id("cache"), "type": "cache_del", "key": key})
+    msg = {"id": _gen_id("cache"), "type": "cache_del", "key": key}
+    if _current_call_id:
+        msg["parent_id"] = _current_call_id
+    _send(msg)
     _recv()  # consume ack
 
 
@@ -1021,6 +1032,7 @@ def _init(msg):
 
 def main():
     log("handler starting")
+    global _current_call_id
 
     while True:
         msg = _recv()
@@ -1028,8 +1040,12 @@ def main():
         msg_type = msg.get("type")
 
         if msg_type == "init":
-            _init(msg)
-            _send({"id": msg_id, "type": "init_ok"})
+            _current_call_id = msg_id
+            try:
+                _init(msg)
+                _send({"id": msg_id, "type": "init_ok"})
+            finally:
+                _current_call_id = None
             continue
 
         if msg_type == "shutdown":
@@ -1053,6 +1069,7 @@ def main():
                 )
                 continue
 
+            _current_call_id = msg_id
             try:
                 result = handler_fn(msg.get("params", {}))
                 _send({"id": msg_id, "type": "tool_result", "result": result})
@@ -1065,6 +1082,8 @@ def main():
                         "error": {"code": "handler_error", "message": str(e)},
                     }
                 )
+            finally:
+                _current_call_id = None
             continue
 
         log(f"unknown message type: {msg_type}")

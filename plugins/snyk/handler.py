@@ -16,6 +16,7 @@ if __name__ == "__main__":
 
 _next_id = 0
 config = {}
+_current_call_id = None
 
 REST_VERSION = "2024-10-15"
 
@@ -57,6 +58,8 @@ def http(method, path, query=None, body=None, headers=None, url=None):
         msg["body"] = body
     if headers:
         msg["headers"] = headers
+    if _current_call_id:
+        msg["parent_id"] = _current_call_id
     _send(msg)
     resp = _recv()
     status = resp.get("status", 0)
@@ -292,6 +295,7 @@ def _init(msg):
 
 def main():
     log("handler starting")
+    global _current_call_id
 
     while True:
         msg = _recv()
@@ -299,8 +303,12 @@ def main():
         msg_type = msg.get("type")
 
         if msg_type == "init":
-            _init(msg)
-            _send({"id": msg_id, "type": "init_ok"})
+            _current_call_id = msg_id
+            try:
+                _init(msg)
+                _send({"id": msg_id, "type": "init_ok"})
+            finally:
+                _current_call_id = None
             continue
 
         if msg_type == "shutdown":
@@ -321,6 +329,7 @@ def main():
                 )
                 continue
 
+            _current_call_id = msg_id
             try:
                 result = handler_fn(msg.get("params", {}))
                 _send({"id": msg_id, "type": "tool_result", "result": result})
@@ -333,6 +342,8 @@ def main():
                         "error": {"code": "handler_error", "message": str(e)},
                     }
                 )
+            finally:
+                _current_call_id = None
             continue
 
         log(f"unknown message type: {msg_type}")

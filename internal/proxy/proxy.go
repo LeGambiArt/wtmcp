@@ -108,6 +108,7 @@ type Proxy struct {
 	client        *http.Client
 	privateClient *http.Client // for plugins with allow_private_ips
 	maxBodySize   int64
+	readOnly      bool // global read-only mode (--read-only flag)
 	auditor       *audit.Logger
 	rateLimiter   rateLimitChecker
 	retryConfig   config.RetryConfig
@@ -138,6 +139,12 @@ func New(client *http.Client, maxBodySize int64, timeout time.Duration) *Proxy {
 		},
 		maxBodySize: maxBodySize,
 	}
+}
+
+// SetReadOnly enables global read-only mode, blocking all mutating
+// HTTP methods regardless of per-call context.
+func (p *Proxy) SetReadOnly(readOnly bool) {
+	p.readOnly = readOnly
 }
 
 // SetAuditor configures the audit logger for HTTP request logging.
@@ -381,6 +388,10 @@ func (p *Proxy) Execute(ctx context.Context, pluginName string, req protocol.Mes
 	method := strings.ToUpper(req.Method)
 	if method == "" {
 		method = http.MethodGet
+	}
+	if p.readOnly && !isReadOnlyMethod(method) {
+		return errResponse(req.ID, "method_not_allowed",
+			fmt.Sprintf("server is in read-only mode: %s method not allowed", method))
 	}
 	if access := ToolAccessFromContext(ctx); access == "read" && !isReadOnlyMethod(method) {
 		return errResponse(req.ID, "method_not_allowed",

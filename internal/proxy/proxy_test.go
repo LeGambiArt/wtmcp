@@ -2272,6 +2272,29 @@ func TestExecuteReadOnlyToolAllowsReadMethods(t *testing.T) {
 	}
 }
 
+func TestExecuteGlobalReadOnlyBlocksMutatingMethods(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		t.Error("request should never reach the server in global read-only mode")
+	}))
+	defer srv.Close()
+
+	p := newTestProxy(srv.Client())
+	p.SetReadOnly(true)
+	p.RegisterPlugin("test", testPluginAuth(srv.URL))
+
+	ctx := WithToolAccess(context.Background(), "write")
+	resp := p.Execute(ctx, "test", protocol.Message{
+		ID: "gro-1", Type: protocol.TypeHTTPRequest,
+		Method: "DELETE", Path: "/api/resource",
+	})
+	if resp.Error == nil || resp.Error.Code != "method_not_allowed" {
+		t.Errorf("global read-only should block DELETE even with write context, got error=%v", resp.Error)
+	}
+	if resp.Error != nil && !strings.Contains(resp.Error.Message, "read-only mode") {
+		t.Errorf("error should mention read-only mode, got: %s", resp.Error.Message)
+	}
+}
+
 func TestExecuteWriteAccessAllowsMutatingMethods(t *testing.T) {
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
