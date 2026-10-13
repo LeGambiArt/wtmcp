@@ -471,6 +471,143 @@ func TestTruncateJSON_ExactBoundary(t *testing.T) {
 	}
 }
 
+// --- formatElicitParams tests ---
+
+func TestFormatElicitParams_RoutingBeforeContent(t *testing.T) {
+	obj := map[string]any{
+		"to":      "victim@example.com",
+		"cc":      "",
+		"bcc":     "",
+		"subject": "Important",
+		"dry_run": false,
+		"body":    strings.Repeat("x", 600),
+	}
+	data, _ := json.Marshal(obj)
+	result := formatElicitParams(data, 500)
+
+	for _, field := range []string{`"to"`, `"cc"`, `"bcc"`, `"subject"`, `"dry_run"`} {
+		if !strings.Contains(result, field) {
+			t.Errorf("routing field %s must be visible, got:\n%s", field, result)
+		}
+	}
+	if !strings.Contains(result, "victim@example.com") {
+		t.Error("recipient address must be shown in full")
+	}
+	if !strings.Contains(result, "truncated") {
+		t.Error("large body should be truncated")
+	}
+
+	// dry_run must appear before routing keys, routing before content
+	dryRunIdx := strings.Index(result, `"dry_run"`)
+	toIdx := strings.Index(result, `"to"`)
+	bodyIdx := strings.Index(result, `"body"`)
+	if dryRunIdx > toIdx {
+		t.Error("dry_run must appear before other routing fields")
+	}
+	if toIdx > bodyIdx {
+		t.Error("routing fields must appear before content fields")
+	}
+}
+
+func TestFormatElicitParams_GitHubContent(t *testing.T) {
+	obj := map[string]any{
+		"repo":    "org/repo",
+		"path":    "src/main.go",
+		"branch":  "main",
+		"content": strings.Repeat("func main() {}\n", 100),
+	}
+	data, _ := json.Marshal(obj)
+	result := formatElicitParams(data, 500)
+
+	for _, field := range []string{"org/repo", "src/main.go", "main"} {
+		if !strings.Contains(result, field) {
+			t.Errorf("routing value %q must be visible in full", field)
+		}
+	}
+	if !strings.Contains(result, "truncated") {
+		t.Error("large content should be truncated")
+	}
+}
+
+func TestFormatElicitParams_LongRoutingValues(t *testing.T) {
+	// Two addresses sharing a long common prefix, differing at the end.
+	// Use a small budget to verify routing values are never truncated.
+	addr1 := strings.Repeat("a", 200) + "@safe.example.com"
+	addr2 := strings.Repeat("a", 200) + "@evil.example.com"
+	obj := map[string]any{
+		"to":   addr1,
+		"cc":   addr2,
+		"body": "short body",
+	}
+	data, _ := json.Marshal(obj)
+	result := formatElicitParams(data, 100) // budget smaller than routing
+
+	if !strings.Contains(result, "@safe.example.com") {
+		t.Error("first address must be fully visible despite exceeding budget")
+	}
+	if !strings.Contains(result, "@evil.example.com") {
+		t.Error("second address must be fully visible despite exceeding budget")
+	}
+}
+
+func TestFormatElicitParams_ManyKeys(t *testing.T) {
+	obj := make(map[string]any)
+	for i := 0; i < 25; i++ {
+		obj[fmt.Sprintf("field_%02d", i)] = fmt.Sprintf("val_%02d", i)
+	}
+	data, _ := json.Marshal(obj)
+	result := formatElicitParams(data, 500)
+
+	for i := 0; i < 25; i++ {
+		key := fmt.Sprintf(`"field_%02d"`, i)
+		if !strings.Contains(result, key) {
+			t.Errorf("key %s must be visible", key)
+		}
+	}
+}
+
+func TestFormatElicitParams_NoContentFields(t *testing.T) {
+	obj := map[string]any{"repo": "org/repo", "path": "file.go"}
+	data, _ := json.Marshal(obj)
+	result := formatElicitParams(data, 500)
+
+	if strings.Contains(result, "truncated") {
+		t.Error("no content fields means no truncation")
+	}
+}
+
+func TestFormatElicitParams_NonObject(t *testing.T) {
+	data := json.RawMessage(`["a","b"]`)
+	result := formatElicitParams(data, 500)
+	if !strings.Contains(result, "a") {
+		t.Error("non-object should fall back to simple display")
+	}
+}
+
+func TestFormatElicitParams_UTF8ContentBoundary(t *testing.T) {
+	obj := map[string]any{
+		"to":   "user@example.com",
+		"body": strings.Repeat("あ", 200),
+	}
+	data, _ := json.Marshal(obj)
+	result := formatElicitParams(data, 500)
+
+	if !utf8.ValidString(result) {
+		t.Errorf("result must be valid UTF-8: %q", result)
+	}
+	if !strings.Contains(result, "user@example.com") {
+		t.Error("routing field must be visible")
+	}
+}
+
+func TestFormatElicitParams_EmptyParams(t *testing.T) {
+	data := json.RawMessage(`{}`)
+	result := formatElicitParams(data, 500)
+	if result != "{}" {
+		t.Errorf("empty params should produce {}, got: %s", result)
+	}
+}
+
 func elicitStrictTestServer(tools []plugin.ToolDef) *mcpserver.MCPServer {
 	mgr := plugin.NewManagerForTest()
 	mgr.SetManifest("test-plugin", &plugin.Manifest{
