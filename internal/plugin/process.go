@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/LeGambiArt/wtmcp/internal/protocol"
+	"github.com/LeGambiArt/wtmcp/internal/proxy"
 	"github.com/LeGambiArt/wtmcp/internal/sandbox"
 )
 
@@ -196,6 +197,14 @@ func (p *Process) doInit(ctx context.Context) error {
 	defer cancel()
 
 	id := p.Transport.GenerateID("init")
+
+	// Register a read-only lifecycle context so HTTP requests made
+	// during init (e.g., Jira's _detect_cloud, GitHub's _discover_
+	// username) can pass the parent_id lookup.
+	lifecycleCtx := proxy.WithToolAccess(initCtx, "read")
+	p.Transport.SetToolContext(id, &lifecycleCtx)
+	defer p.Transport.ClearToolContext(id)
+
 	resp, err := p.Transport.SendAndWait(initCtx, id, protocol.Message{
 		Type:     protocol.TypeInit,
 		Protocol: protocol.ProtocolVersion,
@@ -225,6 +234,14 @@ func (p *Process) queryResources(ctx context.Context) error {
 	defer cancel()
 
 	id := p.Transport.GenerateID("res")
+
+	// Register a read-only lifecycle context so plugins that make
+	// HTTP requests during resource discovery can pass parent_id
+	// lookup (same pattern as doInit).
+	lifecycleCtx := proxy.WithToolAccess(ctx, "read")
+	p.Transport.SetToolContext(id, &lifecycleCtx)
+	defer p.Transport.ClearToolContext(id)
+
 	resp, err := p.Transport.SendAndWait(ctx, id, protocol.Message{
 		Type: protocol.TypeListResources,
 	})

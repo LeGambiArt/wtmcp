@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 
 	"github.com/LeGambiArt/wtmcp/internal/protocol"
+	"github.com/LeGambiArt/wtmcp/internal/proxy"
 )
 
 // Transport manages bidirectional JSON-lines communication with a
@@ -124,9 +125,13 @@ func (t *Transport) ToolContext(parentID string) (context.Context, bool) {
 	}
 
 	// Backward compat: empty parent_id with exactly one active call.
+	// Restricted to read-only access — write operations must use
+	// explicit parent_id. Deprecated: plugins should propagate the
+	// tool call ID.
 	if len(t.toolCtxs) == 1 {
 		for _, p := range t.toolCtxs {
-			return *p, true
+			log.Printf("WARNING: service request with empty parent_id — using legacy single-call fallback (deprecated, read-only)")
+			return proxy.WithToolAccess(*p, "read"), true
 		}
 	}
 	return context.Background(), false
@@ -157,7 +162,18 @@ func (t *Transport) ReadLoop(pluginName string, concurrency int, serviceHandler 
 
 		switch msg.Type {
 		case protocol.TypeHTTPRequest:
-			ctx, _ := t.ToolContext(msg.ParentID)
+			ctx, found := t.ToolContext(msg.ParentID)
+			if !found {
+				resp := protocol.Message{
+					ID:    msg.ID,
+					Type:  protocol.TypeHTTPResponse,
+					Error: &protocol.Error{Code: "auth_error", Message: "HTTP requests not allowed outside tool calls"},
+				}
+				if err := t.Send(resp); err != nil {
+					log.Printf("[%s] failed to send http error: %v", pluginName, err)
+				}
+				continue
+			}
 			if concurrency <= 1 {
 				resp := serviceHandler.HandleHTTP(ctx, pluginName, msg)
 				if err := t.Send(resp); err != nil {
@@ -173,7 +189,14 @@ func (t *Transport) ReadLoop(pluginName string, concurrency int, serviceHandler 
 			}
 
 		case protocol.TypeCacheGet, protocol.TypeCacheList:
-			ctx, _ := t.ToolContext(msg.ParentID)
+			ctx, found := t.ToolContext(msg.ParentID)
+			if !found {
+				resp := transportCacheError(msg.ID, msg.Type, "cache reads not allowed outside tool calls")
+				if err := t.Send(resp); err != nil {
+					log.Printf("[%s] failed to send cache error: %v", pluginName, err)
+				}
+				continue
+			}
 			if concurrency <= 1 {
 				resp := serviceHandler.HandleCache(ctx, pluginName, msg)
 				if err := t.Send(resp); err != nil {

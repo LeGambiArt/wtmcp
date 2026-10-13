@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/LeGambiArt/wtmcp/internal/protocol"
+	"github.com/LeGambiArt/wtmcp/internal/proxy"
 	"github.com/LeGambiArt/wtmcp/internal/sandbox"
 )
 
@@ -354,6 +355,11 @@ func (h *Handle) callOneshot(ctx context.Context, toolName string, params json.R
 func (h *Handle) ListResources(ctx context.Context) ([]protocol.ResourceDef, error) {
 	transport := h.process.Transport
 	id := transport.GenerateID("res")
+
+	lifecycleCtx := proxy.WithToolAccess(ctx, "read")
+	transport.SetToolContext(id, &lifecycleCtx)
+	defer transport.ClearToolContext(id)
+
 	resp, err := transport.SendAndWait(ctx, id, protocol.Message{
 		Type: protocol.TypeListResources,
 	})
@@ -371,6 +377,13 @@ func (h *Handle) ListResources(ctx context.Context) ([]protocol.ResourceDef, err
 func (h *Handle) ReadResource(ctx context.Context, uri string) (string, string, error) {
 	transport := h.process.Transport
 	id := transport.GenerateID("res")
+
+	// Register a read-only lifecycle context so the plugin can
+	// make HTTP requests while reading the resource.
+	lifecycleCtx := proxy.WithToolAccess(ctx, "read")
+	transport.SetToolContext(id, &lifecycleCtx)
+	defer transport.ClearToolContext(id)
+
 	resp, err := transport.SendAndWait(ctx, id, protocol.Message{
 		Type: protocol.TypeReadResource,
 		URI:  uri,

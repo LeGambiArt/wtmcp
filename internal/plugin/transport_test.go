@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/LeGambiArt/wtmcp/internal/protocol"
+	"github.com/LeGambiArt/wtmcp/internal/proxy"
 )
 
 // mockServiceHandler implements ServiceHandler for testing.
@@ -114,8 +115,8 @@ func TestReadLoopRoutesToolResult(t *testing.T) {
 }
 
 func TestReadLoopHandlesHTTPSync(t *testing.T) {
-	// Plugin sends an http_request, then a tool_result
-	httpReq := protocol.Message{ID: "http-1", Type: protocol.TypeHTTPRequest, Method: "GET", Path: "/test"}
+	// Plugin sends an http_request with parent_id, then a tool_result
+	httpReq := protocol.Message{ID: "http-1", Type: protocol.TypeHTTPRequest, Method: "GET", Path: "/test", ParentID: "call-1"}
 	toolResult := protocol.Message{ID: "req-1", Type: protocol.TypeToolResult, Result: json.RawMessage(`{}`)}
 
 	var lines []string
@@ -127,6 +128,10 @@ func TestReadLoopHandlesHTTPSync(t *testing.T) {
 
 	var pluginStdin bytes.Buffer
 	tr := NewTransport(&pluginStdin, pluginStdout, strings.NewReader(""), 1024*1024)
+
+	// Register tool context so parent_id lookup succeeds
+	ctx := context.Background()
+	tr.SetToolContext("call-1", &ctx)
 
 	httpCalled := false
 	handler := &mockServiceHandler{
@@ -230,12 +235,13 @@ func TestToolContextBackwardCompat(t *testing.T) {
 	tr.SetToolContext("call-1", &ctx)
 
 	// Empty parent_id with exactly one active call: backward compat
+	// Returns found=true but restricted to read-only access.
 	got, found := tr.ToolContext("")
 	if !found {
 		t.Error("single active call with empty parent_id should return found=true")
 	}
-	if got != ctx {
-		t.Error("should return the single active context")
+	if proxy.ToolAccessFromContext(got) != "read" {
+		t.Error("backward-compat fallback should be restricted to read-only access")
 	}
 }
 
@@ -686,7 +692,7 @@ func TestReadLoopRejectsCacheWritesWithoutToolContext(t *testing.T) {
 	}
 }
 
-func TestReadLoopAllowsCacheGetWithoutToolContext(t *testing.T) {
+func TestReadLoopRejectsCacheGetWithoutToolContext(t *testing.T) {
 	cacheGet := protocol.Message{ID: "cg-1", Type: protocol.TypeCacheGet, Key: "k"}
 	toolResult := protocol.Message{ID: "req-1", Type: protocol.TypeToolResult, Result: json.RawMessage(`{}`)}
 
@@ -720,8 +726,56 @@ func TestReadLoopAllowsCacheGetWithoutToolContext(t *testing.T) {
 		t.Fatal("timeout waiting for tool_result")
 	}
 
-	if !cacheCalled {
-		t.Error("HandleCache should have been called for cache_get without tool context")
+	if cacheCalled {
+		t.Error("HandleCache should NOT have been called for cache_get without tool context")
+	}
+
+	output := pluginStdin.String()
+	if !strings.Contains(output, "cache_error") || !strings.Contains(output, "not allowed outside tool calls") {
+		t.Errorf("expected cache_error response, got: %s", output)
+	}
+}
+
+func TestReadLoopRejectsHTTPWithoutToolContext(t *testing.T) {
+	httpReq := protocol.Message{ID: "http-1", Type: protocol.TypeHTTPRequest, Method: "GET", Path: "/test", ParentID: "unknown-id"}
+	toolResult := protocol.Message{ID: "req-1", Type: protocol.TypeToolResult, Result: json.RawMessage(`{}`)}
+
+	var lines []string
+	for _, msg := range []protocol.Message{httpReq, toolResult} {
+		data, _ := json.Marshal(msg)
+		lines = append(lines, string(data))
+	}
+	pluginStdout := strings.NewReader(strings.Join(lines, "\n") + "\n")
+
+	var pluginStdin bytes.Buffer
+	tr := NewTransport(&pluginStdin, pluginStdout, strings.NewReader(""), 1024*1024)
+
+	httpCalled := false
+	handler := &mockServiceHandler{
+		httpHandler: func(_ context.Context, _ string, req protocol.Message) protocol.Message {
+			httpCalled = true
+			return protocol.Message{ID: req.ID, Type: protocol.TypeHTTPResponse, Status: 200}
+		},
+	}
+
+	ch := make(chan protocol.Message, 1)
+	tr.pending.Store("req-1", ch)
+
+	go tr.ReadLoop("test-plugin", 1, handler)
+
+	select {
+	case <-ch:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for tool_result")
+	}
+
+	if httpCalled {
+		t.Error("HTTP handler should NOT have been called for unknown parent_id")
+	}
+
+	output := pluginStdin.String()
+	if !strings.Contains(output, "auth_error") || !strings.Contains(output, "not allowed outside tool calls") {
+		t.Errorf("expected auth_error response, got: %s", output)
 	}
 }
 

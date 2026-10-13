@@ -58,10 +58,11 @@ func (t *ProxyTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 func (t *ProxyTransport) encodeRequest(req *http.Request) (Message, error) {
 	msg := Message{
-		ID:     t.plugin.nextMsgID("http"),
-		Type:   TypeHTTPRequest,
-		Method: req.Method,
-		URL:    req.URL.String(),
+		ID:       t.plugin.nextMsgID("http"),
+		Type:     TypeHTTPRequest,
+		Method:   req.Method,
+		URL:      req.URL.String(),
+		ParentID: t.plugin.callID,
 	}
 
 	if len(req.Header) > 0 {
