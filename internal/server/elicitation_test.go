@@ -608,6 +608,115 @@ func TestFormatElicitParams_EmptyParams(t *testing.T) {
 	}
 }
 
+// --- dry_run confirmation skip tests ---
+
+var dryRunTools = []plugin.ToolDef{
+	{
+		Name: "test_dryrun_write", Description: "write with dry_run", Access: "write",
+		Params: map[string]plugin.ParamDef{
+			"dry_run": {Type: "boolean", Description: "preview mode"},
+			"target":  {Type: "string", Description: "target"},
+		},
+	},
+	{
+		Name: "test_no_dryrun_write", Description: "write without dry_run", Access: "write",
+		Params: map[string]plugin.ParamDef{
+			"target": {Type: "string", Description: "target"},
+		},
+	},
+	{Name: "test_read", Description: "a read tool", Access: "read"},
+}
+
+func TestDryRun_TrueSkipsConfirmation(t *testing.T) {
+	srv := elicitTestServer(true, dryRunTools)
+	session := &mockElicitSession{action: mcp.ElicitationResponseActionDecline}
+	ctx := srv.WithContext(context.Background(), session)
+
+	resp := callToolWithArgs(ctx, srv, "test_dryrun_write", map[string]any{
+		"dry_run": true, "target": "x",
+	})
+	text, _ := extractToolText(resp)
+
+	if strings.Contains(text, "declined by user") || strings.Contains(text, "confirmation failed") {
+		t.Error("dry_run=true with schema declaration should skip confirmation")
+	}
+}
+
+func TestDryRun_FalsePromptsConfirmation(t *testing.T) {
+	srv := elicitTestServer(true, dryRunTools)
+	session := &mockElicitSession{action: mcp.ElicitationResponseActionDecline}
+	ctx := srv.WithContext(context.Background(), session)
+
+	resp := callToolWithArgs(ctx, srv, "test_dryrun_write", map[string]any{
+		"dry_run": false, "target": "x",
+	})
+	text, isErr := extractToolText(resp)
+
+	if !isErr || !strings.Contains(text, "declined by user") {
+		t.Errorf("dry_run=false should trigger confirmation and be declined, got: %s", text)
+	}
+}
+
+func TestDryRun_MissingPromptsConfirmation(t *testing.T) {
+	srv := elicitTestServer(true, dryRunTools)
+	session := &mockElicitSession{action: mcp.ElicitationResponseActionDecline}
+	ctx := srv.WithContext(context.Background(), session)
+
+	resp := callToolWithArgs(ctx, srv, "test_dryrun_write", map[string]any{
+		"target": "x",
+	})
+	text, isErr := extractToolText(resp)
+
+	if !isErr || !strings.Contains(text, "declined by user") {
+		t.Errorf("missing dry_run should trigger confirmation, got: %s", text)
+	}
+}
+
+func TestDryRun_NoSchemaPromptsConfirmation(t *testing.T) {
+	srv := elicitTestServer(true, dryRunTools)
+	session := &mockElicitSession{action: mcp.ElicitationResponseActionDecline}
+	ctx := srv.WithContext(context.Background(), session)
+
+	resp := callToolWithArgs(ctx, srv, "test_no_dryrun_write", map[string]any{
+		"dry_run": true, "target": "x",
+	})
+	text, isErr := extractToolText(resp)
+
+	if !isErr || !strings.Contains(text, "declined by user") {
+		t.Errorf("dry_run=true without schema should still prompt, got: %s", text)
+	}
+}
+
+func TestDryRun_NoSchemaNoLabel(t *testing.T) {
+	srv := elicitTestServer(true, dryRunTools)
+	session := &mockElicitSession{action: mcp.ElicitationResponseActionAccept}
+	ctx := srv.WithContext(context.Background(), session)
+
+	callToolWithArgs(ctx, srv, "test_no_dryrun_write", map[string]any{
+		"dry_run": true, "target": "x",
+	})
+
+	if strings.Contains(session.lastReq.Params.Message, "[DRY RUN]") {
+		t.Error("non-schema dry_run should NOT show [DRY RUN] label — it misleads users into thinking the tool will preview")
+	}
+	if !strings.Contains(session.lastReq.Params.Message, "Confirm:") {
+		t.Error("should show standard Confirm prompt")
+	}
+}
+
+func TestDryRun_ReadToolUnaffected(t *testing.T) {
+	srv := elicitTestServer(true, dryRunTools)
+	session := &mockElicitSession{action: mcp.ElicitationResponseActionDecline}
+	ctx := srv.WithContext(context.Background(), session)
+
+	resp := callTool(ctx, srv, "test_read")
+	text, _ := extractToolText(resp)
+
+	if strings.Contains(text, "declined by user") {
+		t.Error("read tools should never trigger confirmation")
+	}
+}
+
 func elicitStrictTestServer(tools []plugin.ToolDef) *mcpserver.MCPServer {
 	mgr := plugin.NewManagerForTest()
 	mgr.SetManifest("test-plugin", &plugin.Manifest{

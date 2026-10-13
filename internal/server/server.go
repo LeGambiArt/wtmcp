@@ -216,6 +216,7 @@ func registerPluginTools(deps *serverDeps, manifest *plugin.Manifest) {
 		isRead := toolDef.IsReadOnly()
 		toolAccess := toolDef.Access
 		localWrite := toolDef.LocalWrite
+		hasSchemaDryRun := toolDef.Params["dry_run"].Type == "boolean"
 
 		srv := deps.srv
 		mgr := deps.mgr
@@ -300,7 +301,14 @@ func registerPluginTools(deps *serverDeps, manifest *plugin.Manifest) {
 				return frameErrorResult(outputText), nil
 			}
 
-			if !isRead && elicitation {
+			isDryRun := hasSchemaDryRun && req.GetArguments()["dry_run"] == true
+			if isDryRun {
+				ctx = proxy.WithToolAccess(ctx, "read")
+				ctx = proxy.WithLocalWrite(ctx, false)
+				ctx = proxy.WithDryRun(ctx, true)
+			}
+
+			if !isRead && elicitation && !isDryRun {
 				scrubbedParams := elicitScrubber.ScrubJSON(params)
 				elicitResult, elicitErr := srv.RequestElicitation(ctx,
 					mcp.ElicitationRequest{
