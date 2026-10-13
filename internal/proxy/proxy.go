@@ -412,6 +412,12 @@ func (p *Proxy) Execute(ctx context.Context, pluginName string, req protocol.Mes
 	// mTLS plugins cannot downgrade to HTTP via no_auth.
 	selectedClient := p.selectClient(pa, req.NoAuth)
 
+	// Clone the client with a per-request CheckRedirect that enforces
+	// the plugin's domain allowlist on every redirect hop.
+	cloned := *selectedClient
+	cloned.CheckRedirect = allowlistCheckRedirect(pa.AllowedDomains)
+	selectedClient = &cloned
+
 	maxRetries := p.retryConfig.Max
 	if maxRetries <= 0 || !isIdempotent(method) {
 		maxRetries = 0
@@ -440,6 +446,11 @@ func (p *Proxy) Execute(ctx context.Context, pluginName string, req protocol.Mes
 		if err != nil {
 			return errResponse(req.ID, "build_request", p.scrubError(err.Error()))
 		}
+
+		// Record the initial origin hostname so the Kerberos
+		// RoundTripper can suppress tokens after cross-host redirects.
+		httpReq = httpReq.WithContext(
+			kerberos.WithRedirectOrigin(httpReq.Context(), httpReq.URL.Hostname()))
 
 		if !req.NoAuth && pa.Provider != nil && pa.Client == nil {
 			if err := p.injectAuth(ctx, pa.Provider, httpReq); err != nil {
@@ -477,7 +488,7 @@ func (p *Proxy) Execute(ctx context.Context, pluginName string, req protocol.Mes
 	}
 
 	if pa.IsKerberos && pa.Client != nil && !req.NoAuth {
-		resp = p.trySAMLSSO(ctx, pluginName, pa, resp, pa.Client, fullURL, req, isIdempotent(method))
+		resp = p.trySAMLSSO(ctx, pluginName, pa, resp, selectedClient, fullURL, req, isIdempotent(method))
 	}
 
 	defer func() {
@@ -858,6 +869,56 @@ func StripAuthOnCrossDomainRedirect(req *http.Request, via []*http.Request) erro
 		}
 	}
 	return nil
+}
+
+// allowlistCheckRedirect returns a CheckRedirect function that:
+//  1. Enforces the plugin's domain allowlist on every redirect hop
+//  2. Rejects HTTPS-to-HTTP downgrades
+//  3. Strips auth headers on cross-domain hops
+//  4. Records the initial origin for Kerberos suppression
+func allowlistCheckRedirect(allowedDomains []string) func(*http.Request, []*http.Request) error {
+	return func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 10 {
+			return fmt.Errorf("stopped after 10 redirects")
+		}
+		if len(via) == 0 {
+			return nil
+		}
+
+		newHost := req.URL.Hostname()
+
+		// Check redirect target against the plugin's domain allowlist.
+		if !domaincheck.Contains(allowedDomains, newHost) {
+			log.Printf("proxy: redirect to %s blocked: not in allowed domains", newHost) //nolint:gosec // hostname from parsed URL
+			return http.ErrUseLastResponse
+		}
+
+		// Reject HTTPS-to-HTTP downgrades.
+		if via[0].URL.Scheme == "https" && req.URL.Scheme == "http" {
+			log.Printf("proxy: HTTPS-to-HTTP downgrade blocked on redirect to %s", newHost) //nolint:gosec // hostname from parsed URL
+			return http.ErrUseLastResponse
+		}
+
+		// Strip auth and body on cross-domain hops.
+		origHost := via[0].URL.Hostname()
+		origNorm, err1 := domaincheck.Normalize(origHost)
+		newNorm, err2 := domaincheck.Normalize(newHost)
+		if err1 != nil || err2 != nil || origNorm != newNorm {
+			for h := range req.Header {
+				if !safeRedirectHeaders[http.CanonicalHeaderKey(h)] {
+					req.Header.Del(h)
+				}
+			}
+			if req.Body != nil {
+				req.Body = http.NoBody
+				req.ContentLength = 0
+				req.Header.Del("Content-Type")
+				req.Header.Del("Content-Length")
+			}
+		}
+
+		return nil
+	}
 }
 
 // dangerousHeaders are headers that plugins must not control.

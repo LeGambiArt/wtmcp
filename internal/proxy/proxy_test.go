@@ -2295,6 +2295,88 @@ func TestExecuteGlobalReadOnlyBlocksMutatingMethods(t *testing.T) {
 	}
 }
 
+func TestRedirectToAllowedHostFollows(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/start" {
+			http.Redirect(w, r, "/final", http.StatusFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"redirected":true}`))
+	}))
+	defer srv.Close()
+
+	p := newTestProxy(srv.Client())
+	p.RegisterPlugin("test", testPluginAuth(srv.URL))
+
+	ctx := WithToolAccess(context.Background(), "read")
+	resp := p.Execute(ctx, "test", protocol.Message{
+		ID: "redir-1", Type: protocol.TypeHTTPRequest,
+		Method: "GET", Path: "/start",
+	})
+	if resp.Error != nil {
+		t.Fatalf("same-host redirect should succeed, got error: %v", resp.Error)
+	}
+	if resp.Status != 200 {
+		t.Errorf("expected 200, got %d", resp.Status)
+	}
+}
+
+func TestRedirectToDisallowedHostBlocked(t *testing.T) {
+	redirector := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "https://evil.example.com/steal", http.StatusFound)
+	}))
+	defer redirector.Close()
+
+	p := newTestProxy(redirector.Client())
+	rURL, _ := url.Parse(redirector.URL)
+	p.RegisterPlugin("test", &PluginAuth{
+		BaseURL:        redirector.URL,
+		AllowedDomains: []string{rURL.Hostname()},
+	})
+
+	ctx := WithToolAccess(context.Background(), "read")
+	resp := p.Execute(ctx, "test", protocol.Message{
+		ID: "redir-2", Type: protocol.TypeHTTPRequest,
+		Method: "GET", Path: "/start",
+	})
+	// Should get the redirector's 302 response (ErrUseLastResponse),
+	// not the evil target's response.
+	if resp.Error != nil {
+		t.Fatalf("should return the redirect response, not error: %v", resp.Error)
+	}
+	if resp.Status != http.StatusFound {
+		t.Errorf("expected 302 (redirect stopped), got %d", resp.Status)
+	}
+}
+
+func TestRedirectHTTPSDowngradeBlocked(t *testing.T) {
+	redirector := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// HTTPS server redirecting to HTTP (downgrade).
+		http.Redirect(w, r, "http://"+r.Host+"/insecure", http.StatusFound) //nolint:gosec // intentional downgrade for test
+	}))
+	defer redirector.Close()
+
+	p := newTestProxy(redirector.Client())
+	rURL, _ := url.Parse(redirector.URL)
+	p.RegisterPlugin("test", &PluginAuth{
+		BaseURL:        redirector.URL,
+		AllowedDomains: []string{rURL.Hostname()},
+	})
+
+	ctx := WithToolAccess(context.Background(), "read")
+	resp := p.Execute(ctx, "test", protocol.Message{
+		ID: "redir-3", Type: protocol.TypeHTTPRequest,
+		Method: "GET", Path: "/start",
+	})
+	if resp.Error != nil {
+		t.Fatalf("should return the redirect response, not error: %v", resp.Error)
+	}
+	if resp.Status != http.StatusFound {
+		t.Errorf("expected 302 (downgrade blocked), got %d", resp.Status)
+	}
+}
+
 func TestExecuteWriteAccessAllowsMutatingMethods(t *testing.T) {
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

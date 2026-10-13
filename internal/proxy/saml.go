@@ -15,6 +15,7 @@ import (
 
 	"golang.org/x/net/html"
 
+	"github.com/LeGambiArt/wtmcp/internal/auth/kerberos"
 	"github.com/LeGambiArt/wtmcp/internal/domaincheck"
 	"github.com/LeGambiArt/wtmcp/internal/protocol"
 )
@@ -522,6 +523,8 @@ func (p *Proxy) trySAMLSSO(ctx context.Context, pluginName string, pa *PluginAut
 		resp.Body = io.NopCloser(bytes.NewReader(body))
 		return resp
 	}
+	retryReq = retryReq.WithContext(
+		kerberos.WithRedirectOrigin(retryReq.Context(), retryReq.URL.Hostname()))
 	retryResp, err := client.Do(retryReq)
 	if err != nil {
 		resp.Body = io.NopCloser(bytes.NewReader(body))
@@ -563,6 +566,8 @@ func (p *Proxy) handleReactiveSAML(ctx context.Context, pa *PluginAuth, resp *ht
 		resp.Body = io.NopCloser(bytes.NewReader(body))
 		return resp
 	}
+	retryReq = retryReq.WithContext(
+		kerberos.WithRedirectOrigin(retryReq.Context(), retryReq.URL.Hostname()))
 	retryResp, err := client.Do(retryReq)
 	if err != nil {
 		resp.Body = io.NopCloser(bytes.NewReader(body))
