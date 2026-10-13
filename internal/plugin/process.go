@@ -386,7 +386,7 @@ func buildPluginEnv(manifest *Manifest, groupVars map[string]string) []string {
 func buildPluginEnvMap(manifest *Manifest, groupVars map[string]string) map[string]string {
 	allowlist := []string{
 		"PATH", "HOME", "USER", "SHELL", "LANG", "TERM", "TZ", "TMPDIR",
-		"XDG_RUNTIME_DIR", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME",
+		"XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME",
 	}
 
 	env := make(map[string]string, len(allowlist)+len(manifest.Env))
@@ -407,6 +407,12 @@ func buildPluginEnvMap(manifest *Manifest, groupVars map[string]string) map[stri
 			}
 		}
 	}
+
+	// Never pass D-Bus session bus paths to plugins. The socket at
+	// /run/user/<uid>/bus is universally known so this is hardening
+	// only — the full fix requires AF_UNIX blocking in the sandbox.
+	delete(env, "XDG_RUNTIME_DIR")
+	delete(env, "DBUS_SESSION_BUS_ADDRESS")
 
 	return env
 }
