@@ -121,14 +121,14 @@ func TestWriteFile_SymlinkOutputDirItself(t *testing.T) {
 		t.Skipf("cannot create symlink: %v", err)
 	}
 	cfg := Config{OutputDir: linkDir, TmpDir: t.TempDir(), SizeLimit: defaultSizeLimit}
-	result, err := WriteFile(cfg, WriteRequest{
+	_, err := WriteFile(cfg, WriteRequest{
 		Path: "ok.json", Content: "data", HasContent: true,
 	})
-	if err != nil {
-		t.Fatalf("symlinked outputDir should work: %v", err)
+	if err == nil {
+		t.Fatal("symlinked outputDir should be rejected")
 	}
-	if _, err := os.Stat(result.Path); err != nil {
-		t.Fatalf("file does not exist at returned path: %v", err)
+	if !strings.Contains(err.Error(), "symlink") && !strings.Contains(err.Error(), "resolve output directory") {
+		t.Errorf("wrong error: %v", err)
 	}
 }
 
@@ -154,6 +154,104 @@ func TestWriteFile_SiblingDirectoryPrefix(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(siblingDir, "secret.txt")); err == nil {
 		t.Fatal("file was created in sibling directory")
+	}
+}
+
+// --- ValidateOutputDir tests ---
+
+func TestValidateOutputDir_Normal(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".wtmcp-data", "test-plugin"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateOutputDir(root, ".wtmcp-data", "test-plugin"); err != nil {
+		t.Errorf("normal directories should be accepted: %v", err)
+	}
+}
+
+func TestValidateOutputDir_NonExistent(t *testing.T) {
+	root := t.TempDir()
+	if err := ValidateOutputDir(root, ".wtmcp-data", "test-plugin"); err != nil {
+		t.Errorf("non-existent components should be accepted: %v", err)
+	}
+}
+
+func TestValidateOutputDir_SymlinkDataDir(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(root, ".wtmcp-data")); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+	err := ValidateOutputDir(root, ".wtmcp-data", "test-plugin")
+	if err == nil {
+		t.Fatal("symlink at .wtmcp-data should be rejected")
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Errorf("error should mention symlink, got: %v", err)
+	}
+}
+
+func TestValidateOutputDir_SymlinkPluginDir(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".wtmcp-data"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, ".wtmcp-data", "test-plugin")); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+	err := ValidateOutputDir(root, ".wtmcp-data", "test-plugin")
+	if err == nil {
+		t.Fatal("symlink at .wtmcp-data/plugin should be rejected")
+	}
+}
+
+func TestValidateOutputDir_DanglingSymlink(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Symlink("/nonexistent/target", filepath.Join(root, ".wtmcp-data")); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+	err := ValidateOutputDir(root, ".wtmcp-data", "test-plugin")
+	if err == nil {
+		t.Fatal("dangling symlink should be rejected")
+	}
+}
+
+func TestWriteFile_TOCTOUSymlinkSwap(t *testing.T) {
+	cfg := testConfig(t)
+	outside := t.TempDir()
+
+	TestHookAfterMkdir = func() {
+		subDir := filepath.Join(cfg.OutputDir, "sub")
+		_ = os.RemoveAll(subDir)
+		_ = os.Symlink(outside, subDir)
+	}
+	defer func() { TestHookAfterMkdir = nil }()
+
+	_, err := WriteFile(cfg, WriteRequest{
+		Path: "sub/evil.json", Content: "pwned", HasContent: true,
+	})
+	if err == nil {
+		t.Fatal("TOCTOU symlink swap should be caught by post-mkdir check")
+	}
+	if _, statErr := os.Stat(filepath.Join(outside, "evil.json")); statErr == nil {
+		t.Fatal("file was created outside outputDir via TOCTOU")
+	}
+}
+
+func TestReadFile_SymlinkOutputDirRejected(t *testing.T) {
+	realDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(realDir, "test.txt"), []byte("data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	linkDir := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(realDir, linkDir); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+	cfg := Config{OutputDir: linkDir, TmpDir: t.TempDir(), SizeLimit: defaultSizeLimit}
+	_, err := ReadFile(cfg, ReadRequest{Path: "test.txt"})
+	if err == nil {
+		t.Fatal("reading through symlinked outputDir should be rejected")
 	}
 }
 
@@ -959,7 +1057,7 @@ func TestReadFile_Errors(t *testing.T) {
 		wantErr string
 	}{
 		{"file not found", "nonexistent.txt", "file not found"},
-		{"traversal nonexistent target", "../../etc/passwd", "file not found"},
+		{"traversal nonexistent target", "../../etc/passwd", "path escapes"},
 		{"empty path", "", "path is required"},
 		{"null byte", "file\x00.txt", "null byte"},
 		{"dot path", ".", "invalid path"},
@@ -1226,7 +1324,7 @@ func FuzzResolvePath(f *testing.F) {
 	f.Fuzz(func(t *testing.T, path string) {
 		outputDir := t.TempDir()
 
-		resolved, err := resolvePath(outputDir, path, nil)
+		resolved, _, err := resolvePath(outputDir, path, nil)
 		if err != nil {
 			return
 		}
