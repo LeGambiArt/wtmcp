@@ -2379,6 +2379,73 @@ func TestRedirectHTTPSDowngradeBlocked(t *testing.T) {
 	}
 }
 
+func TestMethodOverrideQueryParamsStripped(t *testing.T) {
+	var receivedQuery string
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedQuery = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+
+	p := newTestProxy(srv.Client())
+	p.RegisterPlugin("test", testPluginAuth(srv.URL))
+
+	ctx := WithToolAccess(context.Background(), "read")
+	resp := p.Execute(ctx, "test", protocol.Message{
+		ID: "mo-1", Type: protocol.TypeHTTPRequest,
+		Method: "GET", Path: "/api/issues",
+		Query: map[string]any{
+			"_method": "DELETE",
+			"jql":     "project=TEST",
+		},
+	})
+	if resp.Error != nil {
+		t.Fatalf("request failed: %v", resp.Error)
+	}
+	if strings.Contains(receivedQuery, "_method") {
+		t.Errorf("_method query param should be stripped, got query: %s", receivedQuery)
+	}
+	if !strings.Contains(receivedQuery, "jql") {
+		t.Error("other query params should be preserved")
+	}
+}
+
+func TestMethodOverrideHeadersStripped(t *testing.T) {
+	var receivedHeaders http.Header
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedHeaders = r.Header
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+
+	p := newTestProxy(srv.Client())
+	p.RegisterPlugin("test", testPluginAuth(srv.URL))
+
+	ctx := WithToolAccess(context.Background(), "write")
+	resp := p.Execute(ctx, "test", protocol.Message{
+		ID: "mo-2", Type: protocol.TypeHTTPRequest,
+		Method: "GET", Path: "/api/issues",
+		Headers: map[string]string{
+			"X-HTTP-Method-Override": "DELETE",
+			"X-Original-Method":      "DELETE",
+			"Accept":                 "application/json",
+		},
+	})
+	if resp.Error != nil {
+		t.Fatalf("request failed: %v", resp.Error)
+	}
+	for _, h := range []string{"X-Http-Method-Override", "X-Original-Method"} {
+		if receivedHeaders.Get(h) != "" {
+			t.Errorf("header %s should be stripped", h)
+		}
+	}
+	if receivedHeaders.Get("Accept") == "" {
+		t.Error("non-dangerous headers should be preserved")
+	}
+}
+
 func TestExecuteWriteAccessAllowsMutatingMethods(t *testing.T) {
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
