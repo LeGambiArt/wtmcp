@@ -97,7 +97,7 @@ func toolCreateMRDiscussion(params, _ json.RawMessage) (any, error) {
 		p.OldPath = p.NewPath
 	}
 
-	client, err := resolveInstance(p.Instance)
+	client, err := resolveAuthenticatedInstance(p.Instance)
 	if err != nil {
 		return nil, err
 	}
@@ -196,7 +196,7 @@ func toolAddMRNote(params, _ json.RawMessage) (any, error) {
 		return nil, fmt.Errorf("body exceeds %d character limit (%d chars)", maxBodyLen, len([]rune(p.Body)))
 	}
 
-	client, err := resolveInstance(p.Instance)
+	client, err := resolveAuthenticatedInstance(p.Instance)
 	if err != nil {
 		return nil, err
 	}
@@ -276,7 +276,7 @@ func toolCreateMergeRequest(params, _ json.RawMessage) (any, error) {
 		title = "Draft: " + title
 	}
 
-	client, err := resolveInstance(p.Instance)
+	client, err := resolveAuthenticatedInstance(p.Instance)
 	if err != nil {
 		return nil, err
 	}
@@ -407,7 +407,7 @@ func toolCreateBranch(params, _ json.RawMessage) (any, error) {
 		return nil, fmt.Errorf("source_branch: %w", err)
 	}
 
-	client, err := resolveInstance(p.Instance)
+	client, err := resolveAuthenticatedInstance(p.Instance)
 	if err != nil {
 		return nil, err
 	}
@@ -479,7 +479,7 @@ func toolCreateOrUpdateFile(params, _ json.RawMessage) (any, error) {
 			return nil, fmt.Errorf("branch: %w", err)
 		}
 	}
-	client, err := resolveInstance(p.Instance)
+	client, err := resolveAuthenticatedInstance(p.Instance)
 	if err != nil {
 		return nil, err
 	}
@@ -622,7 +622,7 @@ func toolCommitFiles(params, _ json.RawMessage) (any, error) {
 		}, nil
 	}
 
-	client, err := resolveInstance(p.Instance)
+	client, err := resolveAuthenticatedInstance(p.Instance)
 	if err != nil {
 		return nil, err
 	}
