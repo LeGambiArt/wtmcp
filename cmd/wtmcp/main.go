@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"os/user"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -131,13 +132,18 @@ func run(forceStdio bool) error {
 
 	// Capture the caller's CWD for file I/O before anything changes it.
 	sessionDir, err := os.Getwd()
-	if err != nil || !filepath.IsAbs(sessionDir) {
+	switch {
+	case err != nil || !filepath.IsAbs(sessionDir):
 		log.Printf("WARNING: could not determine session directory: %v", err)
 		log.Printf("WARNING: file I/O operations (file_path, save_to_file) will be unavailable")
 		sessionDir = ""
-	} else if sessionDir == "/" || strings.Count(filepath.Clean(sessionDir), string(os.PathSeparator)) < 2 {
+	case sessionDir == "/" || strings.Count(filepath.Clean(sessionDir), string(os.PathSeparator)) < 2:
 		log.Printf("WARNING: session directory %q is too broad for file confinement", sessionDir)
 		log.Printf("WARNING: file I/O operations will be unavailable — start wtmcp from a project directory")
+		sessionDir = ""
+	case isHomeDir(sessionDir):
+		log.Printf("WARNING: session directory is the user's home directory")
+		log.Printf("WARNING: file I/O operations will be unavailable — start wtmcp from a project directory, not $HOME")
 		sessionDir = ""
 	}
 
@@ -482,4 +488,35 @@ func runCheck() error {
 	}
 
 	return nil
+}
+
+// isHomeDir reports whether dir is the user's home directory,
+// comparing canonical paths to handle symlinked homes.
+func isHomeDir(dir string) bool {
+	canonDir, dirErr := filepath.EvalSymlinks(dir)
+
+	// Check os.UserHomeDir (prefers $HOME, falls back to passwd).
+	if home, err := os.UserHomeDir(); err == nil {
+		if canonHome, err := filepath.EvalSymlinks(home); err == nil && dirErr == nil {
+			if canonDir == canonHome {
+				return true
+			}
+		} else if dir == home {
+			return true
+		}
+	}
+
+	// Also check the system account database directly, which may
+	// differ from $HOME (e.g., HOME=/tmp).
+	if u, err := user.Current(); err == nil && u.HomeDir != "" {
+		if canonPasswd, err := filepath.EvalSymlinks(u.HomeDir); err == nil && dirErr == nil {
+			if canonDir == canonPasswd {
+				return true
+			}
+		} else if dir == u.HomeDir {
+			return true
+		}
+	}
+
+	return false
 }
