@@ -642,6 +642,14 @@ func (p *Proxy) buildRequest(ctx context.Context, fullURL string, req protocol.M
 		httpReq.URL.RawQuery = q.Encode()
 	}
 
+	// Strip method-override query params — these could make a GET
+	// appear as a DELETE to backends that honor them.
+	if q := httpReq.URL.Query(); q.Get("_method") != "" || q.Get("__method") != "" {
+		q.Del("_method")
+		q.Del("__method")
+		httpReq.URL.RawQuery = q.Encode()
+	}
+
 	// Add plugin-specified headers, then strip security-sensitive ones
 	// that plugins should not control.
 	for k, v := range req.Headers {
@@ -892,8 +900,8 @@ func allowlistCheckRedirect(allowedDomains []string) func(*http.Request, []*http
 			return http.ErrUseLastResponse
 		}
 
-		// Reject HTTPS-to-HTTP downgrades.
-		if via[0].URL.Scheme == "https" && req.URL.Scheme == "http" {
+		// Reject HTTPS-to-HTTP downgrades (compare against previous hop).
+		if via[len(via)-1].URL.Scheme == "https" && req.URL.Scheme == "http" {
 			log.Printf("proxy: HTTPS-to-HTTP downgrade blocked on redirect to %s", newHost) //nolint:gosec // hostname from parsed URL
 			return http.ErrUseLastResponse
 		}
@@ -949,6 +957,10 @@ var dangerousHeaders = []string{
 	"X-Real-Ip",
 	"X-Original-Url",
 	"X-Rewrite-Url",
+	"X-HTTP-Method-Override",
+	"X-Method-Override",
+	"X-HTTP-Method",
+	"X-Original-Method",
 }
 
 // stripDangerousHeaders removes security-sensitive headers that
