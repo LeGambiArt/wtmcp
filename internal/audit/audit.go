@@ -5,13 +5,18 @@ package audit
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"log/slog"
 	"net/url"
 	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"gopkg.in/natefinch/lumberjack.v2"
 )
 
 type ctxKey struct{}
@@ -32,7 +37,8 @@ func CorrelationID(ctx context.Context) string {
 type Logger struct {
 	logger     *slog.Logger
 	scrubber   *Scrubber
-	file       *os.File
+	closer     io.Closer
+	fullParams bool
 	maxErrLen  int
 	configured bool
 }
@@ -42,6 +48,10 @@ type Config struct {
 	LogFile     string   `yaml:"log_file"`
 	Stdout      bool     `yaml:"stdout"`
 	ScrubFields []string `yaml:"scrub_fields"`
+	FullParams  bool     `yaml:"full_params"`
+	MaxSizeMB   int      `yaml:"max_size_mb"`
+	MaxBackups  int      `yaml:"max_backups"`
+	MaxAgeDays  int      `yaml:"max_age_days"`
 }
 
 // New creates an audit logger. If cfg.LogFile is empty, audit logging
@@ -56,15 +66,41 @@ func New(cfg Config) (*Logger, error) {
 		scrubFields = DefaultScrubFields
 	}
 
+	maxSize := cfg.MaxSizeMB
+	if maxSize <= 0 {
+		maxSize = 10
+	}
+	maxBackups := cfg.MaxBackups
+	if maxBackups <= 0 {
+		maxBackups = 3
+	}
+	maxAge := cfg.MaxAgeDays
+	if maxAge <= 0 {
+		maxAge = 7
+	}
+
 	var handler slog.Handler
-	var file *os.File
+	var closer io.Closer
 	if cfg.LogFile != "" {
-		var err error
-		file, err = os.OpenFile(cfg.LogFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
-		if err != nil {
-			return nil, err
+		// Validate the log file is writable at startup so
+		// misconfigured paths fail fast instead of silently.
+		if err := os.MkdirAll(filepath.Dir(cfg.LogFile), 0o750); err != nil {
+			return nil, fmt.Errorf("create audit log directory: %w", err)
 		}
-		handler = slog.NewJSONHandler(file, &slog.HandlerOptions{})
+		f, err := os.OpenFile(cfg.LogFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+		if err != nil {
+			return nil, fmt.Errorf("open audit log: %w", err)
+		}
+		_ = f.Close()
+
+		lj := &lumberjack.Logger{
+			Filename:   cfg.LogFile,
+			MaxSize:    maxSize,
+			MaxBackups: maxBackups,
+			MaxAge:     maxAge,
+		}
+		closer = lj
+		handler = slog.NewJSONHandler(lj, &slog.HandlerOptions{})
 	}
 
 	if cfg.Stdout {
@@ -81,7 +117,8 @@ func New(cfg Config) (*Logger, error) {
 	return &Logger{
 		logger:     logger,
 		scrubber:   NewScrubber(scrubFields),
-		file:       file,
+		closer:     closer,
+		fullParams: cfg.FullParams,
 		maxErrLen:  500,
 		configured: true,
 	}, nil
@@ -102,12 +139,20 @@ func (l *Logger) ToolCall(ctx context.Context, plugin, tool string, params json.
 	}
 
 	if params != nil {
-		scrubbed := l.scrubber.ScrubJSON(params)
-		attrs = append(attrs, slog.String("params", string(scrubbed)))
+		if l.fullParams {
+			scrubbed := l.scrubber.ScrubJSON(params)
+			attrs = append(attrs, slog.String("params", string(scrubbed)))
+		} else {
+			attrs = append(attrs, slog.String("params", summarizeParams(params)))
+		}
 	}
 
 	if errMsg != "" {
-		attrs = append(attrs, slog.String("error", truncate(l.scrubber.ScrubString(errMsg), l.maxErrLen)))
+		if l.fullParams {
+			attrs = append(attrs, slog.String("error", truncate(l.scrubber.ScrubString(errMsg), l.maxErrLen)))
+		} else {
+			attrs = append(attrs, slog.String("error", "[redacted]"))
+		}
 		attrs = append(attrs, slog.Bool("is_error", true))
 	}
 
@@ -182,14 +227,54 @@ func (l *Logger) ScrubErrorText(s string) string {
 
 // Close flushes and closes the audit log file (if any).
 func (l *Logger) Close() error {
-	if l == nil || l.file == nil {
+	if l == nil || l.closer == nil {
 		return nil
 	}
-	return l.file.Close()
+	return l.closer.Close()
 }
 
 func (l *Logger) log(ctx context.Context, attrs []slog.Attr) {
 	l.logger.LogAttrs(ctx, slog.LevelInfo, "audit", attrs...)
+}
+
+// summarizeParams produces a compact summary of parameter names and
+// value types/sizes without revealing the values themselves.
+func summarizeParams(data json.RawMessage) string {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(data, &obj); err != nil {
+		return fmt.Sprintf("raw(%d)", len(data))
+	}
+	keys := make([]string, 0, len(obj))
+	for k := range obj {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(obj))
+	for _, k := range keys {
+		parts = append(parts, fmt.Sprintf("%s:%s", k, valueTypeSummary(obj[k])))
+	}
+	return "{" + strings.Join(parts, ", ") + "}"
+}
+
+func valueTypeSummary(v json.RawMessage) string {
+	s := strings.TrimSpace(string(v))
+	if len(s) == 0 {
+		return "empty"
+	}
+	switch s[0] {
+	case '"':
+		return fmt.Sprintf("string(%d)", len(s)-2) // subtract quotes
+	case '{':
+		return fmt.Sprintf("object(%d)", len(s))
+	case '[':
+		return fmt.Sprintf("array(%d)", len(s))
+	case 't', 'f':
+		return "bool"
+	case 'n':
+		return "null"
+	default:
+		return fmt.Sprintf("number(%d)", len(s))
+	}
 }
 
 func truncate(s string, maxLen int) string {

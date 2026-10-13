@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestWithCorrelationID(t *testing.T) {
@@ -595,4 +596,112 @@ func truncateStr(s string, n int) string {
 		return s
 	}
 	return s[:n] + "..."
+}
+
+func TestToolCall_DefaultSummaryMode(t *testing.T) {
+	logFile := filepath.Join(t.TempDir(), "audit.log")
+	logger, err := New(Config{LogFile: logFile})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	params := json.RawMessage(`{"to":"victim@example.com","body":"This is a secret message","dry_run":false}`)
+	ctx := WithCorrelationID(context.Background())
+	logger.ToolCall(ctx, "gmail", "send_message", params, time.Second, "")
+	_ = logger.Close()
+
+	data, err := os.ReadFile(logFile) //nolint:gosec // test file
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+
+	if strings.Contains(content, "victim@example.com") {
+		t.Error("default mode should not contain param values")
+	}
+	if strings.Contains(content, "secret message") {
+		t.Error("default mode should not contain body content")
+	}
+	if !strings.Contains(content, "string(") {
+		t.Error("default mode should contain type summaries like string(N)")
+	}
+	if !strings.Contains(content, "to:") {
+		t.Error("default mode should contain param names")
+	}
+}
+
+func TestToolCall_FullParamsMode(t *testing.T) {
+	logFile := filepath.Join(t.TempDir(), "audit.log")
+	logger, err := New(Config{LogFile: logFile, FullParams: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	params := json.RawMessage(`{"to":"user@example.com","body":"hello world"}`)
+	ctx := WithCorrelationID(context.Background())
+	logger.ToolCall(ctx, "gmail", "send_message", params, time.Second, "")
+	_ = logger.Close()
+
+	data, err := os.ReadFile(logFile) //nolint:gosec // test file
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+
+	if !strings.Contains(content, "user@example.com") {
+		t.Error("full params mode should contain param values")
+	}
+	if !strings.Contains(content, "hello world") {
+		t.Error("full params mode should contain body content")
+	}
+}
+
+func TestToolCall_DefaultErrorRedacted(t *testing.T) {
+	logFile := filepath.Join(t.TempDir(), "audit.log")
+	logger, err := New(Config{LogFile: logFile})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := WithCorrelationID(context.Background())
+	logger.ToolCall(ctx, "gmail", "send_message", nil, time.Second, "auth failed for user secret@corp.com")
+	_ = logger.Close()
+
+	data, err := os.ReadFile(logFile) //nolint:gosec // test file
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+
+	if strings.Contains(content, "secret@corp.com") {
+		t.Error("default mode should not contain error details")
+	}
+	if !strings.Contains(content, "[redacted]") {
+		t.Error("default mode should show [redacted] for errors")
+	}
+}
+
+func TestSummarizeParams(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		check func(string) bool
+		desc  string
+	}{
+		{"string", `{"name":"alice"}`, func(s string) bool { return strings.Contains(s, "name:string(5)") }, "should show string with length"},
+		{"number", `{"count":42}`, func(s string) bool { return strings.Contains(s, "count:number(2)") }, "should show digit count, not value"},
+		{"bool", `{"active":true}`, func(s string) bool { return strings.Contains(s, "active:bool") }, "should show bool type"},
+		{"null", `{"data":null}`, func(s string) bool { return strings.Contains(s, "data:null") }, "should show null type"},
+		{"object", `{"cfg":{"a":1}}`, func(s string) bool { return strings.Contains(s, "cfg:object(") }, "should show object with size"},
+		{"array", `{"items":[1,2]}`, func(s string) bool { return strings.Contains(s, "items:array(") }, "should show array with size"},
+		{"invalid", `not json`, func(s string) bool { return strings.HasPrefix(s, "raw(") }, "should fallback for invalid JSON"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := summarizeParams(json.RawMessage(tt.input))
+			if !tt.check(got) {
+				t.Errorf("%s: got %q", tt.desc, got)
+			}
+		})
+	}
 }

@@ -202,6 +202,10 @@ type AuditConfig struct {
 	LogFile     string   `yaml:"log_file"`
 	Stdout      bool     `yaml:"stdout"`
 	ScrubFields []string `yaml:"scrub_fields"`
+	FullParams  bool     `yaml:"full_params"`
+	MaxSizeMB   int      `yaml:"max_size_mb"`
+	MaxBackups  int      `yaml:"max_backups"`
+	MaxAgeDays  int      `yaml:"max_age_days"`
 }
 
 // SandboxConfig controls plugin process sandboxing via arapuca.

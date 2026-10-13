@@ -310,6 +310,10 @@ func run(forceStdio bool) error {
 		LogFile:     auditLogFile,
 		Stdout:      cfg.Audit.Stdout,
 		ScrubFields: cfg.Audit.ScrubFields,
+		FullParams:  cfg.Audit.FullParams,
+		MaxSizeMB:   cfg.Audit.MaxSizeMB,
+		MaxBackups:  cfg.Audit.MaxBackups,
+		MaxAgeDays:  cfg.Audit.MaxAgeDays,
 	})
 	if err != nil {
 		return fmt.Errorf("audit logger: %w", err)
