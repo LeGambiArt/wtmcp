@@ -98,6 +98,37 @@ func TestBuildPluginEnvPassthroughAll(t *testing.T) {
 	}
 }
 
+func TestBuildPluginEnvStripsDBus(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+	t.Setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1000/bus")
+
+	m := &Manifest{Name: "test-plugin", EnvPassthrough: "all"}
+	groupVars := map[string]string{
+		"DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/1000/bus",
+		"XDG_RUNTIME_DIR":          "/run/user/1000",
+		"SOME_TOKEN":               "tok",
+	}
+	env := buildPluginEnv(m, groupVars)
+
+	envMap := make(map[string]string)
+	for _, e := range env {
+		parts := splitEnvVar(e)
+		if len(parts) == 2 {
+			envMap[parts[0]] = parts[1]
+		}
+	}
+
+	if _, ok := envMap["XDG_RUNTIME_DIR"]; ok {
+		t.Error("XDG_RUNTIME_DIR must not be passed to plugins")
+	}
+	if _, ok := envMap["DBUS_SESSION_BUS_ADDRESS"]; ok {
+		t.Error("DBUS_SESSION_BUS_ADDRESS must not be passed to plugins")
+	}
+	if envMap["SOME_TOKEN"] != "tok" {
+		t.Error("non-D-Bus env vars should still be passed")
+	}
+}
+
 func splitEnvVar(s string) []string {
 	for i, c := range s {
 		if c == '=' {
