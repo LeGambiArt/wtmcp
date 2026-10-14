@@ -90,6 +90,7 @@ func (m *Manager) buildProfile(info PluginInfo) arapuca.Profile {
 		AllowExec:        isPython(info.Handler),
 		CgroupBestEffort: true,
 		UseNetNS:         true,
+		DenyUnixSockets:  runtime.GOOS == "linux" && (runtime.GOARCH == "amd64" || runtime.GOARCH == "arm64"),
 	}
 }
 
