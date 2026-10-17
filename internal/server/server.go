@@ -69,6 +69,12 @@ func (m *ToolOwnerMap) owner(toolName string) string {
 	return m.owners[toolName]
 }
 
+// register records which plugin owns a tool name. Plugin tools must be
+// registered BEFORE AddTool makes them visible: AddTool exposes the tool
+// to concurrent tools/list and tools/call immediately, and the profile
+// filter consults this map — a visible tool with no owner entry can be
+// matched by a wildcard allow, bypassing a plugin-specific deny. An owner
+// entry for a tool that is not yet (or no longer) registered is harmless.
 func (m *ToolOwnerMap) register(toolName, pluginName string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -318,6 +324,14 @@ func registerPluginTools(deps *serverDeps, manifest *plugin.Manifest) {
 			collector.RecordSchema(toolName, plugName, toolDef.Description, schemaJSON)
 		}
 
+		// Ownership first, then AddTool — never the other way around
+		// (see ToolOwnerMap.register): AddTool makes the tool immediately
+		// callable, and the profile filter must never see it with an
+		// empty owner.
+		if deps.toolOwners != nil {
+			deps.toolOwners.register(toolName, plugName)
+		}
+
 		srv.AddTool(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			if readOnly && !isRead {
 				return frameErrorResult("tool not available"), nil
@@ -474,10 +488,6 @@ func registerPluginTools(deps *serverDeps, manifest *plugin.Manifest) {
 			}
 			return framer.frameToolResult(toolName, outputText), nil
 		})
-
-		if deps.toolOwners != nil {
-			deps.toolOwners.register(toolName, plugName)
-		}
 	}
 	if skipped > 0 && readOnly {
 		log.Printf("read-only: skipped %d write tools from %s", skipped, manifest.Name)
@@ -544,21 +554,23 @@ func registerDisabledPluginTools(srv *mcpserver.MCPServer, disabled map[string]p
 
 			reason := auditor.ScrubErrorText(dp.Reason)
 			name := pluginName
-			srv.AddTool(tool, func(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-				return frameErrorResult(fmt.Sprintf(
-					"[DISABLED] %s\n\nAfter fixing, run: plugin_reload(name=\"%s\")",
-					reason, name,
-				)), nil
-			})
 
-			// Record ownership so profile allow/deny rules that name the
-			// plugin apply to its [DISABLED] stubs too. Without this, a
+			// Ownership first, then AddTool (see ToolOwnerMap.register).
+			// Recording ownership also makes profile allow/deny rules that
+			// name the plugin apply to its [DISABLED] stubs: without it, a
 			// stub has an empty owner and is matched only by "*" rules,
 			// making filtering inconsistent between a plugin's loaded and
 			// disabled states.
 			if toolOwners != nil {
 				toolOwners.register(toolDef.Name, pluginName)
 			}
+
+			srv.AddTool(tool, func(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				return frameErrorResult(fmt.Sprintf(
+					"[DISABLED] %s\n\nAfter fixing, run: plugin_reload(name=\"%s\")",
+					reason, name,
+				)), nil
+			})
 		}
 	}
 }
@@ -855,12 +867,14 @@ func ReloadPlugin(ctx context.Context, srv *mcpserver.MCPServer, mgr *plugin.Man
 	// existing names, eliminating the "tool not found" window that existed
 	// when we deleted before re-registering. Ownership is deliberately NOT
 	// purged here: register() overwrites the owner for each surviving tool in
-	// place, so the profile filter never observes an empty plugin name for a
-	// still-callable handler — an empty owner could let a wildcard allow match
-	// and bypass a plugin-specific deny during the reload window. Ownership for
-	// tools that no longer exist is removed below, in step with deleting their
-	// handlers. Re-registering the same plugin's tools does not self-collide:
-	// the collision check permits a tool already owned by the same plugin.
+	// place (the collision check permits a tool already owned by the same
+	// plugin), and both registration paths record ownership BEFORE AddTool —
+	// including for tools that are new in this manifest — so the profile
+	// filter never observes an empty plugin name for a callable handler. An
+	// empty owner could let a wildcard allow match and bypass a
+	// plugin-specific deny during the reload window. Ownership for tools
+	// that no longer exist is removed below, in step with deleting their
+	// handlers.
 
 	// Re-register tools. Check disabled first — a plugin can be in
 	// both m.manifests (discovered) and m.disabled (failed to load),
