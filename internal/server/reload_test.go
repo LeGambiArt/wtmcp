@@ -1,11 +1,16 @@
 package server
 
 import (
+	"context"
 	"strings"
+	"sync"
 	"testing"
+
+	"github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/LeGambiArt/wtmcp/internal/config"
 	"github.com/LeGambiArt/wtmcp/internal/plugin"
+	"github.com/LeGambiArt/wtmcp/internal/profile"
 )
 
 func TestReloadDisabledPlugin_StubToolsRemoved(t *testing.T) {
@@ -209,7 +214,7 @@ func TestSwapStartFailedTools(t *testing.T) {
 	mgr.SetDisabledPlugin("crashed", "init timeout after 5s")
 
 	// SwapStartFailedTools should replace normal tools with stubs.
-	SwapStartFailedTools(srv, mgr, cfg, nil)
+	SwapStartFailedTools(srv, mgr, cfg, nil, nil)
 
 	tools = srv.ListTools()
 	st, ok = tools["crashed_get"]
@@ -251,7 +256,7 @@ func TestSwapStartFailedTools_SkipsAlreadyDisabled(t *testing.T) {
 	}
 
 	// SwapStartFailedTools should be a no-op (no re-registration).
-	SwapStartFailedTools(srv, mgr, cfg, nil)
+	SwapStartFailedTools(srv, mgr, cfg, nil, nil)
 
 	tools = srv.ListTools()
 	st = tools["envfail_get"]
@@ -293,7 +298,7 @@ func TestReloadPlugin_StillDisabledReRegistersStubs(t *testing.T) {
 		t.Fatal("broken should be in disabled map")
 	}
 	single := map[string]plugin.DisabledPlugin{"broken": dp}
-	registerDisabledPluginTools(srv, single, false, cfg.ReadOnly, nil)
+	registerDisabledPluginTools(srv, single, false, cfg.ReadOnly, nil, nil)
 
 	// Verify stub is back.
 	tools = srv.ListTools()
@@ -384,7 +389,99 @@ func TestToolCollision_SecondPluginSkipped(t *testing.T) {
 	}
 }
 
-func TestToolCollision_ReloadPurgesStaleEntries(t *testing.T) {
+func TestDisabledToolCollisionPreservesLoadedHandlerAndOwner(t *testing.T) {
+	mgr := plugin.NewManagerForTest()
+	mgr.SetManifest("alpha", &plugin.Manifest{
+		Name: "alpha", Tools: []plugin.ToolDef{{Name: "shared_tool", Description: "From alpha", Access: "read"}},
+	})
+	mgr.SetHandle("alpha")
+	cfg := config.DefaultConfig()
+	index := NewToolIndex(mgr, false)
+	srv, owners := New("test", mgr, cfg, index, nil, nil, nil, nil, true)
+	disabled := map[string]plugin.DisabledPlugin{
+		"beta": {Name: "beta", Reason: "missing credentials", Manifest: &plugin.Manifest{
+			Name: "beta", Tools: []plugin.ToolDef{{Name: "shared_tool", Description: "From beta", Access: "read"}},
+		}},
+	}
+	registerDisabledPluginTools(srv, disabled, false, false, nil, owners)
+	if got := owners.owner("shared_tool"); got != "alpha" {
+		t.Fatalf("owner after disabled collision = %q, want alpha", got)
+	}
+	if got := srv.ListTools()["shared_tool"].Tool.Description; !strings.Contains(got, "From alpha") {
+		t.Fatalf("disabled plugin replaced alpha's handler: %q", got)
+	}
+	// A reload of the skipped plugin must not delete alpha's tool merely
+	// because the skipped name appeared in beta's old manifest.
+	owners.deleteOwnedTools(srv, "beta", "shared_tool")
+	if got := owners.owner("shared_tool"); got != "alpha" {
+		t.Fatalf("owner after beta removal = %q, want alpha", got)
+	}
+	if _, ok := srv.ListTools()["shared_tool"]; !ok {
+		t.Fatal("beta's reload deleted alpha's handler")
+	}
+}
+
+func TestConcurrentRegistrationKeepsHandlerAndOwnerTogether(t *testing.T) {
+	mgr := plugin.NewManagerForTest()
+	for _, name := range []string{"alpha", "beta"} {
+		mgr.SetManifest(name, &plugin.Manifest{
+			Name: name, Tools: []plugin.ToolDef{{Name: "shared_tool", Description: "From " + name, Access: "read"}},
+		})
+		mgr.SetHandle(name)
+	}
+	cfg := config.DefaultConfig()
+	index := NewToolIndex(mgr, false)
+	srv, owners := New("test", plugin.NewManagerForTest(), cfg, index, nil, nil, nil, nil, true)
+	deps := &serverDeps{srv: srv, mgr: mgr, cfg: cfg, index: index, toolOwners: owners}
+	var wg sync.WaitGroup
+	for _, name := range []string{"alpha", "beta"} {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			registerPluginTools(deps, mgr.Manifests()[name])
+		}()
+	}
+	wg.Wait()
+	owner := owners.owner("shared_tool")
+	if owner != "alpha" && owner != "beta" {
+		t.Fatalf("unexpected owner %q", owner)
+	}
+	if got := srv.ListTools()["shared_tool"].Tool.Description; !strings.Contains(got, "From "+owner) {
+		t.Fatalf("handler %q does not match owner %q", got, owner)
+	}
+}
+
+func TestOldHandlerChecksItsOwnPluginAfterOwnershipChanges(t *testing.T) {
+	mgr := plugin.NewManagerForTest()
+	mgr.SetManifest("alpha", &plugin.Manifest{
+		Name: "alpha", Tools: []plugin.ToolDef{{Name: "shared_tool", Description: "From alpha", Access: "read"}},
+	})
+	mgr.SetHandle("alpha")
+	cfg := config.DefaultConfig()
+	index := NewToolIndex(mgr, false)
+	srv, owners := New("test", mgr, cfg, index, nil, nil, nil, nil, true)
+	oldHandler := srv.ListTools()["shared_tool"].Handler
+	// Simulate a tools/call that fetched the old handler before a reload
+	// transferred the name to a different plugin. mcp-go applies its filter
+	// after fetching the handler, using the current owner map.
+	owners.register("shared_tool", "beta")
+	filter := buildFilter(t, config.ProfileDefinition{
+		Allow: map[string][]string{"*": {"shared_tool"}},
+		Deny:  map[string][]string{"alpha": {"shared_tool"}},
+	})
+	ctx := profile.WithFilter(context.Background(), filter)
+	result, err := oldHandler(ctx, mcp.CallToolRequest{})
+	if err != nil || result == nil || !result.IsError {
+		t.Fatalf("stale alpha handler must reject request despite new map owner: result=%v err=%v", result, err)
+	}
+}
+
+// TestReload_ReRegisterPreservesOwnership verifies the reload path re-registers
+// a plugin's own tools without purging ownership first. register() overwrites
+// the owner in place (same plugin => no self-collision), so the profile filter
+// never sees an empty owner for a still-callable tool — which a wildcard allow
+// could otherwise match, bypassing a plugin-specific deny.
+func TestReload_ReRegisterPreservesOwnership(t *testing.T) {
 	mgr := plugin.NewManagerForTest()
 	mgr.SetManifest("alpha", &plugin.Manifest{
 		Name:      "alpha",
@@ -399,21 +496,136 @@ func TestToolCollision_ReloadPurgesStaleEntries(t *testing.T) {
 	index := NewToolIndex(mgr, false)
 	srv, toolOwners := New("test", mgr, cfg, index, nil, nil, nil, nil, true)
 
-	tools := srv.ListTools()
-	if _, ok := tools["alpha_tool"]; !ok {
+	if _, ok := srv.ListTools()["alpha_tool"]; !ok {
 		t.Fatal("alpha_tool should be registered")
 	}
+	if got := toolOwners.owner("alpha_tool"); got != "alpha" {
+		t.Fatalf("owner = %q, want alpha", got)
+	}
 
-	oldNames := []string{"alpha_tool"}
-	srv.DeleteTools(oldNames...)
-	toolOwners.removePlugin("alpha")
-
+	// Re-register the same plugin's tools WITHOUT purging ownership (the reload
+	// path no longer purges). AddTool replaces the handler in place.
 	deps := &serverDeps{srv, mgr, cfg, index, nil, nil, nil, nil, toolOwners}
+	registerPluginTools(deps, mgr.Manifests()["alpha"])
+
+	if _, ok := srv.ListTools()["alpha_tool"]; !ok {
+		t.Fatal("alpha_tool should remain registered after re-registration")
+	}
+	if got := toolOwners.owner("alpha_tool"); got != "alpha" {
+		t.Fatalf("owner after re-registration = %q, want alpha (never cleared)", got)
+	}
+}
+
+// TestEveryPluginToolHasOwner verifies the invariant the profile filter
+// depends on: once registration returns, every tool registered from a
+// plugin manifest — loaded or disabled — has a non-empty owner. An empty
+// owner lets a wildcard allow match and bypass a plugin-specific deny.
+// Management tools (excludedTools) are deliberately ownerless and are
+// governed by the profile filter's exempt/wildcard rules instead. The
+// transient before-owner-is-recorded window is closed by registering
+// ownership before AddTool; this test catches paths that forget to
+// register ownership at all.
+func TestEveryPluginToolHasOwner(t *testing.T) {
+	mgr := plugin.NewManagerForTest()
+	mgr.SetManifest("alpha", &plugin.Manifest{
+		Name: "alpha",
+		Tools: []plugin.ToolDef{
+			{Name: "alpha_get", Description: "Get", Access: "read"},
+			{Name: "alpha_put", Description: "Put", Access: "write"},
+		},
+	})
+	mgr.SetHandle("alpha")
+	mgr.SetManifest("broken", &plugin.Manifest{
+		Name: "broken",
+		Tools: []plugin.ToolDef{
+			{Name: "broken_get", Description: "Get", Access: "read"},
+		},
+	})
+	mgr.SetDisabledPlugin("broken", "missing credentials")
+
+	cfg := config.DefaultConfig()
+	index := NewToolIndex(mgr, false)
+	srv, toolOwners := New("test", mgr, cfg, index, nil, nil, nil, nil, true)
+
+	for _, name := range []string{"alpha_get", "alpha_put", "broken_get"} {
+		if _, ok := srv.ListTools()[name]; !ok {
+			t.Fatalf("tool %q should be registered", name)
+		}
+	}
+	for name, want := range map[string]string{
+		"alpha_get": "alpha", "alpha_put": "alpha", "broken_get": "broken",
+	} {
+		if got := toolOwners.owner(name); got != want {
+			t.Errorf("owner(%q) = %q, want %q", name, got, want)
+		}
+	}
+
+	// Every non-management registered tool must have an owner.
+	for name := range srv.ListTools() {
+		if excludedTools[name] {
+			continue
+		}
+		if got := toolOwners.owner(name); got == "" {
+			t.Errorf("tool %q is registered but has no owner", name)
+		}
+	}
+}
+
+// TestReload_NewToolGetsOwner verifies that a tool added by a manifest
+// change during re-registration (the reload path) ends up with ownership
+// recorded — the case the old AddTool-then-register ordering left with a
+// callable-but-ownerless window.
+func TestReload_NewToolGetsOwner(t *testing.T) {
+	mgr := plugin.NewManagerForTest()
+	mgr.SetManifest("alpha", &plugin.Manifest{
+		Name:      "alpha",
+		Execution: "oneshot",
+		Tools: []plugin.ToolDef{
+			{Name: "alpha_tool", Description: "From alpha", Access: "read"},
+		},
+	})
+	mgr.SetHandle("alpha")
+
+	cfg := config.DefaultConfig()
+	index := NewToolIndex(mgr, false)
+	srv, toolOwners := New("test", mgr, cfg, index, nil, nil, nil, nil, true)
+
+	// Simulate a reload whose manifest gained a new tool.
 	manifest := mgr.Manifests()["alpha"]
+	manifest.Tools = append(manifest.Tools, plugin.ToolDef{
+		Name: "alpha_new", Description: "Added by reload", Access: "read",
+	})
+	deps := &serverDeps{srv, mgr, cfg, index, nil, nil, nil, nil, toolOwners}
 	registerPluginTools(deps, manifest)
 
-	tools = srv.ListTools()
-	if _, ok := tools["alpha_tool"]; !ok {
-		t.Fatal("alpha_tool should be re-registered after purge without self-collision")
+	if _, ok := srv.ListTools()["alpha_new"]; !ok {
+		t.Fatal("alpha_new should be registered after re-registration")
+	}
+	if got := toolOwners.owner("alpha_new"); got != "alpha" {
+		t.Fatalf("owner(alpha_new) = %q, want alpha", got)
+	}
+	if got := toolOwners.owner("alpha_tool"); got != "alpha" {
+		t.Fatalf("owner(alpha_tool) = %q, want alpha (never cleared)", got)
+	}
+}
+
+// TestToolOwnerMap_RemoveTools verifies removeTools drops only the named
+// entries and leaves other tools' ownership intact.
+func TestToolOwnerMap_RemoveTools(t *testing.T) {
+	m := newToolOwnerMap()
+	m.register("a_get", "alpha")
+	m.register("a_del", "alpha")
+	m.register("b_run", "beta")
+
+	m.removeTools("a_del")
+
+	if got := m.owner("a_del"); got != "" {
+		t.Errorf("a_del owner = %q, want empty after removal", got)
+	}
+	if got := m.owner("a_get"); got != "alpha" {
+		t.Errorf("a_get owner = %q, want alpha (must survive)", got)
+	}
+	if got := m.owner("b_run"); got != "beta" {
+		t.Errorf("b_run owner = %q, want beta (must survive)", got)
 	}
 }

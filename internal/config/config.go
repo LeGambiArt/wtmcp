@@ -38,6 +38,14 @@ type Config struct {
 	Providers      ProvidersConfig `yaml:"providers"`
 	Secrets        SecretsConfig   `yaml:"secrets"`
 	Server         ServerConfig    `yaml:"server"`
+	Profiles       ProfilesConfig  `yaml:"profiles"`
+}
+
+// ProfilesConfig holds global profile settings from config.yaml.
+// Profile definitions and rules are loaded from profiles.d/*.yaml.
+type ProfilesConfig struct {
+	Dir     string `yaml:"dir"`     // override profiles.d directory
+	Default string `yaml:"default"` // fallback profile name
 }
 
 // HTTPConfig controls the HTTP proxy behavior.
@@ -228,9 +236,26 @@ const (
 
 // ServerConfig controls the MCP transport layer.
 type ServerConfig struct {
-	Transport string `yaml:"transport"`
-	Host      string `yaml:"host"`
-	Port      int    `yaml:"port"`
+	Transport string           `yaml:"transport"`
+	Host      string           `yaml:"host"`
+	Port      int              `yaml:"port"`
+	TLS       *ServerTLSConfig `yaml:"tls"`
+}
+
+// Client authentication modes for ServerTLSConfig.ClientAuth.
+const (
+	ClientAuthRequire = "require"
+	ClientAuthRequest = "request"
+	ClientAuthNone    = "none"
+)
+
+// ServerTLSConfig configures TLS (and optional mTLS client auth) for
+// the streamable-http transport.
+type ServerTLSConfig struct {
+	CertFile   string `yaml:"cert_file"`
+	KeyFile    string `yaml:"key_file"`
+	CAFile     string `yaml:"ca_file"`
+	ClientAuth string `yaml:"client_auth"` // require, request, none
 }
 
 // Validate checks that ServerConfig fields are within valid ranges.
@@ -243,6 +268,38 @@ func (s *ServerConfig) Validate() error {
 	}
 	if s.Transport == TransportStreamableHTTP && s.Host == "" {
 		return fmt.Errorf("server.host must not be empty when transport is %s", TransportStreamableHTTP)
+	}
+	if s.TLS != nil {
+		if err := s.TLS.Validate(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Validate checks that ServerTLSConfig fields are internally consistent.
+func (t *ServerTLSConfig) Validate() error {
+	if (t.CertFile == "") != (t.KeyFile == "") {
+		return fmt.Errorf("server.tls: cert_file and key_file must both be set")
+	}
+	switch t.ClientAuth {
+	case "", ClientAuthNone, ClientAuthRequest, ClientAuthRequire:
+	default:
+		return fmt.Errorf("server.tls.client_auth must be one of %q, %q, %q, got %q",
+			ClientAuthRequire, ClientAuthRequest, ClientAuthNone, t.ClientAuth)
+	}
+	if t.ClientAuth == ClientAuthRequire || t.ClientAuth == ClientAuthRequest {
+		if t.CAFile == "" {
+			return fmt.Errorf("server.tls.ca_file is required when client_auth is %q", t.ClientAuth)
+		}
+		// Client authentication is only exercised over TLS. Without a
+		// server cert the transport silently serves plaintext HTTP
+		// (see transport.listenHTTP), so client certs are never
+		// requested or verified — a fail-open trap. Require the cert so
+		// the misconfiguration fails at startup instead.
+		if t.CertFile == "" {
+			return fmt.Errorf("server.tls.cert_file and key_file are required when client_auth is %q", t.ClientAuth)
+		}
 	}
 	return nil
 }

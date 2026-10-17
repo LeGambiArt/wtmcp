@@ -344,6 +344,7 @@ type StandardPaths struct {
 	CredentialsDir string
 	PluginsDir     string
 	CacheDir       string
+	ProfilesDir    string
 }
 
 // Paths returns the standard directory layout for a workdir.
@@ -355,5 +356,6 @@ func Paths(workdir string) StandardPaths {
 		CredentialsDir: filepath.Join(workdir, "credentials"),
 		PluginsDir:     filepath.Join(workdir, "plugins"),
 		CacheDir:       filepath.Join(workdir, "cache"),
+		ProfilesDir:    filepath.Join(workdir, "profiles.d"),
 	}
 }

@@ -173,6 +173,55 @@ wtmcpctl provider enable bearer        # Re-enable bearer auth
 
 ---
 
+### profile
+
+Validate and inspect agent profiles (`profiles.d/`), which restrict
+which tools an agent can discover and call based on its TLS
+client-certificate identity (or the `--profile` flag on stdio). These
+commands work offline — they do not start the server. See the
+[Agent Profiles Guide](docs/profiles-guide.md) for the full feature.
+
+```bash
+wtmcpctl profile check                 # Validate profiles.d/
+wtmcpctl profile check --with-plugins  # Also check plugin name references
+wtmcpctl profile list                  # List defined profiles
+wtmcpctl profile test --cn <name>      # Test which profile an identity matches
+```
+
+**`check`** — loads every `profiles.d/*.yaml` file and reports all
+errors and warnings at once (does not stop at the first). Exit code
+`0` = valid, `1` = fatal errors found. Checks include: YAML parse
+errors, duplicate profile names, duplicate rule keys, non-single-field
+matches, invalid tool regexps, undefined profile/default references,
+and (with `--with-plugins`) unknown plugin names.
+
+**`list`** — prints a table of defined profiles with their allow
+plugin/tool counts, deny counts, and source file.
+
+**`test`** — resolves a synthetic identity to a profile and prints the
+matched rule plus the resulting allowed/denied tool split (uses
+discovered plugins to enumerate tools).
+
+**Flags:**
+
+| Flag | Command | Description |
+|---|---|---|
+| `--with-plugins` | check | Validate plugin name references against discovered plugins |
+| `--cn` | test | Common Name to test |
+| `--san-uri` | test | SAN URI to test |
+| `--san-dns` | test | SAN DNS name to test |
+| `--san-email` | test | SAN email to test |
+
+**Examples:**
+
+```bash
+wtmcpctl profile check                            # Validate before deploying
+wtmcpctl profile test --cn code-review-bot        # What does this agent get?
+wtmcpctl profile test --san-email ci-bot@example.com
+```
+
+---
+
 ### stats
 
 View tool usage statistics from the last server session.
@@ -282,3 +331,4 @@ wtmcpctl version                       # Show version and build date
 ## See Also
 
 - [wtmcp README](README.md) -- main server documentation
+- [Agent Profiles Guide](docs/profiles-guide.md) -- per-agent tool filtering

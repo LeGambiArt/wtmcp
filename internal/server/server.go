@@ -25,6 +25,7 @@ import (
 
 	"github.com/LeGambiArt/wtmcp/internal/plugin"
 	"github.com/LeGambiArt/wtmcp/internal/pluginctx"
+	"github.com/LeGambiArt/wtmcp/internal/profile"
 	"github.com/LeGambiArt/wtmcp/internal/protocol"
 	"github.com/LeGambiArt/wtmcp/internal/proxy"
 	"github.com/LeGambiArt/wtmcp/internal/ratelimit"
@@ -54,8 +55,10 @@ type serverDeps struct {
 // ToolOwnerMap tracks which plugin registered each tool name.
 // All methods are safe for concurrent use.
 type ToolOwnerMap struct {
-	mu     sync.RWMutex
-	owners map[string]string // tool name -> plugin name
+	mu             sync.RWMutex
+	registrationMu sync.Mutex        // serialize owner/handler changes across plugins
+	reloadMu       sync.Mutex        // serialize whole reload/swap reconciliations
+	owners         map[string]string // tool name -> plugin name
 }
 
 func newToolOwnerMap() *ToolOwnerMap {
@@ -68,29 +71,147 @@ func (m *ToolOwnerMap) owner(toolName string) string {
 	return m.owners[toolName]
 }
 
+// register records which plugin owns a tool name. Plugin tools must be
+// registered BEFORE AddTool makes them visible: AddTool exposes the tool
+// to concurrent tools/list and tools/call immediately, and the profile
+// filter consults this map — a visible tool with no owner entry can be
+// matched by a wildcard allow, bypassing a plugin-specific deny. An owner
+// entry for a tool that is not yet (or no longer) registered is harmless.
 func (m *ToolOwnerMap) register(toolName, pluginName string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.owners[toolName] = pluginName
 }
 
-func (m *ToolOwnerMap) removePlugin(pluginName string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	for tool, owner := range m.owners {
-		if owner == pluginName {
-			delete(m.owners, tool)
+// addTool claims a name and publishes its handler in that order. The
+// registration lock also makes the collision check atomic with publication;
+// a different plugin must never replace a handler while retaining (or
+// changing) another plugin's ownership entry.
+func (m *ToolOwnerMap) addTool(srv *mcpserver.MCPServer, tool mcp.Tool, pluginName string, handler mcpserver.ToolHandlerFunc) string {
+	m.registrationMu.Lock()
+	defer m.registrationMu.Unlock()
+	if owner := m.owner(tool.Name); owner != "" && owner != pluginName {
+		return owner
+	}
+	m.register(tool.Name, pluginName)
+	srv.AddTool(tool, handler)
+	return ""
+}
+
+// deleteOwnedTools removes only tools still owned by pluginName. A concurrent
+// registration cannot claim a removed name until its handler is gone.
+func (m *ToolOwnerMap) deleteOwnedTools(srv *mcpserver.MCPServer, pluginName string, names ...string) {
+	m.registrationMu.Lock()
+	defer m.registrationMu.Unlock()
+	var owned []string
+	for _, name := range names {
+		if m.owner(name) == pluginName {
+			owned = append(owned, name)
 		}
 	}
+	if len(owned) > 0 {
+		srv.DeleteTools(owned...)
+		m.removeTools(owned...)
+	}
+}
+
+// removeTools drops ownership entries for the named tools. It is called in
+// step with deleting the tools' handlers during a reload, so ownership for a
+// still-callable tool is never cleared out from under the profile filter (an
+// empty owner could let a wildcard allow bypass a plugin-specific deny).
+func (m *ToolOwnerMap) removeTools(toolNames ...string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, tool := range toolNames {
+		delete(m.owners, tool)
+	}
+}
+
+// newToolFilter builds the mcp-go tool filter that enforces the
+// per-connection profile. The returned func reads the *profile.Filter
+// stored in the request context (set by the identity context func) and
+// keeps only the tools that filter allows. When no filter is present
+// (no profiles configured), it returns the tools unchanged.
+func newToolFilter(toolOwners *ToolOwnerMap) mcpserver.ToolFilterFunc {
+	return func(ctx context.Context, tools []mcp.Tool) []mcp.Tool {
+		filter := profile.FilterFromContext(ctx)
+		if filter == nil {
+			return tools // no profiles configured — unfiltered
+		}
+		allowed := make([]mcp.Tool, 0, len(tools))
+		for _, tool := range tools {
+			if filter.IsAllowed(toolOwners.owner(tool.Name), tool.Name) {
+				allowed = append(allowed, tool)
+			}
+		}
+		return allowed
+	}
+}
+
+// profileAllowsPluginTool reports whether the connection's profile permits
+// at least one tool from the plugin. A nil filter permits everything.
+func profileAllowsPluginTool(filter *profile.Filter, manifest *plugin.Manifest) bool {
+	if filter == nil {
+		return true
+	}
+	for _, t := range manifest.Tools {
+		if filter.IsAllowed(manifest.Name, t.Name) {
+			return true
+		}
+	}
+	return false
+}
+
+// pluginHasRegisteredResource reports whether the plugin currently exposes
+// a context file or provider resource through MCP. Profiles do not filter
+// resources, so such a plugin remains useful even with no allowed tools.
+func pluginHasRegisteredResource(manifest *plugin.Manifest, mgr *plugin.Manager, registered map[string]*mcpserver.ServerResource) bool {
+	for _, file := range manifest.ContextFiles {
+		if _, ok := registered[pluginctx.ResourceURI(manifest.Name, file)]; ok {
+			return true
+		}
+	}
+	if manifest.ProvidesResources() {
+		if handle := mgr.Handle(manifest.Name); handle != nil {
+			for _, res := range handle.InitialResources() {
+				if _, ok := registered[res.URI]; ok {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// filterCopy returns a slice containing only the elements of s for which
+// keep returns true. The input's backing array is left unchanged, and order
+// is preserved.
+func filterCopy[T any](s []T, keep func(T) bool) []T {
+	kept := s[:0:0]
+	for _, v := range s {
+		if keep(v) {
+			kept = append(kept, v)
+		}
+	}
+	return kept
 }
 
 // New creates an MCP server with tools from all loaded plugins.
 // When sandboxBuilt is false, the server's MCP instructions warn
 // the LLM that plugins run without OS-level isolation.
 func New(version string, manager *plugin.Manager, cfg *config.Config, index *ToolIndex, collector *stats.Collector, auditor *audit.Logger, rateLimiter *ratelimit.Registry, framer *OutputFramer, sandboxBuilt bool) (*mcpserver.MCPServer, *ToolOwnerMap) {
+	toolOwners := newToolOwnerMap()
+
 	opts := []mcpserver.ServerOption{
 		mcpserver.WithToolCapabilities(true),
 		mcpserver.WithResourceCapabilities(true, true),
+		// Profile-based tool filtering. mcp-go consults this filter on
+		// both tools/list (hides tools) and tools/call (rejects the call
+		// before the handler runs), so it is a complete access boundary.
+		// It is inert unless a *profile.Filter is present in the request
+		// context (set by the identity context func) — so with no
+		// profiles configured, behavior is unchanged.
+		mcpserver.WithToolFilter(newToolFilter(toolOwners)),
 	}
 	if cfg.Security.ElicitationEnabled() {
 		opts = append(opts, mcpserver.WithElicitation())
@@ -116,7 +237,6 @@ func New(version string, manager *plugin.Manager, cfg *config.Config, index *Too
 	}
 	srv := mcpserver.NewMCPServer("wtmcp", version, opts...)
 
-	toolOwners := newToolOwnerMap()
 	deps := &serverDeps{
 		srv:         srv,
 		mgr:         manager,
@@ -147,7 +267,7 @@ func New(version string, manager *plugin.Manager, cfg *config.Config, index *Too
 	}
 
 	// Register disabled plugin tools with [DISABLED] descriptions
-	registerDisabledPluginTools(srv, disabled, progressive, cfg.ReadOnly, auditor)
+	registerDisabledPluginTools(srv, disabled, progressive, cfg.ReadOnly, auditor, toolOwners)
 
 	// Register context files as MCP resources
 	registerContextResources(srv, manager, collector)
@@ -194,14 +314,6 @@ func registerPluginTools(deps *serverDeps, manifest *plugin.Manifest) {
 			continue
 		}
 
-		if deps.toolOwners != nil {
-			if existingPlugin := deps.toolOwners.owner(toolName); existingPlugin != "" && existingPlugin != plugName {
-				log.Printf("WARNING: tool %q from plugin %q skipped: already registered by plugin %q", toolName, plugName, existingPlugin)
-				skipped++
-				continue
-			}
-		}
-
 		tool, schemaJSON, err := buildMCPTool(toolDef, progressive)
 		if err != nil {
 			log.Printf("WARNING: tool %q from plugin %q skipped: %v", toolName, plugName, err)
@@ -234,11 +346,13 @@ func registerPluginTools(deps *serverDeps, manifest *plugin.Manifest) {
 			unvalidated++
 		}
 
-		if collector != nil {
-			collector.RecordSchema(toolName, plugName, toolDef.Description, schemaJSON)
-		}
-
-		srv.AddTool(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		handler := func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			// mcp-go reads the handler before applying its tool filter. A
+			// reload may replace/remove the name between those steps, so
+			// enforce the identity captured by this handler as well.
+			if filter := profile.FilterFromContext(ctx); filter != nil && !filter.IsAllowed(plugName, toolName) {
+				return frameErrorResult("tool not available"), nil
+			}
 			if readOnly && !isRead {
 				return frameErrorResult("tool not available"), nil
 			}
@@ -272,7 +386,10 @@ func registerPluginTools(deps *serverDeps, manifest *plugin.Manifest) {
 				return frameErrorResult(outputText), nil
 			}
 
-			_, handle := mgr.CallTool(ctx, toolName)
+			actualPlugin, handle := mgr.CallTool(ctx, toolName)
+			if actualPlugin != "" && actualPlugin != plugName {
+				return frameErrorResult("tool not available"), nil
+			}
 			if handle == nil {
 				if mgr.IsLoading() {
 					outputText = fmt.Sprintf("plugin for tool %s is still loading, try again shortly", toolName)
@@ -393,10 +510,18 @@ func registerPluginTools(deps *serverDeps, manifest *plugin.Manifest) {
 				outputText = truncateUTF8(outputText, maxOutput) + fmt.Sprintf("\n\n[truncated: %d bytes omitted]", omitted)
 			}
 			return framer.frameToolResult(toolName, outputText), nil
-		})
-
+		}
 		if deps.toolOwners != nil {
-			deps.toolOwners.register(toolName, plugName)
+			if owner := deps.toolOwners.addTool(srv, tool, plugName, handler); owner != "" {
+				log.Printf("WARNING: tool %q from plugin %q skipped: already registered by plugin %q", toolName, plugName, owner)
+				skipped++
+				continue
+			}
+		} else {
+			srv.AddTool(tool, handler)
+		}
+		if collector != nil {
+			collector.RecordSchema(toolName, plugName, toolDef.Description, schemaJSON)
 		}
 	}
 	if skipped > 0 && readOnly {
@@ -436,7 +561,7 @@ func buildMCPTool(def plugin.ToolDef, progressive bool) (mcp.Tool, []byte, error
 	return tool, schemaJSON, nil
 }
 
-func registerDisabledPluginTools(srv *mcpserver.MCPServer, disabled map[string]plugin.DisabledPlugin, progressive bool, readOnly bool, auditor *audit.Logger) {
+func registerDisabledPluginTools(srv *mcpserver.MCPServer, disabled map[string]plugin.DisabledPlugin, progressive bool, readOnly bool, auditor *audit.Logger, toolOwners *ToolOwnerMap) {
 	for _, dp := range disabled {
 		pluginName := dp.Name
 		for _, toolDef := range dp.Manifest.Tools {
@@ -464,12 +589,28 @@ func registerDisabledPluginTools(srv *mcpserver.MCPServer, disabled map[string]p
 
 			reason := auditor.ScrubErrorText(dp.Reason)
 			name := pluginName
-			srv.AddTool(tool, func(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+
+			// Recording ownership also makes profile allow/deny rules that
+			// name the plugin apply to its [DISABLED] stubs: without it, a
+			// stub has an empty owner and is matched only by "*" rules,
+			// making filtering inconsistent between a plugin's loaded and
+			// disabled states.
+			handler := func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				if filter := profile.FilterFromContext(ctx); filter != nil && !filter.IsAllowed(pluginName, toolDef.Name) {
+					return frameErrorResult("tool not available"), nil
+				}
 				return frameErrorResult(fmt.Sprintf(
 					"[DISABLED] %s\n\nAfter fixing, run: plugin_reload(name=\"%s\")",
 					reason, name,
 				)), nil
-			})
+			}
+			if toolOwners != nil {
+				if owner := toolOwners.addTool(srv, tool, pluginName, handler); owner != "" {
+					log.Printf("WARNING: disabled tool %q from plugin %q skipped: already registered by plugin %q", toolDef.Name, pluginName, owner)
+				}
+			} else {
+				srv.AddTool(tool, handler)
+			}
 		}
 	}
 }
@@ -485,36 +626,56 @@ func registerManagementTools(deps *serverDeps) {
 		mcp.NewTool("plugin_list",
 			mcp.WithDescription("List all plugins and their status (loaded, disabled)"),
 		),
-		func(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			var plugins []map[string]any
+
+			// Include plugins with permitted tools or exposed resources.
+			// Resources remain available to every profile.
+			filter := profile.FilterFromContext(ctx)
+			registeredResources := srv.ListResources()
 
 			disabled := mgr.DisabledPlugins()
 			for name, manifest := range mgr.Manifests() {
-				if dp, ok := disabled[name]; ok {
-					plugins = append(plugins, map[string]any{
-						"name":             name,
-						"status":           "disabled",
-						"reason":           dp.Reason,
-						"credential_group": manifest.CredentialGroup,
-						"tools":            len(manifest.Tools),
-					})
+				if filter != nil && !profileAllowsPluginTool(filter, manifest) &&
+					!pluginHasRegisteredResource(manifest, mgr, registeredResources) {
 					continue
 				}
 
-				var primaryCount, deferredCount int
+				// Count only the tools this profile permits, so the
+				// advertised totals never reveal that gated tools exist
+				// (a nil filter permits everything). Consistent with the
+				// feature's guarantee that an agent does not discover a
+				// tool it cannot call.
+				var total, primaryCount, deferredCount int
 				for _, t := range manifest.Tools {
+					if filter != nil && !filter.IsAllowed(name, t.Name) {
+						continue
+					}
+					total++
 					if t.IsPrimary() {
 						primaryCount++
 					} else {
 						deferredCount++
 					}
 				}
+
+				if dp, ok := disabled[name]; ok {
+					plugins = append(plugins, map[string]any{
+						"name":             name,
+						"status":           "disabled",
+						"reason":           dp.Reason,
+						"credential_group": manifest.CredentialGroup,
+						"tools":            total,
+					})
+					continue
+				}
+
 				plugins = append(plugins, map[string]any{
 					"name":        name,
 					"version":     manifest.Version,
 					"description": manifest.Description,
 					"execution":   manifest.Execution,
-					"tools":       len(manifest.Tools),
+					"tools":       total,
 					"primary":     primaryCount,
 					"deferred":    deferredCount,
 				})
@@ -595,11 +756,22 @@ func registerToolStats(srv *mcpserver.MCPServer, collector *stats.Collector) {
 				mcp.Description("Include resource read stats (default: false)"),
 			),
 		),
-		func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			args := req.GetArguments()
 			groupBy, _ := args["group_by"].(string)
 			includeSchemas, _ := args["include_schemas"].(bool)
 			includeResources, _ := args["include_resources"].(bool)
+
+			// Tool stats are scoped to allowed tools. Resource stats follow
+			// the registered resources, which profiles do not filter.
+			filter := profile.FilterFromContext(ctx)
+			// toolVisible drives per-plugin aggregations so their totals never
+			// leak usage from tools the caller's profile denies. Nil (no
+			// profile) includes every tool.
+			var toolVisible func(pluginName, toolName string) bool
+			if filter != nil {
+				toolVisible = filter.IsAllowed
+			}
 
 			result := map[string]any{
 				"tokenizer":      collector.TokenizerName(),
@@ -607,32 +779,48 @@ func registerToolStats(srv *mcpserver.MCPServer, collector *stats.Collector) {
 			}
 
 			if groupBy == "plugin" {
-				result["calls"] = collector.PluginSummaries()
+				result["calls"] = collector.PluginSummaries(toolVisible)
 			} else {
-				result["calls"] = collector.Summary()
+				calls := collector.Summary()
+				if filter != nil {
+					calls = filterCopy(calls, func(c stats.ToolSummary) bool {
+						return filter.IsAllowed(c.PluginName, c.ToolName)
+					})
+				}
+				result["calls"] = calls
 			}
 
 			if includeSchemas {
-				result["schema_cost"] = collector.SchemaCost()
+				result["schema_cost"] = collector.SchemaCost(toolVisible)
 			}
 
+			var resources []stats.ResourceEntry
 			if includeResources {
-				result["resources"] = collector.ResourceSummary()
+				resources = collector.ResourceSummary()
+				if filter != nil {
+					registered := srv.ListResources()
+					resources = filterCopy(resources, func(r stats.ResourceEntry) bool {
+						_, ok := registered[r.URI]
+						return ok
+					})
+				}
+				result["resources"] = resources
 			}
 
-			inputTk, outputTk := collector.TotalTokens()
+			// Tool totals use the caller's allowed tools; resource totals use
+			// the visible resource rows assembled above.
+			inputTk, outputTk := collector.TotalTokens(toolVisible)
 			totals := map[string]any{
 				"total_input_tokens":  inputTk,
 				"total_output_tokens": outputTk,
 				"total_tokens":        inputTk + outputTk,
 			}
 			if includeSchemas {
-				sc := collector.SchemaCost()
-				totals["schema_overhead_tokens"] = sc.TotalSchemaTokens
+				totals["schema_overhead_tokens"] = collector.SchemaCost(toolVisible).TotalSchemaTokens
 			}
 			if includeResources {
 				var resTk, resReads int
-				for _, r := range collector.ResourceSummary() {
+				for _, r := range resources {
 					resTk += r.ContentTokens
 					resReads += r.ReadCount
 				}
@@ -663,6 +851,10 @@ func excludedToolNames() []string {
 // The index is rebuilt to reflect manifest changes, and tool_search is
 // re-registered so its CategorySummary stays current.
 func ReloadPlugin(ctx context.Context, srv *mcpserver.MCPServer, mgr *plugin.Manager, cfg *config.Config, name string, index *ToolIndex, collector *stats.Collector, auditor *audit.Logger, rateLimiter *ratelimit.Registry, framer *OutputFramer, toolOwners *ToolOwnerMap) error {
+	if toolOwners != nil {
+		toolOwners.reloadMu.Lock()
+		defer toolOwners.reloadMu.Unlock()
+	}
 	deps := &serverDeps{srv, mgr, cfg, index, collector, auditor, rateLimiter, framer, toolOwners}
 	progressive := cfg.Tools.Discovery == "progressive"
 
@@ -715,21 +907,25 @@ func ReloadPlugin(ctx context.Context, srv *mcpserver.MCPServer, mgr *plugin.Man
 		srv.DeleteResources(oldResourceURIs...)
 	}
 
-	// Register new tools FIRST — AddTool atomically replaces the
-	// handler for existing names, eliminating the "tool not found"
-	// window that existed when we deleted before re-registering.
-	// Purge the ownership map before registering so the plugin
-	// can re-register its own tools without self-collision.
-	if toolOwners != nil {
-		toolOwners.removePlugin(name)
-	}
+	// Register new tools FIRST — AddTool atomically replaces the handler for
+	// existing names, eliminating the "tool not found" window that existed
+	// when we deleted before re-registering. Ownership is deliberately NOT
+	// purged here: register() overwrites the owner for each surviving tool in
+	// place (the collision check permits a tool already owned by the same
+	// plugin), and both registration paths record ownership BEFORE AddTool —
+	// including for tools that are new in this manifest — so the profile
+	// filter never observes an empty plugin name for a callable handler. An
+	// empty owner could let a wildcard allow match and bypass a
+	// plugin-specific deny during the reload window. Ownership for tools
+	// that no longer exist is removed below, in step with deleting their
+	// handlers.
 
 	// Re-register tools. Check disabled first — a plugin can be in
 	// both m.manifests (discovered) and m.disabled (failed to load),
 	// so checking manifests first would skip the disabled branch.
 	if dp, ok := mgr.DisabledPlugins()[name]; ok {
 		single := map[string]plugin.DisabledPlugin{name: dp}
-		registerDisabledPluginTools(srv, single, progressive, cfg.ReadOnly, auditor)
+		registerDisabledPluginTools(srv, single, progressive, cfg.ReadOnly, auditor, toolOwners)
 	} else if manifest, ok := mgr.Manifests()[name]; ok {
 		registerPluginTools(deps, manifest)
 		registerPluginContextResources(srv, manifest, collector)
@@ -760,7 +956,11 @@ func ReloadPlugin(ctx context.Context, srv *mcpserver.MCPServer, mgr *plugin.Man
 		}
 	}
 	if len(removedTools) > 0 {
-		srv.DeleteTools(removedTools...)
+		if toolOwners != nil {
+			toolOwners.deleteOwnedTools(srv, name, removedTools...)
+		} else {
+			srv.DeleteTools(removedTools...)
+		}
 	}
 
 	// Rebuild tool index and re-register tool_search so the
@@ -778,7 +978,11 @@ func ReloadPlugin(ctx context.Context, srv *mcpserver.MCPServer, mgr *plugin.Man
 // this function reconciles the tool list after startup completes.
 //
 // Call this after mgr.StartPending() returns (or after WaitLoaded).
-func SwapStartFailedTools(srv *mcpserver.MCPServer, mgr *plugin.Manager, cfg *config.Config, auditor *audit.Logger) {
+func SwapStartFailedTools(srv *mcpserver.MCPServer, mgr *plugin.Manager, cfg *config.Config, auditor *audit.Logger, toolOwners *ToolOwnerMap) {
+	if toolOwners != nil {
+		toolOwners.reloadMu.Lock()
+		defer toolOwners.reloadMu.Unlock()
+	}
 	progressive := cfg.Tools.Discovery == "progressive"
 
 	for name, dp := range mgr.DisabledPlugins() {
@@ -797,15 +1001,10 @@ func SwapStartFailedTools(srv *mcpserver.MCPServer, mgr *plugin.Manager, cfg *co
 			continue // already a stub
 		}
 
-		// Delete normal tools and re-register as disabled stubs
-		var toolNames []string
-		for _, t := range dp.Manifest.Tools {
-			toolNames = append(toolNames, t.Name)
-		}
-		srv.DeleteTools(toolNames...)
-
+		// Replace normal handlers in place, keeping ownership intact and
+		// avoiding a window where another plugin can claim the freed name.
 		single := map[string]plugin.DisabledPlugin{name: dp}
-		registerDisabledPluginTools(srv, single, progressive, cfg.ReadOnly, auditor)
+		registerDisabledPluginTools(srv, single, progressive, cfg.ReadOnly, auditor, toolOwners)
 		log.Printf("swapped tools for failed plugin %s to [DISABLED] stubs", name)
 	}
 }
