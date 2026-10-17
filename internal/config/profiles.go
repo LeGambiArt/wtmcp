@@ -130,17 +130,31 @@ func ResolveProfilesDir(cfg *Config, workdir string) string {
 // deterministic. Rule order is irrelevant to matching (see
 // profile.NewResolver — rules become a (field,value)->profile map).
 //
-// A missing directory is not an error: it means no profiles are
+// A missing default directory is not an error: it means no profiles are
 // configured and filtering stays inert (backward compatible).
 func LoadProfiles(profilesDir string) (*ProfileLoadResult, error) {
+	return loadProfiles(profilesDir, false)
+}
+
+// LoadProfilesRequired loads an explicitly configured profiles directory.
+// A missing or empty directory is an error because silently disabling the
+// policy would leave every tool available.
+func LoadProfilesRequired(profilesDir string) (*ProfileLoadResult, error) {
+	return loadProfiles(profilesDir, true)
+}
+
+func loadProfiles(profilesDir string, required bool) (*ProfileLoadResult, error) {
 	result := &ProfileLoadResult{
 		Definitions: make(map[string]ProfileDefinition),
 		DefSource:   make(map[string]string),
 	}
+	if required && profilesDir == "" {
+		return nil, fmt.Errorf("explicit profiles directory resolves to an empty path")
+	}
 
 	entries, err := os.ReadDir(profilesDir)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if !required && os.IsNotExist(err) {
 			return result, nil // no profiles configured
 		}
 		return nil, fmt.Errorf("read profiles.d: %w", err)
@@ -155,6 +169,9 @@ func LoadProfiles(profilesDir string) (*ProfileLoadResult, error) {
 	}
 	sort.Strings(files) // deterministic order
 	result.Files = files
+	if required && len(files) == 0 {
+		return nil, fmt.Errorf("explicit profiles directory %q has no .yaml or .yml files", profilesDir)
+	}
 
 	for _, name := range files {
 		path := filepath.Join(profilesDir, name)

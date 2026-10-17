@@ -64,7 +64,11 @@ func loadProfilesForCtl() (*config.Config, string, *config.ProfileLoadResult, er
 		return nil, "", nil, err
 	}
 	profilesDir := config.ResolveProfilesDir(result.Config, result.Workdir)
-	loaded, err := config.LoadProfiles(profilesDir)
+	load := config.LoadProfiles
+	if result.Config.Profiles.Dir != "" {
+		load = config.LoadProfilesRequired
+	}
+	loaded, err := load(profilesDir)
 	if err != nil {
 		return nil, "", nil, err
 	}

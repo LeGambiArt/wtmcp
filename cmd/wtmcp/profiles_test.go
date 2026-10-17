@@ -1,11 +1,57 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/LeGambiArt/wtmcp/internal/config"
 	"github.com/LeGambiArt/wtmcp/internal/profile"
 )
+
+func TestSetupProfilesDirectorySelection(t *testing.T) {
+	workdir := t.TempDir()
+
+	t.Run("missing default directory remains optional", func(t *testing.T) {
+		resolver, err := setupProfiles(&config.Config{}, workdir)
+		if err != nil || resolver == nil || resolver.Configured() {
+			t.Fatalf("default directory: resolver=%v, err=%v", resolver, err)
+		}
+	})
+
+	for _, tc := range []struct {
+		name string
+		dir  string
+	}{
+		{"missing explicit directory", filepath.Join(workdir, "missing")},
+		{"empty explicit directory", workdir},
+		{"unset environment variable", "${WTMCP_TEST_MISSING_PROFILE_DIR}"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.name == "unset environment variable" {
+				t.Setenv("WTMCP_TEST_MISSING_PROFILE_DIR", "")
+			}
+			cfg := &config.Config{}
+			cfg.Profiles.Dir = tc.dir
+			if resolver, err := setupProfiles(cfg, workdir); err == nil {
+				t.Fatalf("expected startup error, got resolver=%v", resolver)
+			}
+		})
+	}
+
+	t.Run("explicit directory with profile loads", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "profile.yaml"), []byte("definitions:\n  limited:\n    allow:\n      '*': ['.*']\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg := &config.Config{}
+		cfg.Profiles.Dir = dir
+		resolver, err := setupProfiles(cfg, workdir)
+		if err != nil || resolver == nil || !resolver.Configured() {
+			t.Fatalf("explicit directory: resolver=%v, err=%v", resolver, err)
+		}
+	})
+}
 
 // newTestResolver builds a resolver with two profiles ("read-only" and
 // "full") and the given default profile name.

@@ -520,7 +520,8 @@ The resolution outcome for a connection is:
 
 | Situation | Result |
 |-----------|--------|
-| No `profiles.d/` directory, or it is empty | **No filtering** — all tools visible (backward compatible; unchanged from today) |
+| Implicit `profiles.d/` directory is missing or empty | **No filtering** — all tools visible (backward compatible; unchanged from today) |
+| Explicit `profiles.dir` is missing or has no profile files | **Startup error** — the configured policy cannot silently disappear |
 | Profiles configured, a rule matches | The matched profile's filter |
 | Profiles configured, no rule matches, `default` is set | The default profile's filter |
 | Profiles configured, no rule matches, no `default` | **Deny all** (fail closed) — only the exempt introspection tools remain |
@@ -533,9 +534,10 @@ permissive profile. This is the single most important security choice
 in the feature, so it is a deliberate, visible decision rather than an
 accident of an empty field.
 
-Backward compatibility is preserved because fail-closed only engages
-when `profiles.d/` is non-empty; existing deployments with no profiles
-behave exactly as before.
+Backward compatibility is preserved because the implicit default directory
+remains optional; existing deployments with no profiles behave exactly as
+before. An explicitly configured path must resolve to a nonempty directory
+of profile files.
 
 This table governs the **streamable-http** path, where identity comes from
 a verified client certificate. The **stdio** transport has no certificate

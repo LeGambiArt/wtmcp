@@ -18,7 +18,11 @@ import (
 func setupProfiles(cfg *config.Config, workdir string) (*profile.Resolver, error) {
 	profilesDir := config.ResolveProfilesDir(cfg, workdir)
 
-	loaded, err := config.LoadProfiles(profilesDir)
+	load := config.LoadProfiles
+	if cfg.Profiles.Dir != "" {
+		load = config.LoadProfilesRequired
+	}
+	loaded, err := load(profilesDir)
 	if err != nil {
 		return nil, fmt.Errorf("load profiles: %w", err)
 	}
