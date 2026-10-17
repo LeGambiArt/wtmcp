@@ -124,9 +124,10 @@ func profileAllowsPlugin(filter *profile.Filter, manifest *plugin.Manifest) bool
 	return false
 }
 
-// filterInPlace returns a slice containing only the elements of s for which
-// keep returns true, reusing s's backing array. Order is preserved.
-func filterInPlace[T any](s []T, keep func(T) bool) []T {
+// filterCopy returns a slice containing only the elements of s for which
+// keep returns true. The input's backing array is left unchanged, and order
+// is preserved.
+func filterCopy[T any](s []T, keep func(T) bool) []T {
 	kept := s[:0:0]
 	for _, v := range s {
 		if keep(v) {
@@ -719,7 +720,7 @@ func registerToolStats(srv *mcpserver.MCPServer, collector *stats.Collector, mgr
 			} else {
 				calls := collector.Summary()
 				if filter != nil {
-					calls = filterInPlace(calls, func(c stats.ToolSummary) bool {
+					calls = filterCopy(calls, func(c stats.ToolSummary) bool {
 						return filter.IsAllowed(c.PluginName, c.ToolName)
 					})
 				}
@@ -733,7 +734,7 @@ func registerToolStats(srv *mcpserver.MCPServer, collector *stats.Collector, mgr
 			if includeResources {
 				resources := collector.ResourceSummary()
 				if filter != nil {
-					resources = filterInPlace(resources, func(r stats.ResourceEntry) bool {
+					resources = filterCopy(resources, func(r stats.ResourceEntry) bool {
 						return pluginVisible(r.PluginName)
 					})
 				}
