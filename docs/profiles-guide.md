@@ -108,6 +108,11 @@ profiles:
   default: "read-only"           # optional fallback; omit to fail closed
 ```
 
+When `profiles.dir` is set explicitly, the directory must exist and contain
+at least one `.yaml` or `.yml` file. An unset environment variable that
+resolves the path to an empty string also stops startup. Only the implicit
+default directory may be missing or empty without enabling filtering.
+
 ## Profile file format
 
 Each file in `profiles.d/` has two top-level keys: `definitions` (what a
@@ -201,7 +206,8 @@ When a connection is established, its identity resolves to one filter:
 
 | Situation | Result |
 |-----------|--------|
-| No `profiles.d/`, or it is empty | **No filtering** — all tools visible (unchanged from today) |
+| Implicit `profiles.d/` is missing or empty | **No filtering** — all tools visible (unchanged from today) |
+| Explicit `profiles.dir` is missing or empty | **Startup error** — a configured policy cannot silently disappear |
 | A rule matches | The matched profile's filter |
 | No rule matches, `default` is set | The default profile's filter |
 | No rule matches, no `default` | **Deny all** (fail closed) — only exempt tools remain |
