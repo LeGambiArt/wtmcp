@@ -3,6 +3,8 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -10,7 +12,10 @@ import (
 
 	"github.com/LeGambiArt/wtmcp/internal/config"
 	"github.com/LeGambiArt/wtmcp/internal/plugin"
+	"github.com/LeGambiArt/wtmcp/internal/pluginctx"
 	"github.com/LeGambiArt/wtmcp/internal/profile"
+	"github.com/LeGambiArt/wtmcp/internal/protocol"
+	"github.com/LeGambiArt/wtmcp/internal/stats"
 )
 
 // buildFilter builds a *profile.Filter for tests using only the exported
@@ -257,6 +262,117 @@ func TestPluginListNoProfileShowsAll(t *testing.T) {
 	}`)
 	if !strings.Contains(body, "alpha") || !strings.Contains(body, "beta") {
 		t.Errorf("without a profile plugin_list should include all plugins, got: %s", body)
+	}
+}
+
+func TestProfileDiscoveryKeepsExposedResources(t *testing.T) {
+	mgr := plugin.NewManagerForTest()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "guide.md"), []byte("public context"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	contextURI := pluginctx.ResourceURI("context_only", "guide.md")
+	providerURI := "wtmcp://provider/status"
+	serverURI := "wtmcp://server/session"
+
+	mgr.SetManifest("context_only", &plugin.Manifest{
+		Name: "context_only", Dir: dir, ContextFiles: []string{"guide.md"},
+	})
+	mgr.SetManifest("mixed", &plugin.Manifest{
+		Name: "mixed", Dir: dir, ContextFiles: []string{"guide.md"},
+		Tools: []plugin.ToolDef{{Name: "mixed_call", Access: "read"}},
+	})
+	mgr.SetManifest("provider", &plugin.Manifest{
+		Name: "provider", Provides: plugin.ProvidesConfig{Resources: true},
+	})
+	mgr.SetHandle("provider")
+	mgr.Handle("provider").SetResources([]protocol.ResourceDef{{URI: providerURI, Name: "Status"}})
+	mgr.SetManifest("empty", &plugin.Manifest{Name: "empty"})
+	mgr.SetManifest("denied", &plugin.Manifest{
+		Name: "denied", Tools: []plugin.ToolDef{{Name: "denied_call", Access: "read"}},
+	})
+	mgr.SetSessionDir(dir)
+
+	collector := stats.NewCollector(stats.CharsTokenizer{}, false)
+	cfg := config.DefaultConfig()
+	srv, _ := New("test", mgr, cfg, NewToolIndex(mgr, false), collector, nil, nil, nil, true)
+	s := &mcpServerWithInit{srv: srv}
+	s.initialize(t)
+	ctx := profile.WithFilter(context.Background(), buildFilter(t, config.ProfileDefinition{}))
+
+	list := func(ctx context.Context) map[string]int {
+		t.Helper()
+		body := s.callToolText(ctx, t, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"plugin_list","arguments":{}}}`)
+		var rows []struct {
+			Name  string `json:"name"`
+			Tools int    `json:"tools"`
+		}
+		if err := json.Unmarshal([]byte(body), &rows); err != nil {
+			t.Fatalf("unmarshal plugin_list: %v: %s", err, body)
+		}
+		result := make(map[string]int)
+		for _, row := range rows {
+			result[row.Name] = row.Tools
+		}
+		return result
+	}
+
+	profiled := list(ctx)
+	for _, name := range []string{"context_only", "provider", "mixed"} {
+		if count, ok := profiled[name]; !ok || count != 0 {
+			t.Errorf("resource plugin %q should appear with zero tools, got %v", name, profiled)
+		}
+	}
+	for _, name := range []string{"empty", "denied"} {
+		if _, ok := profiled[name]; ok {
+			t.Errorf("plugin %q has no exposed capability, got %v", name, profiled)
+		}
+	}
+	allowAll := profile.WithFilter(context.Background(), buildFilter(t, config.ProfileDefinition{
+		Allow: map[string][]string{"*": {".*"}},
+	}))
+	if _, ok := list(allowAll)["empty"]; ok {
+		t.Error("a profile must not list a plugin without tools or resources")
+	}
+	if unfiltered := list(context.Background()); len(unfiltered) != 5 {
+		t.Errorf("unfiltered plugin_list should include all manifests, got %v", unfiltered)
+	}
+
+	// The resource remains readable under a profile that denies every tool.
+	read := srv.HandleMessage(ctx, json.RawMessage(`{"jsonrpc":"2.0","id":2,"method":"resources/read","params":{"uri":"`+contextURI+`"}}`))
+	response, ok := read.(mcp.JSONRPCResponse)
+	if !ok {
+		t.Fatalf("resources/read: expected response, got %T", read)
+	}
+	content, _ := json.Marshal(response.Result)
+	if !strings.Contains(string(content), "public context") {
+		t.Errorf("profiled resource read returned %s", content)
+	}
+
+	collector.RecordResourceRead(providerURI, "provider", "provided", "online")
+	collector.RecordResourceRead(serverURI, "server", "session", "session info")
+	collector.RecordResourceRead("wtmcp://old/removed", "old", "provided", "stale")
+	statsBody := s.callToolText(ctx, t, `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"tool_stats","arguments":{"include_resources":true}}}`)
+	var reported struct {
+		Resources []stats.ResourceEntry `json:"resources"`
+		Totals    struct {
+			ResourceReads int `json:"resource_reads"`
+		} `json:"totals"`
+	}
+	if err := json.Unmarshal([]byte(statsBody), &reported); err != nil {
+		t.Fatalf("unmarshal tool_stats: %v: %s", err, statsBody)
+	}
+	visible := make(map[string]bool)
+	for _, row := range reported.Resources {
+		visible[row.URI] = true
+	}
+	for _, uri := range []string{contextURI, providerURI, serverURI} {
+		if !visible[uri] {
+			t.Errorf("resource %q missing from profile stats: %v", uri, visible)
+		}
+	}
+	if visible["wtmcp://old/removed"] || reported.Totals.ResourceReads != 3 {
+		t.Errorf("resource stats include stale entry or wrong total: %+v", reported)
 	}
 }
 

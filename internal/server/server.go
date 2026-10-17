@@ -108,17 +108,36 @@ func newToolFilter(toolOwners *ToolOwnerMap) mcpserver.ToolFilterFunc {
 	}
 }
 
-// profileAllowsPlugin reports whether the connection's profile filter
-// permits at least one of the plugin's tools. A nil filter (no profiles
-// configured) permits everything. Used to hide plugins an agent cannot
-// use from the exempt introspection tools (plugin_list, tool_stats).
-func profileAllowsPlugin(filter *profile.Filter, manifest *plugin.Manifest) bool {
+// profileAllowsPluginTool reports whether the connection's profile permits
+// at least one tool from the plugin. A nil filter permits everything.
+func profileAllowsPluginTool(filter *profile.Filter, manifest *plugin.Manifest) bool {
 	if filter == nil {
 		return true
 	}
 	for _, t := range manifest.Tools {
 		if filter.IsAllowed(manifest.Name, t.Name) {
 			return true
+		}
+	}
+	return false
+}
+
+// pluginHasRegisteredResource reports whether the plugin currently exposes
+// a context file or provider resource through MCP. Profiles do not filter
+// resources, so such a plugin remains useful even with no allowed tools.
+func pluginHasRegisteredResource(manifest *plugin.Manifest, mgr *plugin.Manager, registered map[string]*mcpserver.ServerResource) bool {
+	for _, file := range manifest.ContextFiles {
+		if _, ok := registered[pluginctx.ResourceURI(manifest.Name, file)]; ok {
+			return true
+		}
+	}
+	if manifest.ProvidesResources() {
+		if handle := mgr.Handle(manifest.Name); handle != nil {
+			for _, res := range handle.InitialResources() {
+				if _, ok := registered[res.URI]; ok {
+					return true
+				}
+			}
 		}
 	}
 	return false
@@ -558,14 +577,15 @@ func registerManagementTools(deps *serverDeps) {
 		func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			var plugins []map[string]any
 
-			// Filter by the connection's profile so an agent cannot
-			// enumerate plugins whose tools it may not call. plugin_list
-			// itself is exempt, but its inventory is still filtered.
+			// Include plugins with permitted tools or exposed resources.
+			// Resources remain available to every profile.
 			filter := profile.FilterFromContext(ctx)
+			registeredResources := srv.ListResources()
 
 			disabled := mgr.DisabledPlugins()
 			for name, manifest := range mgr.Manifests() {
-				if !profileAllowsPlugin(filter, manifest) {
+				if filter != nil && !profileAllowsPluginTool(filter, manifest) &&
+					!pluginHasRegisteredResource(manifest, mgr, registeredResources) {
 					continue
 				}
 
@@ -639,7 +659,7 @@ func registerManagementTools(deps *serverDeps) {
 
 	// tool_stats: show tool usage stats
 	if collector != nil {
-		registerToolStats(srv, collector, mgr)
+		registerToolStats(srv, collector)
 	}
 }
 
@@ -670,7 +690,7 @@ var excludedTools = map[string]bool{
 // ExcludedTools returns the set of tool names excluded from stats.
 func ExcludedTools() map[string]bool { return maps.Clone(excludedTools) }
 
-func registerToolStats(srv *mcpserver.MCPServer, collector *stats.Collector, mgr *plugin.Manager) {
+func registerToolStats(srv *mcpserver.MCPServer, collector *stats.Collector) {
 	srv.AddTool(
 		mcp.NewTool("tool_stats",
 			mcp.WithDescription("Show tool usage stats: call counts, token estimates, durations, schema costs, resource reads"),
@@ -690,18 +710,9 @@ func registerToolStats(srv *mcpserver.MCPServer, collector *stats.Collector, mgr
 			includeSchemas, _ := args["include_schemas"].(bool)
 			includeResources, _ := args["include_resources"].(bool)
 
-			// Filter stats by the connection's profile so an agent cannot
-			// enumerate tools/plugins it may not call, nor infer their usage.
-			// tool_stats itself is exempt, but the per-tool/plugin rows and the
-			// aggregate totals are both scoped to the caller's allowed tools.
+			// Tool stats are scoped to allowed tools. Resource stats follow
+			// the registered resources, which profiles do not filter.
 			filter := profile.FilterFromContext(ctx)
-			pluginVisible := func(name string) bool {
-				if filter == nil {
-					return true
-				}
-				manifest, ok := mgr.Manifests()[name]
-				return ok && profileAllowsPlugin(filter, manifest)
-			}
 			// toolVisible drives per-plugin aggregations so their totals never
 			// leak usage from tools the caller's profile denies. Nil (no
 			// profile) includes every tool.
@@ -731,20 +742,21 @@ func registerToolStats(srv *mcpserver.MCPServer, collector *stats.Collector, mgr
 				result["schema_cost"] = collector.SchemaCost(toolVisible)
 			}
 
+			var resources []stats.ResourceEntry
 			if includeResources {
-				resources := collector.ResourceSummary()
+				resources = collector.ResourceSummary()
 				if filter != nil {
+					registered := srv.ListResources()
 					resources = filterCopy(resources, func(r stats.ResourceEntry) bool {
-						return pluginVisible(r.PluginName)
+						_, ok := registered[r.URI]
+						return ok
 					})
 				}
 				result["resources"] = resources
 			}
 
-			// Totals are scoped to the caller's allowed tools/plugins too, so a
-			// restricted client cannot infer aggregate usage for tools it may
-			// not call. toolVisible/pluginVisible are nil-safe (no profile
-			// counts everything).
+			// Tool totals use the caller's allowed tools; resource totals use
+			// the visible resource rows assembled above.
 			inputTk, outputTk := collector.TotalTokens(toolVisible)
 			totals := map[string]any{
 				"total_input_tokens":  inputTk,
@@ -756,10 +768,7 @@ func registerToolStats(srv *mcpserver.MCPServer, collector *stats.Collector, mgr
 			}
 			if includeResources {
 				var resTk, resReads int
-				for _, r := range collector.ResourceSummary() {
-					if !pluginVisible(r.PluginName) {
-						continue
-					}
+				for _, r := range resources {
 					resTk += r.ContentTokens
 					resReads += r.ReadCount
 				}

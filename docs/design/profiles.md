@@ -940,12 +940,14 @@ it may not use. The original design called this out only for `tool_search`;
 in the shipped code it applies to all three:
 
 - **`tool_search`** — results are filtered by `filter.IsAllowed` (below).
-- **`plugin_list`** — plugins the profile does not permit are omitted, and
-  the advertised per-plugin tool counts reflect only profile-allowed tools
-  (via `profileAllowsPlugin`).
-- **`tool_stats`** — usage is scoped to profile-allowed tools/plugins;
-  aggregate totals and per-plugin summaries exclude denied tools so they
-  cannot leak usage of tools the caller's profile denies.
+- **`plugin_list`** — a plugin appears if it has an allowed tool or a
+  registered MCP resource. Plugins with neither are omitted for profiled
+  clients. Tool counts reflect only profile-allowed tools, so a resource-only
+  plugin appears with zero tools.
+- **`tool_stats`** — tool usage and totals are scoped to profile-allowed
+  tools. Resource rows and totals include currently registered resources,
+  including the server-level session resource, because profiles do not
+  restrict resources.
 - **`tool_search` description** — the static tool description normally
   includes a global category/catalog summary of available tools. That
   description is registered once and cannot be filtered per connection, so
