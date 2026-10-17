@@ -55,8 +55,10 @@ type serverDeps struct {
 // ToolOwnerMap tracks which plugin registered each tool name.
 // All methods are safe for concurrent use.
 type ToolOwnerMap struct {
-	mu     sync.RWMutex
-	owners map[string]string // tool name -> plugin name
+	mu             sync.RWMutex
+	registrationMu sync.Mutex        // serialize owner/handler changes across plugins
+	reloadMu       sync.Mutex        // serialize whole reload/swap reconciliations
+	owners         map[string]string // tool name -> plugin name
 }
 
 func newToolOwnerMap() *ToolOwnerMap {
@@ -79,6 +81,38 @@ func (m *ToolOwnerMap) register(toolName, pluginName string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.owners[toolName] = pluginName
+}
+
+// addTool claims a name and publishes its handler in that order. The
+// registration lock also makes the collision check atomic with publication;
+// a different plugin must never replace a handler while retaining (or
+// changing) another plugin's ownership entry.
+func (m *ToolOwnerMap) addTool(srv *mcpserver.MCPServer, tool mcp.Tool, pluginName string, handler mcpserver.ToolHandlerFunc) string {
+	m.registrationMu.Lock()
+	defer m.registrationMu.Unlock()
+	if owner := m.owner(tool.Name); owner != "" && owner != pluginName {
+		return owner
+	}
+	m.register(tool.Name, pluginName)
+	srv.AddTool(tool, handler)
+	return ""
+}
+
+// deleteOwnedTools removes only tools still owned by pluginName. A concurrent
+// registration cannot claim a removed name until its handler is gone.
+func (m *ToolOwnerMap) deleteOwnedTools(srv *mcpserver.MCPServer, pluginName string, names ...string) {
+	m.registrationMu.Lock()
+	defer m.registrationMu.Unlock()
+	var owned []string
+	for _, name := range names {
+		if m.owner(name) == pluginName {
+			owned = append(owned, name)
+		}
+	}
+	if len(owned) > 0 {
+		srv.DeleteTools(owned...)
+		m.removeTools(owned...)
+	}
 }
 
 // removeTools drops ownership entries for the named tools. It is called in
@@ -280,14 +314,6 @@ func registerPluginTools(deps *serverDeps, manifest *plugin.Manifest) {
 			continue
 		}
 
-		if deps.toolOwners != nil {
-			if existingPlugin := deps.toolOwners.owner(toolName); existingPlugin != "" && existingPlugin != plugName {
-				log.Printf("WARNING: tool %q from plugin %q skipped: already registered by plugin %q", toolName, plugName, existingPlugin)
-				skipped++
-				continue
-			}
-		}
-
 		tool, schemaJSON, err := buildMCPTool(toolDef, progressive)
 		if err != nil {
 			log.Printf("WARNING: tool %q from plugin %q skipped: %v", toolName, plugName, err)
@@ -320,19 +346,13 @@ func registerPluginTools(deps *serverDeps, manifest *plugin.Manifest) {
 			unvalidated++
 		}
 
-		if collector != nil {
-			collector.RecordSchema(toolName, plugName, toolDef.Description, schemaJSON)
-		}
-
-		// Ownership first, then AddTool — never the other way around
-		// (see ToolOwnerMap.register): AddTool makes the tool immediately
-		// callable, and the profile filter must never see it with an
-		// empty owner.
-		if deps.toolOwners != nil {
-			deps.toolOwners.register(toolName, plugName)
-		}
-
-		srv.AddTool(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		handler := func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			// mcp-go reads the handler before applying its tool filter. A
+			// reload may replace/remove the name between those steps, so
+			// enforce the identity captured by this handler as well.
+			if filter := profile.FilterFromContext(ctx); filter != nil && !filter.IsAllowed(plugName, toolName) {
+				return frameErrorResult("tool not available"), nil
+			}
 			if readOnly && !isRead {
 				return frameErrorResult("tool not available"), nil
 			}
@@ -366,7 +386,10 @@ func registerPluginTools(deps *serverDeps, manifest *plugin.Manifest) {
 				return frameErrorResult(outputText), nil
 			}
 
-			_, handle := mgr.CallTool(ctx, toolName)
+			actualPlugin, handle := mgr.CallTool(ctx, toolName)
+			if actualPlugin != "" && actualPlugin != plugName {
+				return frameErrorResult("tool not available"), nil
+			}
 			if handle == nil {
 				if mgr.IsLoading() {
 					outputText = fmt.Sprintf("plugin for tool %s is still loading, try again shortly", toolName)
@@ -487,7 +510,19 @@ func registerPluginTools(deps *serverDeps, manifest *plugin.Manifest) {
 				outputText = truncateUTF8(outputText, maxOutput) + fmt.Sprintf("\n\n[truncated: %d bytes omitted]", omitted)
 			}
 			return framer.frameToolResult(toolName, outputText), nil
-		})
+		}
+		if deps.toolOwners != nil {
+			if owner := deps.toolOwners.addTool(srv, tool, plugName, handler); owner != "" {
+				log.Printf("WARNING: tool %q from plugin %q skipped: already registered by plugin %q", toolName, plugName, owner)
+				skipped++
+				continue
+			}
+		} else {
+			srv.AddTool(tool, handler)
+		}
+		if collector != nil {
+			collector.RecordSchema(toolName, plugName, toolDef.Description, schemaJSON)
+		}
 	}
 	if skipped > 0 && readOnly {
 		log.Printf("read-only: skipped %d write tools from %s", skipped, manifest.Name)
@@ -555,22 +590,27 @@ func registerDisabledPluginTools(srv *mcpserver.MCPServer, disabled map[string]p
 			reason := auditor.ScrubErrorText(dp.Reason)
 			name := pluginName
 
-			// Ownership first, then AddTool (see ToolOwnerMap.register).
 			// Recording ownership also makes profile allow/deny rules that
 			// name the plugin apply to its [DISABLED] stubs: without it, a
 			// stub has an empty owner and is matched only by "*" rules,
 			// making filtering inconsistent between a plugin's loaded and
 			// disabled states.
-			if toolOwners != nil {
-				toolOwners.register(toolDef.Name, pluginName)
-			}
-
-			srv.AddTool(tool, func(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			handler := func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				if filter := profile.FilterFromContext(ctx); filter != nil && !filter.IsAllowed(pluginName, toolDef.Name) {
+					return frameErrorResult("tool not available"), nil
+				}
 				return frameErrorResult(fmt.Sprintf(
 					"[DISABLED] %s\n\nAfter fixing, run: plugin_reload(name=\"%s\")",
 					reason, name,
 				)), nil
-			})
+			}
+			if toolOwners != nil {
+				if owner := toolOwners.addTool(srv, tool, pluginName, handler); owner != "" {
+					log.Printf("WARNING: disabled tool %q from plugin %q skipped: already registered by plugin %q", toolDef.Name, pluginName, owner)
+				}
+			} else {
+				srv.AddTool(tool, handler)
+			}
 		}
 	}
 }
@@ -811,6 +851,10 @@ func excludedToolNames() []string {
 // The index is rebuilt to reflect manifest changes, and tool_search is
 // re-registered so its CategorySummary stays current.
 func ReloadPlugin(ctx context.Context, srv *mcpserver.MCPServer, mgr *plugin.Manager, cfg *config.Config, name string, index *ToolIndex, collector *stats.Collector, auditor *audit.Logger, rateLimiter *ratelimit.Registry, framer *OutputFramer, toolOwners *ToolOwnerMap) error {
+	if toolOwners != nil {
+		toolOwners.reloadMu.Lock()
+		defer toolOwners.reloadMu.Unlock()
+	}
 	deps := &serverDeps{srv, mgr, cfg, index, collector, auditor, rateLimiter, framer, toolOwners}
 	progressive := cfg.Tools.Discovery == "progressive"
 
@@ -912,12 +956,10 @@ func ReloadPlugin(ctx context.Context, srv *mcpserver.MCPServer, mgr *plugin.Man
 		}
 	}
 	if len(removedTools) > 0 {
-		// Delete the handlers first, then drop their ownership — never the
-		// other way around, so no removed tool is briefly callable with an
-		// empty owner.
-		srv.DeleteTools(removedTools...)
 		if toolOwners != nil {
-			toolOwners.removeTools(removedTools...)
+			toolOwners.deleteOwnedTools(srv, name, removedTools...)
+		} else {
+			srv.DeleteTools(removedTools...)
 		}
 	}
 
@@ -937,6 +979,10 @@ func ReloadPlugin(ctx context.Context, srv *mcpserver.MCPServer, mgr *plugin.Man
 //
 // Call this after mgr.StartPending() returns (or after WaitLoaded).
 func SwapStartFailedTools(srv *mcpserver.MCPServer, mgr *plugin.Manager, cfg *config.Config, auditor *audit.Logger, toolOwners *ToolOwnerMap) {
+	if toolOwners != nil {
+		toolOwners.reloadMu.Lock()
+		defer toolOwners.reloadMu.Unlock()
+	}
 	progressive := cfg.Tools.Discovery == "progressive"
 
 	for name, dp := range mgr.DisabledPlugins() {
@@ -955,13 +1001,8 @@ func SwapStartFailedTools(srv *mcpserver.MCPServer, mgr *plugin.Manager, cfg *co
 			continue // already a stub
 		}
 
-		// Delete normal tools and re-register as disabled stubs
-		var toolNames []string
-		for _, t := range dp.Manifest.Tools {
-			toolNames = append(toolNames, t.Name)
-		}
-		srv.DeleteTools(toolNames...)
-
+		// Replace normal handlers in place, keeping ownership intact and
+		// avoiding a window where another plugin can claim the freed name.
 		single := map[string]plugin.DisabledPlugin{name: dp}
 		registerDisabledPluginTools(srv, single, progressive, cfg.ReadOnly, auditor, toolOwners)
 		log.Printf("swapped tools for failed plugin %s to [DISABLED] stubs", name)
