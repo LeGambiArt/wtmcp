@@ -200,6 +200,12 @@ cannot change state. Everything else is gated, including the mutating
 > call. This matters because progressive discovery (the default) surfaces
 > most tools through `tool_search` rather than `tools/list`.
 
+`plugin_list` includes a plugin when it has an allowed tool or an exposed
+MCP resource. A resource-only plugin appears with `tools: 0`; a plugin with
+neither capability is omitted for profiled clients. `tool_stats` keeps tool
+usage scoped to allowed tools and shows reads of currently registered
+resources, which profiles do not restrict.
+
 ## Resolution and fail-closed behavior
 
 When a connection is established, its identity resolves to one filter:
