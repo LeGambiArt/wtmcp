@@ -210,6 +210,77 @@ func TestLoadProfilesRejectsNoContent(t *testing.T) {
 	}
 }
 
+func TestLoadProfilesRejectsMultiDocument(t *testing.T) {
+	dir := t.TempDir()
+	// Two real documents: the second (with the deny rules) must not be
+	// silently dropped — that would fail open.
+	writeProfileFile(t, dir, "two-docs.yaml", `
+definitions:
+  full:
+    allow: { "*": [".*"] }
+---
+definitions:
+  restricted:
+    allow: { jira: [".*"] }
+    deny: { gitlab: [".*"] }
+`)
+	// A trailing separator declares an (empty) second document — reject
+	// it too rather than guess intent.
+	writeProfileFile(t, dir, "trailing-sep.yaml", `
+definitions:
+  ok:
+    allow: { p: [".*"] }
+---
+`)
+
+	result, err := LoadProfiles(dir)
+	if err != nil {
+		t.Fatalf("LoadProfiles: %v", err)
+	}
+	for _, name := range []string{"two-docs.yaml", "trailing-sep.yaml"} {
+		var sawErr bool
+		for _, e := range result.Errors {
+			if e.File == name && e.Fatal && strings.Contains(e.Message, "multi-document") {
+				sawErr = true
+			}
+		}
+		if !sawErr {
+			t.Errorf("expected a fatal multi-document error for %s, got %v", name, result.Errors)
+		}
+	}
+	if len(result.Definitions) != 0 {
+		t.Errorf("multi-document files must not contribute definitions, got %v", result.Definitions)
+	}
+}
+
+func TestLoadProfilesAllowsSingleDocumentMarker(t *testing.T) {
+	dir := t.TempDir()
+	// A single leading "---" is an explicit start marker for one document
+	// and must stay valid.
+	writeProfileFile(t, dir, "leading-sep.yaml", `---
+definitions:
+  ok:
+    allow: { p: [".*"] }
+rules:
+  - match: { cn: "bot" }
+    profile: ok
+`)
+
+	result, err := LoadProfiles(dir)
+	if err != nil {
+		t.Fatalf("LoadProfiles: %v", err)
+	}
+	if HasFatal(result.Errors) {
+		t.Fatalf("single-document file with leading --- must load, got %v", result.Errors)
+	}
+	if _, ok := result.Definitions["ok"]; !ok {
+		t.Errorf("definition from leading-sep.yaml not loaded")
+	}
+	if len(result.Rules) != 1 {
+		t.Errorf("expected 1 rule, got %d", len(result.Rules))
+	}
+}
+
 func TestLoadProfilesMissingDir(t *testing.T) {
 	result, err := LoadProfiles(filepath.Join(t.TempDir(), "does-not-exist"))
 	if err != nil {

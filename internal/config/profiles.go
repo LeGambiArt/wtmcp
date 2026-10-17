@@ -248,6 +248,22 @@ func loadProfileFile(path string) (*ProfileFile, error) {
 		return nil, err
 	}
 
+	// Exactly one document per file: Decode reads only the first document
+	// and silently drops the rest — the same silent-drop/fail-open class
+	// the KnownFields check above targets (e.g. a second document's deny
+	// rules would simply vanish). A second Decode must hit EOF. A trailing
+	// "---" also counts: it declares an (empty) second document. Decoding
+	// into a yaml.Node detects the document without validating its content,
+	// so the error names the real problem instead of a field inside the
+	// dropped document.
+	var extra yaml.Node
+	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
+		if err != nil {
+			return nil, fmt.Errorf("multi-document YAML: second document: %w", err)
+		}
+		return nil, errors.New("multi-document YAML: only one document per file")
+	}
+
 	// A file that parses but yields nothing recognized (empty, all comments,
 	// or every key typo'd away) must not pass silently: it would contribute no
 	// definitions or rules and could leave the resolver unconfigured.
