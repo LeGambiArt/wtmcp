@@ -1,11 +1,16 @@
 package server
 
 import (
+	"context"
 	"strings"
+	"sync"
 	"testing"
+
+	"github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/LeGambiArt/wtmcp/internal/config"
 	"github.com/LeGambiArt/wtmcp/internal/plugin"
+	"github.com/LeGambiArt/wtmcp/internal/profile"
 )
 
 func TestReloadDisabledPlugin_StubToolsRemoved(t *testing.T) {
@@ -381,6 +386,93 @@ func TestToolCollision_SecondPluginSkipped(t *testing.T) {
 
 	if _, ok := tools["beta_only"]; !ok {
 		t.Error("non-colliding tools from beta should still be registered")
+	}
+}
+
+func TestDisabledToolCollisionPreservesLoadedHandlerAndOwner(t *testing.T) {
+	mgr := plugin.NewManagerForTest()
+	mgr.SetManifest("alpha", &plugin.Manifest{
+		Name: "alpha", Tools: []plugin.ToolDef{{Name: "shared_tool", Description: "From alpha", Access: "read"}},
+	})
+	mgr.SetHandle("alpha")
+	cfg := config.DefaultConfig()
+	index := NewToolIndex(mgr, false)
+	srv, owners := New("test", mgr, cfg, index, nil, nil, nil, nil, true)
+	disabled := map[string]plugin.DisabledPlugin{
+		"beta": {Name: "beta", Reason: "missing credentials", Manifest: &plugin.Manifest{
+			Name: "beta", Tools: []plugin.ToolDef{{Name: "shared_tool", Description: "From beta", Access: "read"}},
+		}},
+	}
+	registerDisabledPluginTools(srv, disabled, false, false, nil, owners)
+	if got := owners.owner("shared_tool"); got != "alpha" {
+		t.Fatalf("owner after disabled collision = %q, want alpha", got)
+	}
+	if got := srv.ListTools()["shared_tool"].Tool.Description; !strings.Contains(got, "From alpha") {
+		t.Fatalf("disabled plugin replaced alpha's handler: %q", got)
+	}
+	// A reload of the skipped plugin must not delete alpha's tool merely
+	// because the skipped name appeared in beta's old manifest.
+	owners.deleteOwnedTools(srv, "beta", "shared_tool")
+	if got := owners.owner("shared_tool"); got != "alpha" {
+		t.Fatalf("owner after beta removal = %q, want alpha", got)
+	}
+	if _, ok := srv.ListTools()["shared_tool"]; !ok {
+		t.Fatal("beta's reload deleted alpha's handler")
+	}
+}
+
+func TestConcurrentRegistrationKeepsHandlerAndOwnerTogether(t *testing.T) {
+	mgr := plugin.NewManagerForTest()
+	for _, name := range []string{"alpha", "beta"} {
+		mgr.SetManifest(name, &plugin.Manifest{
+			Name: name, Tools: []plugin.ToolDef{{Name: "shared_tool", Description: "From " + name, Access: "read"}},
+		})
+		mgr.SetHandle(name)
+	}
+	cfg := config.DefaultConfig()
+	index := NewToolIndex(mgr, false)
+	srv, owners := New("test", plugin.NewManagerForTest(), cfg, index, nil, nil, nil, nil, true)
+	deps := &serverDeps{srv: srv, mgr: mgr, cfg: cfg, index: index, toolOwners: owners}
+	var wg sync.WaitGroup
+	for _, name := range []string{"alpha", "beta"} {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			registerPluginTools(deps, mgr.Manifests()[name])
+		}()
+	}
+	wg.Wait()
+	owner := owners.owner("shared_tool")
+	if owner != "alpha" && owner != "beta" {
+		t.Fatalf("unexpected owner %q", owner)
+	}
+	if got := srv.ListTools()["shared_tool"].Tool.Description; !strings.Contains(got, "From "+owner) {
+		t.Fatalf("handler %q does not match owner %q", got, owner)
+	}
+}
+
+func TestOldHandlerChecksItsOwnPluginAfterOwnershipChanges(t *testing.T) {
+	mgr := plugin.NewManagerForTest()
+	mgr.SetManifest("alpha", &plugin.Manifest{
+		Name: "alpha", Tools: []plugin.ToolDef{{Name: "shared_tool", Description: "From alpha", Access: "read"}},
+	})
+	mgr.SetHandle("alpha")
+	cfg := config.DefaultConfig()
+	index := NewToolIndex(mgr, false)
+	srv, owners := New("test", mgr, cfg, index, nil, nil, nil, nil, true)
+	oldHandler := srv.ListTools()["shared_tool"].Handler
+	// Simulate a tools/call that fetched the old handler before a reload
+	// transferred the name to a different plugin. mcp-go applies its filter
+	// after fetching the handler, using the current owner map.
+	owners.register("shared_tool", "beta")
+	filter := buildFilter(t, config.ProfileDefinition{
+		Allow: map[string][]string{"*": {"shared_tool"}},
+		Deny:  map[string][]string{"alpha": {"shared_tool"}},
+	})
+	ctx := profile.WithFilter(context.Background(), filter)
+	result, err := oldHandler(ctx, mcp.CallToolRequest{})
+	if err != nil || result == nil || !result.IsError {
+		t.Fatalf("stale alpha handler must reject request despite new map owner: result=%v err=%v", result, err)
 	}
 }
 
