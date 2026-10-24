@@ -181,6 +181,173 @@ func TestOrderedListWithNestedSubBullets(t *testing.T) {
 	}
 }
 
+func TestParseMarkdownHardWrappedLists(t *testing.T) {
+	markdown := "1. First item wraps\n   onto the next line.\n2. Second item wraps\n   onto the next line."
+	segments := parseMarkdown(markdown)
+
+	var listText string
+	listParagraphs := 0
+	for _, seg := range segments {
+		if !seg.orderedListItem {
+			continue
+		}
+		listText += seg.text
+		listParagraphs += strings.Count(seg.text, "\n")
+	}
+
+	if listParagraphs != 2 {
+		t.Fatalf("got %d list paragraphs, want 2: %+v", listParagraphs, segments)
+	}
+	if listText != "First item wraps onto the next line.\nSecond item wraps onto the next line.\n" {
+		t.Errorf("list text = %q, want joined hard wraps", listText)
+	}
+
+	requests, _, _ := convertMarkdownToRequests(segments, 1, true)
+	var bullets []*docs.CreateParagraphBulletsRequest
+	for _, req := range requests {
+		if req.CreateParagraphBullets != nil {
+			bullets = append(bullets, req.CreateParagraphBullets)
+		}
+	}
+	if len(bullets) != 1 {
+		t.Fatalf("got %d bullet requests, want 1", len(bullets))
+	}
+	if bullets[0].BulletPreset != "NUMBERED_DECIMAL_ALPHA_ROMAN" {
+		t.Errorf("bullet preset = %q, want numbered preset", bullets[0].BulletPreset)
+	}
+}
+
+func TestParseMarkdownHardWrapBoundaries(t *testing.T) {
+	tests := []struct {
+		name      string
+		md        string
+		forbidden string
+	}{
+		{"one space short", "1. item\n  not a continuation", "not a continuation"},
+		{"one space over", "1. item\n    not a continuation", "not a continuation"},
+		{"empty marker", "- parent\n  -\n- sibling", "-"},
+		{"blockquote-like", "- parent\n  > quote", "quote"},
+		{"heading", "1. item\n   # heading", "heading"},
+		{"fence", "1. item\n   ```", "```"},
+		{"horizontal rule", "1. item\n   ---", "---"},
+		{"blank line", "1. item\n\n   body", "body"},
+		{"next list item", "1. item\n   2. next", "2. next"},
+		{"table", "1. item\n   | A | B |", "| A | B |"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			segments := parseMarkdown(tt.md)
+			for _, seg := range segments {
+				if seg.orderedListItem || seg.unorderedListItem {
+					if strings.Contains(seg.text, tt.forbidden) {
+						t.Errorf("boundary text incorrectly retained list metadata: %+v", seg)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestParseMarkdownHardWrapPreservesCodeBlock(t *testing.T) {
+	segments := parseMarkdown("```\n- item\n  continuation\n```")
+	if len(segments) != 1 || !segments[0].isCodeBlock {
+		t.Fatalf("got %+v, want one code block", segments)
+	}
+	if segments[0].text != "- item\n  continuation\n" {
+		t.Errorf("code block = %q, want literal lines", segments[0].text)
+	}
+}
+
+func TestParseMarkdownHardWrapMarkerShapes(t *testing.T) {
+	tests := []struct {
+		name    string
+		md      string
+		ordered bool
+		depth   int
+		want    string
+	}{
+		{"unordered", "- item\n  continuation", false, 0, "item continuation\n"},
+		{"nested ordered", "    10. item\n        continuation", true, 1, "item continuation\n"},
+		{"multiple marker spaces", "-  item\n   continuation", false, 0, "item continuation\n"},
+		{"tab marker separator", "1.\titem\n   continuation", true, 0, "item continuation\n"},
+		{"tab nested indent", "\t- item\n\t  continuation", false, 1, "item continuation\n"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			segments := mergeSegments(parseMarkdown(tt.md))
+			if len(segments) != 1 {
+				t.Fatalf("got %d segments, want 1: %+v", len(segments), segments)
+			}
+			seg := segments[0]
+			if seg.orderedListItem != tt.ordered || seg.listDepth != tt.depth || seg.text != tt.want {
+				t.Errorf("segment = %+v, want ordered=%t depth=%d text=%q", seg, tt.ordered, tt.depth, tt.want)
+			}
+		})
+	}
+}
+
+func TestBulletRequestsReverseDisjointNestedRanges(t *testing.T) {
+	markdown := "- first\n    - nested-first\n\n- second\n    - nested-second"
+	for _, tt := range []struct {
+		name                 string
+		stripTrailingNewline bool
+		wantRanges           [][2]int64
+	}{
+		{"strip", true, [][2]int64{{22, 43}, {1, 21}}},
+		{"no_strip", false, [][2]int64{{22, 44}, {1, 21}}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			segments := parseMarkdown(markdown)
+			requests, _, _ := convertMarkdownToRequests(segments, 1, tt.stripTrailingNewline)
+
+			var bullets []*docs.CreateParagraphBulletsRequest
+			for _, req := range requests {
+				if req.CreateParagraphBullets != nil {
+					bullets = append(bullets, req.CreateParagraphBullets)
+				}
+			}
+			if len(bullets) != len(tt.wantRanges) {
+				t.Fatalf("got %d bullet requests, want %d", len(bullets), len(tt.wantRanges))
+			}
+			for i, bullet := range bullets {
+				if bullet.BulletPreset != "BULLET_DISC_CIRCLE_SQUARE" {
+					t.Errorf("bullet request %d preset = %q, want bullet preset", i, bullet.BulletPreset)
+				}
+				got := [2]int64{bullet.Range.StartIndex, bullet.Range.EndIndex}
+				if got != tt.wantRanges[i] {
+					t.Errorf("bullet request %d range = %v, want %v", i, got, tt.wantRanges[i])
+				}
+				if !isValidListRange(bullet.Range.StartIndex, bullet.Range.EndIndex) {
+					t.Errorf("bullet request %d has invalid range: %+v", i, bullet.Range)
+				}
+			}
+		})
+	}
+}
+
+func TestIsValidListRange(t *testing.T) {
+	tests := []struct {
+		name       string
+		start, end int64
+		want       bool
+	}{
+		{"valid", 1, 2, true},
+		{"zero start", 0, 1, false},
+		{"empty", 1, 1, false},
+		{"inverted", 2, 1, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isValidListRange(tt.start, tt.end); got != tt.want {
+				t.Errorf("isValidListRange(%d, %d) = %t, want %t", tt.start, tt.end, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestParseStrikethrough(t *testing.T) {
 	t.Run("basic strikethrough", func(t *testing.T) {
 		segments := parseSimpleFormatting("~~strikethrough~~")
