@@ -250,12 +250,64 @@ class TestGetRequest:
             **SAMPLE_REQUEST,
             "run": {
                 "log": "https://example.com/log",
-                "stages": [{"name": "provision", "status": "ok", "extra_data": "big blob"}],
+                "stages": {
+                    "pipeline": [
+                        {
+                            "stage": "provisioning",
+                            "plan": "/plan",
+                            "status": "running",
+                            "started": "2026-01-01T13:00:00+00:00",
+                        },
+                    ],
+                },
             },
         }
         with _mock_cache_get(None), _mock_http(200, req_with_stages), _mock_cache_set():
             result = handler.testing_farm_get_request({"request_id": REQ_ID})
-            assert result["run_stages"] == [{"name": "provision", "status": "ok"}]
+            assert result["run_stages"] == [{"name": "provisioning", "status": "running"}]
+
+    def test_null_stages(self):
+        req = {
+            **SAMPLE_REQUEST,
+            "run": {
+                "artifacts": "",
+                "stages": None,
+            },
+        }
+
+        with _mock_cache_get(None), _mock_http(200, req), _mock_cache_set():
+            result = handler.testing_farm_get_request({"request_id": REQ_ID})
+
+        assert result["run_stages"] == []
+
+    def test_null_pipeline(self):
+        req = {
+            **SAMPLE_REQUEST,
+            "run": {
+                "artifacts": "",
+                "stages": {"pipeline": None},
+            },
+        }
+
+        with _mock_cache_get(None), _mock_http(200, req), _mock_cache_set():
+            result = handler.testing_farm_get_request({"request_id": REQ_ID})
+
+        assert result["run_stages"] == []
+
+    def test_queued_null_run(self):
+        # Queued requests have no run or result yet; the API sends both as null.
+        req = {
+            **SAMPLE_REQUEST,
+            "state": "queued",
+            "run": None,
+            "result": None,
+        }
+
+        with _mock_cache_get(None), _mock_http(200, req):
+            result = handler.testing_farm_get_request({"request_id": REQ_ID})
+
+        assert result["artifacts_url"] == ""
+        assert result["run_stages"] == []
 
     def test_cache_hit(self):
         with _mock_cache_get(SAMPLE_REQUEST):
