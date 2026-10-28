@@ -532,20 +532,26 @@ class TestParseXunit:
 # --- testing_farm_get_results ---
 
 
+XUNIT_URL = f"https://artifacts.example.com/{REQ_ID}/results.xml"
+XUNIT_XML = '<testsuites><testsuite><testcase name="t1" result="failed"><failure/></testcase></testsuite></testsuites>'
+
+
 class TestGetResults:
     def test_with_xunit(self):
         body = {
             "state": "complete",
             "result": {
-                "overall": "passed",
-                "xunit": '<testsuite><testcase name="t1" classname="s" time="1.0"/></testsuite>',
+                "overall": "failed",
+                "xunit_url": XUNIT_URL,
             },
         }
-        with _mock_cache_get(None), _mock_http(200, body), _mock_cache_set():
+        responses = [(200, body, {}), (200, XUNIT_XML, {})]
+        with _mock_cache_get(None), patch.object(handler, "http", side_effect=responses), _mock_cache_set():
             result = handler.testing_farm_get_results({"request_id": REQ_ID})
-            assert result["result"] == "passed"
+            assert result["result"] == "failed"
+            assert result["xunit_url"] == XUNIT_URL
             assert result["test_count"] == 1
-            assert result["tests"][0]["name"] == "t1"
+            assert result["tests"] == [{"name": "t1", "result": "failure", "message": ""}]
 
     def test_summary_included_when_present(self):
         body = {
@@ -553,7 +559,6 @@ class TestGetResults:
             "result": {
                 "overall": "passed",
                 "summary": "3 of 3 tests passed",
-                "xunit": '<testsuite><testcase name="t1" classname="s" time="1.0"/></testsuite>',
             },
         }
         with _mock_cache_get(None), _mock_http(200, body), _mock_cache_set():
