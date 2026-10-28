@@ -32,8 +32,8 @@ ABOUT_RESPONSE = {
 }
 
 WHOAMI_RESPONSE = {
-    "id": "user-123",
-    "name": "testuser",
+    "token": {"id": "token-123", "name": "mytoken", "ranch": "redhat"},
+    "user": {"id": "user-123", "auth_name": "testuser"},
 }
 
 REQ_ID = "30a35fea-17f8-4399-9e67-fd3b074ed1ac"
@@ -169,7 +169,8 @@ class TestWhoami:
     def test_cache_miss(self):
         with _mock_cache_get(None), _mock_http(200, WHOAMI_RESPONSE), _mock_cache_set() as mock_set:
             result = handler.testing_farm_whoami({})
-            assert result["id"] == "user-123"
+            assert result["token"]["id"] == "token-123"
+            assert result["user"]["id"] == "user-123"
             mock_set.assert_called_once()
 
     def test_cache_hit(self):
