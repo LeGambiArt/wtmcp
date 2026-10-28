@@ -35,9 +35,24 @@ func ListenAndServe(ctx context.Context, srv *mcpserver.MCPServer, cfg *config.S
 	}
 }
 
+// legacyStdioProtocolVersions are the session-oriented protocol versions
+// served over stdio. The SEP-2575 stateless core (2026-07-28) cannot be
+// served over a session-oriented transport: its long-lived
+// subscriptions/listen stream blocks the single-threaded stdio read loop,
+// stalling every later request. Advertising legacy versions only makes
+// modern clients negotiate down to the initialize handshake.
+var legacyStdioProtocolVersions = []string{
+	"2025-11-25",
+	"2025-06-18",
+	"2025-03-26",
+	"2024-11-05",
+}
+
 func listenStdio(ctx context.Context, srv *mcpserver.MCPServer, stdin io.Reader, stdout io.Writer) error {
 	stdioSrv := mcpserver.NewStdioServer(srv)
 	stdioSrv.SetErrorLogger(log.Default())
+
+	ctx = mcpserver.WithSupportedProtocolVersions(ctx, legacyStdioProtocolVersions)
 
 	err := stdioSrv.Listen(ctx, stdin, stdout)
 	if closer, ok := stdin.(io.Closer); ok {
