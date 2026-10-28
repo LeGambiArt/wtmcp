@@ -258,7 +258,7 @@ def testing_farm_whoami(_params):
     if cached:
         return cached
 
-    status, body, _ = http("GET", f"/{API_VERSION}/me")
+    status, body, _ = http("GET", f"/{API_VERSION}/whoami")
     if status != 200:
         raise ApiError(status, body)
 
