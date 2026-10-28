@@ -328,13 +328,59 @@ class TestGetRequest:
 
 class TestListComposes:
     def test_cache_miss_trims_response(self):
-        composes = {"Fedora": [{"name": "Fedora-Rawhide", "allowed_arches": ["x86_64"]}]}
-        with _mock_cache_get(None), _mock_http(200, composes), _mock_cache_set() as mock_set:
+        composes = {
+            "composes": [
+                {
+                    "name": "RHEL-10.1-Nightly",
+                    "type": "compose",
+                },
+                {
+                    "name": "^.+$",
+                    "type": "regex",
+                },
+            ],
+        }
+        responses = [(200, WHOAMI_RESPONSE, {}), (200, composes, {})]
+        with (
+            _mock_cache_get(None),
+            patch.object(handler, "http", side_effect=responses) as mock_http,
+            _mock_cache_set() as mock_set,
+        ):
             result = handler.testing_farm_list_composes({})
-            # Should trim to just names, stripping metadata.
-            assert result == {"Fedora": ["Fedora-Rawhide"]}
-            mock_set.assert_called_once()
+            # Uses the token's ranch and trims to just names, stripping metadata.
+            assert mock_http.call_args[0] == ("GET", "/v0.2/composes/redhat")
+            assert result == {"composes": ["RHEL-10.1-Nightly", "^.+$"]}
+            assert mock_set.call_args[0][0] == "tf:composes:redhat"
             assert mock_set.call_args[1]["ttl"] == 14400
+
+    def test_fallback_to_public_ranch(self):
+        responses = [(401, {"detail": "unauthorized"}, {}), (200, {"composes": []}, {})]
+        with (
+            _mock_cache_get(None),
+            patch.object(handler, "http", side_effect=responses) as mock_http,
+            _mock_cache_set(),
+        ):
+            handler.testing_farm_list_composes({})
+            assert mock_http.call_args[0] == ("GET", "/v0.2/composes/public")
+
+    def test_null_ranch_uses_public(self):
+        whoami = {
+            "token": {"ranch": None},
+            "user": {},
+        }
+        responses = [
+            (200, whoami, {}),
+            (200, {"composes": []}, {}),
+        ]
+
+        with (
+            _mock_cache_get(None),
+            patch.object(handler, "http", side_effect=responses) as mock_http,
+            _mock_cache_set(),
+        ):
+            handler.testing_farm_list_composes({})
+
+        assert mock_http.call_args[0] == ("GET", "/v0.2/composes/public")
 
     def test_plain_string_composes(self):
         composes = {"Fedora": ["Fedora-Rawhide", "Fedora-41"]}

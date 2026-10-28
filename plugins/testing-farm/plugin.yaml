@@ -107,9 +107,10 @@ tools:
   - name: testing_farm_list_composes
     access: read
     description: >
-      List available OS composes for the ranch. Returns compose names
-      grouped by OS family. Use this to discover valid compose names
-      before reserving or submitting tests.
+      List available OS composes for the ranch of the configured token
+      (public or redhat). Returns exact compose names and regular
+      expressions of accepted names. Use this to discover valid compose
+      names before reserving or submitting tests.
     params: {}
 
   - name: testing_farm_list_reservations
