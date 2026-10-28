@@ -354,6 +354,9 @@ def testing_farm_get_request(params):
     api_result = body.get("result") or {}
     summary = api_result.get("summary", "") if isinstance(api_result, dict) else ""
 
+    stages = run.get("stages") or {}
+    pipeline = stages.get("pipeline") or []
+
     out = {
         "id": body.get("id", ""),
         "state": body.get("state", ""),
@@ -366,7 +369,7 @@ def testing_farm_get_request(params):
         "updated": body.get("updated", ""),
         "artifacts_url": artifacts_url,
         "run_log": run.get("log", ""),
-        "run_stages": [{"name": s.get("name", ""), "status": s.get("status", "")} for s in (run.get("stages") or [])],
+        "run_stages": [{"name": p.get("stage", ""), "status": p.get("status", "")} for p in pipeline],
     }
 
     if summary:
