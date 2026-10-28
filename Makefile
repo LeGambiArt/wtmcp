@@ -3,6 +3,9 @@
 # Go toolchain version — derived from go.mod to stay in sync with dependency bumps
 GO_TOOLCHAIN_VERSION := $(shell sed -n 's/^go //p' go.mod)
 
+# Pinned analysis tools — built from source with the local Go toolchain
+GOLANGCI_LINT_VERSION ?= v2.15.0
+
 VERSION ?= $(shell cat VERSION 2>/dev/null || echo "dev")
 BUILD_DATE := $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
 LDFLAGS := -s -w -X main.Version=$(VERSION) -X main.BuildDate=$(BUILD_DATE)
@@ -104,12 +107,12 @@ test-cover: arapuca
 # Run govulncheck (handles PKG_CONFIG_PATH for cgo)
 govulncheck: arapuca
 	@echo "Running govulncheck..."
-	govulncheck ./...
+	go tool govulncheck ./...
 
 # Run linter
 lint: arapuca
 	@echo "Running linter..."
-	golangci-lint run ./...
+	go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) run ./...
 
 # Format code
 fmt:
