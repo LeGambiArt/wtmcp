@@ -476,12 +476,19 @@ def testing_farm_wait_for_result(params):
 
 
 def testing_farm_list_composes(_params):
-    """List available OS composes."""
-    cached = cache_get("tf:composes")
+    """List available OS composes for the token's ranch."""
+    try:
+        ranch = testing_farm_whoami({}).get("token", {}).get("ranch") or "public"
+    except ApiError:
+        ranch = "public"
+
+    cache_key = f"tf:composes:{ranch}"
+    cached = cache_get(cache_key)
     if cached:
         return cached
 
-    status, body, _ = http("GET", f"/{API_VERSION}/composes")
+    # v0.1/coposes is deprecated, we need v0.2 for this endpoint
+    status, body, _ = http("GET", f"/v0.2/composes/{ranch}")
     if status != 200:
         raise ApiError(status, body)
 
@@ -496,7 +503,7 @@ def testing_farm_list_composes(_params):
                 trimmed[group] = composes
         body = trimmed
 
-    cache_set("tf:composes", body, ttl=14400)
+    cache_set(cache_key, body, ttl=14400)
     return body
 
 
