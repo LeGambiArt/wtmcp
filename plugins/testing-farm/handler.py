@@ -771,7 +771,7 @@ def testing_farm_get_results(params):
         }
 
     api_result = body.get("result") or {}
-    xunit = api_result.get("xunit", "") if isinstance(api_result, dict) else ""
+    xunit_url = api_result.get("xunit_url", "") if isinstance(api_result, dict) else ""
     result_summary = api_result.get("summary", "") if isinstance(api_result, dict) else ""
 
     summary = {
@@ -783,7 +783,12 @@ def testing_farm_get_results(params):
     if result_summary:
         summary["summary"] = result_summary
 
-    if xunit:
+    if xunit_url:
+        summary["xunit_url"] = xunit_url
+        status, xunit, _ = http("GET", "/", url=xunit_url)
+        if status != 200:
+            return summary
+
         tests = _parse_xunit(xunit)
         summary["tests"] = tests
         summary["test_count"] = len(tests)
