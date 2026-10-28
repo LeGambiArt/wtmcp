@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -98,6 +99,108 @@ func TestListenAndServeStdioReturnsOnCancel(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("ListenAndServe did not return after cancel")
+	}
+}
+
+// rpcResult is the envelope used to decode the responses we assert on.
+type rpcResult struct {
+	Result struct {
+		ProtocolVersion   string   `json:"protocolVersion"`
+		SupportedVersions []string `json:"supportedVersions"`
+	} `json:"result"`
+	Error *struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+// stdioTestServer starts ListenAndServe over stdio pipes and returns a
+// function that sends one request line and decodes the next response.
+func stdioTestServer(t *testing.T) func(t *testing.T, request string) rpcResult {
+	t.Helper()
+
+	srv := newTestMCPServer()
+	cfg := &config.ServerConfig{Transport: config.TransportStdio}
+
+	reqR, reqW := io.Pipe()
+	respR, respW := io.Pipe()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- ListenAndServe(ctx, srv, cfg, slog.Default(), reqR, respW)
+	}()
+
+	t.Cleanup(func() {
+		cancel()
+		_ = reqW.Close()
+		_ = respR.Close()
+		select {
+		case err := <-errCh:
+			if err != nil {
+				t.Errorf("ListenAndServe returned error: %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Error("ListenAndServe did not return after cancel")
+		}
+	})
+
+	return func(t *testing.T, request string) rpcResult {
+		t.Helper()
+		if _, err := io.WriteString(reqW, request+"\n"); err != nil {
+			t.Fatalf("write request: %v", err)
+		}
+		var resp rpcResult
+		if err := json.NewDecoder(respR).Decode(&resp); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		if resp.Error != nil {
+			t.Fatalf("RPC error %d: %s", resp.Error.Code, resp.Error.Message)
+		}
+		return resp
+	}
+}
+
+// stdio dispatches messages sequentially, so it cannot serve the SEP-2575
+// stateless core: the long-lived subscriptions/listen stream would block the
+// read loop and starve every later request. Modern clients (e.g. Crush) only
+// negotiate down to the legacy handshake if 2026-07-28 is not advertised.
+func TestStdioDiscoverAdvertisesLegacyVersionsOnly(t *testing.T) {
+	send := stdioTestServer(t)
+
+	resp := send(t, `{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{`+
+		`"_meta":{`+
+		`"io.modelcontextprotocol/protocolVersion":"2026-07-28",`+
+		`"io.modelcontextprotocol/clientInfo":{"name":"modern-client","version":"1.0.0"},`+
+		`"io.modelcontextprotocol/clientCapabilities":{"roots":{"listChanged":false}}}}}`)
+
+	if len(resp.Result.SupportedVersions) == 0 {
+		t.Fatal("server/discover returned no supportedVersions")
+	}
+	for _, version := range resp.Result.SupportedVersions {
+		if version == "2026-07-28" {
+			t.Fatalf("stdio advertised the stateless core (2026-07-28): %v", resp.Result.SupportedVersions)
+		}
+	}
+	for _, want := range []string{"2025-06-18", "2025-03-26", "2024-11-05"} {
+		if !slices.Contains(resp.Result.SupportedVersions, want) {
+			t.Errorf("supportedVersions %v missing legacy version %q", resp.Result.SupportedVersions, want)
+		}
+	}
+}
+
+// Legacy clients must keep working: initialize over stdio negotiates and
+// echoes the requested legacy version.
+func TestStdioInitializeServesLegacyHandshake(t *testing.T) {
+	send := stdioTestServer(t)
+
+	resp := send(t, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{`+
+		`"protocolVersion":"2025-06-18",`+
+		`"clientInfo":{"name":"legacy-client","version":"1.0.0"},`+
+		`"capabilities":{}}}`)
+
+	if resp.Result.ProtocolVersion != "2025-06-18" {
+		t.Errorf("negotiated protocolVersion = %q, want %q", resp.Result.ProtocolVersion, "2025-06-18")
 	}
 }
 
