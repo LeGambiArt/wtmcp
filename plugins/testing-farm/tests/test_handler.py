@@ -52,7 +52,7 @@ SAMPLE_REQUEST = {
             "arch": "x86_64",
         }
     ],
-    "run": {"log": "https://example.com/log", "stages": [], "artifacts": f"https://artifacts.example.com/{REQ_ID}"},
+    "run": {"console": "", "stages": {"pipeline": []}, "artifacts": f"https://artifacts.example.com/{REQ_ID}"},
 }
 
 RESERVE_REQUEST = {
@@ -249,7 +249,6 @@ class TestGetRequest:
         req_with_stages = {
             **SAMPLE_REQUEST,
             "run": {
-                "log": "https://example.com/log",
                 "stages": {
                     "pipeline": [
                         {
@@ -599,13 +598,20 @@ class TestGetLogs:
     def test_success(self):
         with _mock_cache_get(None), _mock_http(200, SAMPLE_REQUEST), _mock_cache_set():
             result = handler.testing_farm_get_logs({"request_id": REQ_ID})
-            assert result["pipeline_log"] == "https://example.com/log"
+            assert result["pipeline_log"] == f"https://artifacts.example.com/{REQ_ID}/pipeline.log"
+            assert result["console_log"] == ""
             assert result["artifacts_url"] == f"https://artifacts.example.com/{REQ_ID}"
 
     def test_cache_hit(self):
         with _mock_cache_get(SAMPLE_REQUEST):
             result = handler.testing_farm_get_logs({"request_id": REQ_ID})
-            assert result["pipeline_log"] == "https://example.com/log"
+            assert result["pipeline_log"] == f"https://artifacts.example.com/{REQ_ID}/pipeline.log"
+
+    def test_no_artifacts_yet(self):
+        req = {**SAMPLE_REQUEST, "state": "queued", "run": None}
+        with _mock_cache_get(None), _mock_http(200, req):
+            result = handler.testing_farm_get_logs({"request_id": REQ_ID})
+            assert result["pipeline_log"] == ""
 
 
 # --- testing_farm_reserve ---

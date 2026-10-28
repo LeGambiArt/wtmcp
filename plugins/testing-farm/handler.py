@@ -338,6 +338,11 @@ def _extract_result(req):
     return str(result) if result else "unknown"
 
 
+def _pipeline_log_url(artifacts_url):
+    """The API returns no log URL; the pipeline log sits at the artifacts root."""
+    return f"{artifacts_url}/pipeline.log" if artifacts_url else ""
+
+
 def testing_farm_get_request(params):
     """Get detailed status of a test request."""
     request_id = params["request_id"]
@@ -368,7 +373,7 @@ def testing_farm_get_request(params):
         "created": body.get("created", ""),
         "updated": body.get("updated", ""),
         "artifacts_url": artifacts_url,
-        "run_log": run.get("log", ""),
+        "run_log": _pipeline_log_url(artifacts_url),
         "run_stages": [{"name": p.get("stage", ""), "status": p.get("status", "")} for p in pipeline],
     }
 
@@ -823,12 +828,14 @@ def testing_farm_get_logs(params):
     body = _fetch_request(request_id)
 
     run = body.get("run", {}) or {}
+    artifacts_url = run.get("artifacts", "")
 
     return {
         "request_id": request_id,
         "state": body.get("state", ""),
-        "pipeline_log": run.get("log", ""),
-        "artifacts_url": run.get("artifacts", ""),
+        "pipeline_log": _pipeline_log_url(artifacts_url),
+        "console_log": run.get("console", ""),
+        "artifacts_url": artifacts_url,
     }
 
 
