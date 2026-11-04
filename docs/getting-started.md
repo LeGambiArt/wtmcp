@@ -214,12 +214,13 @@ client reads that file at startup and uses it to discover the wtmcp server.
 **You never start the server manually** — the AI client launches it
 automatically whenever it needs to call an MCP tool.
 
-> **Tip:** The same command works for Gemini CLI and Cursor — just swap the
+> **Tip:** The same command works for Gemini CLI, Cursor, and Codex — just swap the
 > agent name:
 >
 > ```bash
 > ./wtmcpctl agent enable gemini   # writes .gemini/settings.json
 > ./wtmcpctl agent enable cursor   # writes .cursor/mcp.json
+> ./wtmcpctl agent enable codex    # writes .codex/config.toml
 > ```
 
 > **Note:** Registration is project-scoped by default. Running

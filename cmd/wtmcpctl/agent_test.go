@@ -8,6 +8,17 @@ import (
 	"testing"
 )
 
+func setupTestWtmcpBinary(t *testing.T) string {
+	t.Helper()
+	binDir := t.TempDir()
+	path := filepath.Join(binDir, "wtmcp")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o755); err != nil { // #nosec G306 -- test fixture must be executable
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return path
+}
+
 func TestResolveDir_Empty(t *testing.T) {
 	dir, err := resolveDir("")
 	if err != nil {
@@ -174,7 +185,7 @@ func TestValidAgentNames(t *testing.T) {
 	}
 
 	// Check that all expected agents are present (including aliases)
-	expectedAgents := []string{"claude", "claude-code", "cursor", "gemini"}
+	expectedAgents := []string{"claude", "claude-code", "codex", "cursor", "gemini"}
 	for _, expected := range expectedAgents {
 		found := false
 		for _, name := range names {
@@ -190,7 +201,7 @@ func TestValidAgentNames(t *testing.T) {
 }
 
 func TestAgentEnable_ReadOnly(t *testing.T) {
-	t.Skip("test requires wtmcp binary in PATH")
+	setupTestWtmcpBinary(t)
 	tmpDir := t.TempDir()
 
 	if err := agentEnable("claude-code", tmpDir, true); err != nil {
@@ -216,7 +227,7 @@ func TestAgentEnable_ReadOnly(t *testing.T) {
 }
 
 func TestAgentEnable_Claude_Alias(t *testing.T) {
-	t.Skip("test requires wtmcp binary in PATH")
+	setupTestWtmcpBinary(t)
 	tmpDir := t.TempDir()
 
 	// Enable using "claude" alias
@@ -248,7 +259,7 @@ func TestAgentEnable_Claude_Alias(t *testing.T) {
 }
 
 func TestAgentEnable_ClaudeVsClaudeCode_SameConfig(t *testing.T) {
-	t.Skip("test requires wtmcp binary in PATH")
+	setupTestWtmcpBinary(t)
 	// Test that "claude" and "claude-code" produce identical configs
 	tmpDir1 := t.TempDir()
 	tmpDir2 := t.TempDir()
@@ -317,7 +328,7 @@ func TestAgentDisable_Claude_Alias(t *testing.T) {
 }
 
 func TestAgentEnable_ClaudeCode_NewFile(t *testing.T) {
-	t.Skip("test requires wtmcp binary in PATH")
+	setupTestWtmcpBinary(t)
 	tmpDir := t.TempDir()
 
 	if err := agentEnable("claude-code", tmpDir, false); err != nil {
@@ -366,7 +377,7 @@ func TestAgentEnable_ClaudeCode_NewFile(t *testing.T) {
 }
 
 func TestAgentEnable_Gemini_CreatesDirectory(t *testing.T) {
-	t.Skip("test requires wtmcp binary in PATH")
+	setupTestWtmcpBinary(t)
 	tmpDir := t.TempDir()
 
 	if err := agentEnable("gemini", tmpDir, false); err != nil {
@@ -405,7 +416,7 @@ func TestAgentEnable_Gemini_CreatesDirectory(t *testing.T) {
 }
 
 func TestAgentEnable_Cursor_CreatesDirectory(t *testing.T) {
-	t.Skip("test requires wtmcp binary in PATH")
+	setupTestWtmcpBinary(t)
 	tmpDir := t.TempDir()
 
 	if err := agentEnable("cursor", tmpDir, false); err != nil {
@@ -430,7 +441,7 @@ func TestAgentEnable_Cursor_CreatesDirectory(t *testing.T) {
 }
 
 func TestAgentEnable_ExistingServers(t *testing.T) {
-	t.Skip("test requires wtmcp binary in PATH")
+	setupTestWtmcpBinary(t)
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, ".mcp.json")
 
@@ -469,7 +480,7 @@ func TestAgentEnable_ExistingServers(t *testing.T) {
 }
 
 func TestAgentEnable_Gemini_PreservesOtherSettings(t *testing.T) {
-	t.Skip("test requires wtmcp binary in PATH")
+	setupTestWtmcpBinary(t)
 	tmpDir := t.TempDir()
 	geminiDir := filepath.Join(tmpDir, ".gemini")
 	if err := os.MkdirAll(geminiDir, 0o750); err != nil {
@@ -522,7 +533,7 @@ func TestAgentEnable_Gemini_PreservesOtherSettings(t *testing.T) {
 }
 
 func TestAgentEnable_OverwriteExisting(t *testing.T) {
-	t.Skip("test requires wtmcp binary in PATH")
+	wtmcpPath := setupTestWtmcpBinary(t)
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, ".mcp.json")
 
@@ -552,15 +563,15 @@ func TestAgentEnable_OverwriteExisting(t *testing.T) {
 	mcpServers := config["mcpServers"].(map[string]any)
 	wtmcp := mcpServers[mcpServerKey].(map[string]any)
 
-	// Should have new command (not /old/path/to/wtmcp)
+	// The old command must be replaced by the resolved binary.
 	command := wtmcp["command"].(string)
-	if command == "/old/path/to/wtmcp" {
-		t.Error("command was not updated")
+	if command != wtmcpPath {
+		t.Errorf("command = %q, want %q", command, wtmcpPath)
 	}
 }
 
 func TestAgentEnable_RemovesLegacyKey(t *testing.T) {
-	t.Skip("test requires wtmcp binary in PATH")
+	setupTestWtmcpBinary(t)
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, ".mcp.json")
 
