@@ -15,11 +15,21 @@ import (
 const mcpServerKey = "wtmcp"
 const legacyServerKey = "what-the-mcp"
 
+// agentConfigFormat separates shared command routing from JSON and TOML storage.
+// JSON configuration is implemented here; TOML editing lives in agent_config_toml.go.
+type agentConfigFormat interface {
+	enable(spec agentSpec, agentName, dir, wtmcpPath string, readOnly bool) error
+	disable(spec agentSpec, agentName, dir string) error
+}
+
+type jsonAgentFormat struct{}
+
 // agentSpec defines how a specific AI agent stores its MCP server configuration.
 type agentSpec struct {
 	// configPath returns the path to the agent's config file,
 	// given the project directory.
 	configPath func(dir string) string
+	format     agentConfigFormat
 	// needsType indicates whether "type": "stdio" must be included
 	// in the server entry.
 	needsType bool
@@ -39,6 +49,7 @@ var (
 		needsType:     true,
 		dirPrefix:     "",
 		canRemoveFile: true,
+		format:        jsonAgentFormat{},
 	}
 
 	supportedAgents = map[string]agentSpec{
@@ -51,6 +62,7 @@ var (
 			needsType:     false,
 			dirPrefix:     ".gemini",
 			canRemoveFile: false,
+			format:        jsonAgentFormat{},
 		},
 		"cursor": {
 			configPath: func(dir string) string {
@@ -59,19 +71,48 @@ var (
 			needsType:     false,
 			dirPrefix:     ".cursor",
 			canRemoveFile: true,
+			format:        jsonAgentFormat{},
+		},
+		"codex": {
+			configPath: func(dir string) string {
+				return filepath.Join(dir, ".codex", "config.toml")
+			},
+			format: tomlAgentFormat{
+				serverTable: "mcp_servers",
+				inheritedConfigPaths: func(configPath string) ([]string, error) {
+					codexHome, err := agentConfigHome("CODEX_HOME", ".codex")
+					if err != nil {
+						return nil, err
+					}
+					return codexInheritedConfigPaths(configPath, codexHome), nil
+				},
+			},
 		},
 	}
 )
 
+// agentConfigHome resolves an agent's user configuration directory.
+func agentConfigHome(envName, defaultDir string) (string, error) {
+	if configHome := os.Getenv(envName); configHome != "" {
+		return configHome, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, defaultDir), nil
+}
+
 var agentCmd = &cobra.Command{
 	Use:   "agent",
-	Short: "Configure wtmcp for AI agents (Claude, Gemini, Cursor)",
+	Short: "Configure wtmcp for AI agents (Claude, Gemini, Cursor, Codex)",
 	Long: `Configure wtmcp MCP server for AI agents.
 
 Supported agents:
   - claude / claude-code
   - gemini
-  - cursor`,
+  - cursor
+  - codex`,
 }
 
 var agentEnableCmd = &cobra.Command{
@@ -163,10 +204,11 @@ func agentEnable(agentName, dir string, readOnly bool) error {
 		return err
 	}
 
-	// Get agent spec
 	spec := supportedAgents[agentName]
+	return spec.format.enable(spec, agentName, dir, wtmcpPath, readOnly)
+}
 
-	// Compute config file path
+func (jsonAgentFormat) enable(spec agentSpec, agentName, dir, wtmcpPath string, readOnly bool) error {
 	configPath := spec.configPath(dir)
 
 	// Ensure directory exists if needed
@@ -225,10 +267,11 @@ func agentEnable(agentName, dir string, readOnly bool) error {
 
 // agentDisable disables the wtmcp MCP server for the specified agent.
 func agentDisable(agentName, dir string) error {
-	// Get agent spec
 	spec := supportedAgents[agentName]
+	return spec.format.disable(spec, agentName, dir)
+}
 
-	// Compute config file path
+func (jsonAgentFormat) disable(spec agentSpec, agentName, dir string) error {
 	configPath := spec.configPath(dir)
 
 	// Read existing config
