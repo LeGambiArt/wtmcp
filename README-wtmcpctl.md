@@ -48,7 +48,7 @@ wtmcpctl agent enable <agent>    # Add wtmcp to agent's MCP config
 wtmcpctl agent disable <agent>   # Remove wtmcp from agent's MCP config
 ```
 
-**Supported agents:** `claude` (or `claude-code`), `gemini`, `cursor`
+**Supported agents:** `claude` (or `claude-code`), `gemini`, `cursor`, `codex`
 
 **Flags:**
 
@@ -61,6 +61,7 @@ wtmcpctl agent disable <agent>   # Remove wtmcp from agent's MCP config
 - Claude/Claude Code: `<dir>/.mcp.json`
 - Gemini: `<dir>/.gemini/settings.json`
 - Cursor: `<dir>/.cursor/mcp.json`
+- Codex: `<dir>/.codex/config.toml`
 
 **Examples:**
 
