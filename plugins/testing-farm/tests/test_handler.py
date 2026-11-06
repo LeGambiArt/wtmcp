@@ -206,6 +206,27 @@ class TestListRequests:
             assert query["state"] == "running"
             assert query["limit"] == 5
 
+    def test_null_body(self):
+        # The API answers an empty match with null instead of [].
+        with _mock_cache_get(None), _mock_http(200, None), _mock_cache_set():
+            result = handler.testing_farm_list_requests({})
+
+        assert result == {"requests": [], "count": 0}
+
+    def test_null_os(self):
+        # os is null for requests that run in a container.
+        req = {
+            **SAMPLE_REQUEST,
+            "environments_requested": [
+                {"os": None, "arch": "x86_64"},
+            ],
+        }
+
+        with _mock_cache_get(None), _mock_http(200, [req]), _mock_cache_set():
+            result = handler.testing_farm_list_requests({})
+
+        assert result["requests"][0]["compose"] == ""
+
     def test_http_error(self):
         with _mock_cache_get(None), _mock_http(500, {"error": "fail"}):
             try:
@@ -405,6 +426,28 @@ class TestListReservations:
         with _mock_cache_get(None), _mock_http(200, [SAMPLE_REQUEST]), _mock_cache_set():
             result = handler.testing_farm_list_reservations({})
             assert result["count"] == 0
+
+    def test_skips_null_plan_name(self):
+        # Requests submitted without a plan filter have test.fmf.name = null.
+        no_plan = {
+            **SAMPLE_REQUEST,
+            "test": {
+                "fmf": {"url": "https://example.com/tests", "name": None},
+            },
+        }
+
+        with _mock_cache_get(None), _mock_http(200, [RESERVE_REQUEST, no_plan]), _mock_cache_set():
+            result = handler.testing_farm_list_reservations({})
+
+        assert result["count"] == 1
+        assert result["reservations"][0]["id"] == REQ_ID_2
+
+    def test_null_body(self):
+        # The API answers an empty match with null instead of [].
+        with _mock_cache_get(None), _mock_http(200, None), _mock_cache_set():
+            result = handler.testing_farm_list_reservations({})
+
+        assert result == {"reservations": [], "count": 0}
 
     def test_cache_hit(self):
         cached = {"reservations": [{"id": "cached"}], "count": 1}

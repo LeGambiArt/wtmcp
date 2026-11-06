@@ -291,6 +291,8 @@ def testing_farm_list_requests(params):
     if status != 200:
         raise ApiError(status, body)
 
+    # the API answers an empty match with null, not []
+    body = body or []
     if not isinstance(body, list):
         return body
 
@@ -298,7 +300,7 @@ def testing_farm_list_requests(params):
     for req in body:
         envs = req.get("environments_requested", [])
         env0 = envs[0] if envs else {}
-        compose = env0.get("os", {}).get("compose", "")
+        compose = (env0.get("os") or {}).get("compose", "")
         arch = env0.get("arch", "")
         test_name = req.get("test", {}).get("fmf", {}).get("name", "")
 
@@ -366,7 +368,7 @@ def testing_farm_get_request(params):
         "id": body.get("id", ""),
         "state": body.get("state", ""),
         "result": _extract_result(body),
-        "compose": env0.get("os", {}).get("compose", ""),
+        "compose": (env0.get("os") or {}).get("compose", ""),
         "arch": env0.get("arch", ""),
         "test_name": body.get("test", {}).get("fmf", {}).get("name", ""),
         "test_url": body.get("test", {}).get("fmf", {}).get("url", ""),
@@ -522,20 +524,21 @@ def testing_farm_list_reservations(params):
     if status != 200:
         raise ApiError(status, body)
 
+    body = body or []  # the API answers an empty match with null, not []
     if not isinstance(body, list):
         return body
 
     results = []
     for req in body:
-        test_name = req.get("test", {}).get("fmf", {}).get("name", "")
+        test_name = req.get("test", {}).get("fmf", {}).get("name") or ""
         if "/testing-farm/reserve" not in test_name:
             continue
 
         envs = req.get("environments_requested", [])
         env0 = envs[0] if envs else {}
-        compose = env0.get("os", {}).get("compose", "")
+        compose = (env0.get("os") or {}).get("compose", "")
         arch = env0.get("arch", "")
-        duration = env0.get("variables", {}).get("TF_RESERVATION_DURATION", "")
+        duration = (env0.get("variables") or {}).get("TF_RESERVATION_DURATION", "")
 
         results.append(
             {
@@ -618,7 +621,7 @@ def testing_farm_get_ssh(params):
         "ssh_command": f"ssh root@{host}",
         "request_id": request_id,
         "state": state,
-        "compose": env0.get("os", {}).get("compose", ""),
+        "compose": (env0.get("os") or {}).get("compose", ""),
         "arch": env0.get("arch", ""),
         "artifacts_url": artifacts_url,
     }
