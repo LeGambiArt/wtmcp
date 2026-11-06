@@ -32,8 +32,8 @@ ABOUT_RESPONSE = {
 }
 
 WHOAMI_RESPONSE = {
-    "id": "user-123",
-    "name": "testuser",
+    "token": {"id": "token-123", "name": "mytoken", "ranch": "redhat"},
+    "user": {"id": "user-123", "auth_name": "testuser"},
 }
 
 REQ_ID = "30a35fea-17f8-4399-9e67-fd3b074ed1ac"
@@ -52,7 +52,7 @@ SAMPLE_REQUEST = {
             "arch": "x86_64",
         }
     ],
-    "run": {"log": "https://example.com/log", "stages": [], "artifacts": f"https://artifacts.example.com/{REQ_ID}"},
+    "run": {"console": "", "stages": {"pipeline": []}, "artifacts": f"https://artifacts.example.com/{REQ_ID}"},
 }
 
 RESERVE_REQUEST = {
@@ -169,7 +169,8 @@ class TestWhoami:
     def test_cache_miss(self):
         with _mock_cache_get(None), _mock_http(200, WHOAMI_RESPONSE), _mock_cache_set() as mock_set:
             result = handler.testing_farm_whoami({})
-            assert result["id"] == "user-123"
+            assert result["token"]["id"] == "token-123"
+            assert result["user"]["id"] == "user-123"
             mock_set.assert_called_once()
 
     def test_cache_hit(self):
@@ -204,6 +205,27 @@ class TestListRequests:
             query = call_args[1].get("query") or call_args[0][2]
             assert query["state"] == "running"
             assert query["limit"] == 5
+
+    def test_null_body(self):
+        # The API answers an empty match with null instead of [].
+        with _mock_cache_get(None), _mock_http(200, None), _mock_cache_set():
+            result = handler.testing_farm_list_requests({})
+
+        assert result == {"requests": [], "count": 0}
+
+    def test_null_os(self):
+        # os is null for requests that run in a container.
+        req = {
+            **SAMPLE_REQUEST,
+            "environments_requested": [
+                {"os": None, "arch": "x86_64"},
+            ],
+        }
+
+        with _mock_cache_get(None), _mock_http(200, [req]), _mock_cache_set():
+            result = handler.testing_farm_list_requests({})
+
+        assert result["requests"][0]["compose"] == ""
 
     def test_http_error(self):
         with _mock_cache_get(None), _mock_http(500, {"error": "fail"}):
@@ -249,13 +271,64 @@ class TestGetRequest:
         req_with_stages = {
             **SAMPLE_REQUEST,
             "run": {
-                "log": "https://example.com/log",
-                "stages": [{"name": "provision", "status": "ok", "extra_data": "big blob"}],
+                "stages": {
+                    "pipeline": [
+                        {
+                            "stage": "provisioning",
+                            "plan": "/plan",
+                            "status": "running",
+                            "started": "2026-01-01T13:00:00+00:00",
+                        },
+                    ],
+                },
             },
         }
         with _mock_cache_get(None), _mock_http(200, req_with_stages), _mock_cache_set():
             result = handler.testing_farm_get_request({"request_id": REQ_ID})
-            assert result["run_stages"] == [{"name": "provision", "status": "ok"}]
+            assert result["run_stages"] == [{"name": "provisioning", "status": "running"}]
+
+    def test_null_stages(self):
+        req = {
+            **SAMPLE_REQUEST,
+            "run": {
+                "artifacts": "",
+                "stages": None,
+            },
+        }
+
+        with _mock_cache_get(None), _mock_http(200, req), _mock_cache_set():
+            result = handler.testing_farm_get_request({"request_id": REQ_ID})
+
+        assert result["run_stages"] == []
+
+    def test_null_pipeline(self):
+        req = {
+            **SAMPLE_REQUEST,
+            "run": {
+                "artifacts": "",
+                "stages": {"pipeline": None},
+            },
+        }
+
+        with _mock_cache_get(None), _mock_http(200, req), _mock_cache_set():
+            result = handler.testing_farm_get_request({"request_id": REQ_ID})
+
+        assert result["run_stages"] == []
+
+    def test_queued_null_run(self):
+        # Queued requests have no run or result yet; the API sends both as null.
+        req = {
+            **SAMPLE_REQUEST,
+            "state": "queued",
+            "run": None,
+            "result": None,
+        }
+
+        with _mock_cache_get(None), _mock_http(200, req):
+            result = handler.testing_farm_get_request({"request_id": REQ_ID})
+
+        assert result["artifacts_url"] == ""
+        assert result["run_stages"] == []
 
     def test_cache_hit(self):
         with _mock_cache_get(SAMPLE_REQUEST):
@@ -276,13 +349,59 @@ class TestGetRequest:
 
 class TestListComposes:
     def test_cache_miss_trims_response(self):
-        composes = {"Fedora": [{"name": "Fedora-Rawhide", "allowed_arches": ["x86_64"]}]}
-        with _mock_cache_get(None), _mock_http(200, composes), _mock_cache_set() as mock_set:
+        composes = {
+            "composes": [
+                {
+                    "name": "RHEL-10.1-Nightly",
+                    "type": "compose",
+                },
+                {
+                    "name": "^.+$",
+                    "type": "regex",
+                },
+            ],
+        }
+        responses = [(200, WHOAMI_RESPONSE, {}), (200, composes, {})]
+        with (
+            _mock_cache_get(None),
+            patch.object(handler, "http", side_effect=responses) as mock_http,
+            _mock_cache_set() as mock_set,
+        ):
             result = handler.testing_farm_list_composes({})
-            # Should trim to just names, stripping metadata.
-            assert result == {"Fedora": ["Fedora-Rawhide"]}
-            mock_set.assert_called_once()
+            # Uses the token's ranch and trims to just names, stripping metadata.
+            assert mock_http.call_args[0] == ("GET", "/v0.2/composes/redhat")
+            assert result == {"composes": ["RHEL-10.1-Nightly", "^.+$"]}
+            assert mock_set.call_args[0][0] == "tf:composes:redhat"
             assert mock_set.call_args[1]["ttl"] == 14400
+
+    def test_fallback_to_public_ranch(self):
+        responses = [(401, {"detail": "unauthorized"}, {}), (200, {"composes": []}, {})]
+        with (
+            _mock_cache_get(None),
+            patch.object(handler, "http", side_effect=responses) as mock_http,
+            _mock_cache_set(),
+        ):
+            handler.testing_farm_list_composes({})
+            assert mock_http.call_args[0] == ("GET", "/v0.2/composes/public")
+
+    def test_null_ranch_uses_public(self):
+        whoami = {
+            "token": {"ranch": None},
+            "user": {},
+        }
+        responses = [
+            (200, whoami, {}),
+            (200, {"composes": []}, {}),
+        ]
+
+        with (
+            _mock_cache_get(None),
+            patch.object(handler, "http", side_effect=responses) as mock_http,
+            _mock_cache_set(),
+        ):
+            handler.testing_farm_list_composes({})
+
+        assert mock_http.call_args[0] == ("GET", "/v0.2/composes/public")
 
     def test_plain_string_composes(self):
         composes = {"Fedora": ["Fedora-Rawhide", "Fedora-41"]}
@@ -307,6 +426,28 @@ class TestListReservations:
         with _mock_cache_get(None), _mock_http(200, [SAMPLE_REQUEST]), _mock_cache_set():
             result = handler.testing_farm_list_reservations({})
             assert result["count"] == 0
+
+    def test_skips_null_plan_name(self):
+        # Requests submitted without a plan filter have test.fmf.name = null.
+        no_plan = {
+            **SAMPLE_REQUEST,
+            "test": {
+                "fmf": {"url": "https://example.com/tests", "name": None},
+            },
+        }
+
+        with _mock_cache_get(None), _mock_http(200, [RESERVE_REQUEST, no_plan]), _mock_cache_set():
+            result = handler.testing_farm_list_reservations({})
+
+        assert result["count"] == 1
+        assert result["reservations"][0]["id"] == REQ_ID_2
+
+    def test_null_body(self):
+        # The API answers an empty match with null instead of [].
+        with _mock_cache_get(None), _mock_http(200, None), _mock_cache_set():
+            result = handler.testing_farm_list_reservations({})
+
+        assert result == {"reservations": [], "count": 0}
 
     def test_cache_hit(self):
         cached = {"reservations": [{"id": "cached"}], "count": 1}
@@ -480,20 +621,26 @@ class TestParseXunit:
 # --- testing_farm_get_results ---
 
 
+XUNIT_URL = f"https://artifacts.example.com/{REQ_ID}/results.xml"
+XUNIT_XML = '<testsuites><testsuite><testcase name="t1" result="failed"><failure/></testcase></testsuite></testsuites>'
+
+
 class TestGetResults:
     def test_with_xunit(self):
         body = {
             "state": "complete",
             "result": {
-                "overall": "passed",
-                "xunit": '<testsuite><testcase name="t1" classname="s" time="1.0"/></testsuite>',
+                "overall": "failed",
+                "xunit_url": XUNIT_URL,
             },
         }
-        with _mock_cache_get(None), _mock_http(200, body), _mock_cache_set():
+        responses = [(200, body, {}), (200, XUNIT_XML, {})]
+        with _mock_cache_get(None), patch.object(handler, "http", side_effect=responses), _mock_cache_set():
             result = handler.testing_farm_get_results({"request_id": REQ_ID})
-            assert result["result"] == "passed"
+            assert result["result"] == "failed"
+            assert result["xunit_url"] == XUNIT_URL
             assert result["test_count"] == 1
-            assert result["tests"][0]["name"] == "t1"
+            assert result["tests"] == [{"name": "t1", "result": "failure", "message": ""}]
 
     def test_summary_included_when_present(self):
         body = {
@@ -501,7 +648,6 @@ class TestGetResults:
             "result": {
                 "overall": "passed",
                 "summary": "3 of 3 tests passed",
-                "xunit": '<testsuite><testcase name="t1" classname="s" time="1.0"/></testsuite>',
             },
         }
         with _mock_cache_get(None), _mock_http(200, body), _mock_cache_set():
@@ -547,13 +693,20 @@ class TestGetLogs:
     def test_success(self):
         with _mock_cache_get(None), _mock_http(200, SAMPLE_REQUEST), _mock_cache_set():
             result = handler.testing_farm_get_logs({"request_id": REQ_ID})
-            assert result["pipeline_log"] == "https://example.com/log"
+            assert result["pipeline_log"] == f"https://artifacts.example.com/{REQ_ID}/pipeline.log"
+            assert result["console_log"] == ""
             assert result["artifacts_url"] == f"https://artifacts.example.com/{REQ_ID}"
 
     def test_cache_hit(self):
         with _mock_cache_get(SAMPLE_REQUEST):
             result = handler.testing_farm_get_logs({"request_id": REQ_ID})
-            assert result["pipeline_log"] == "https://example.com/log"
+            assert result["pipeline_log"] == f"https://artifacts.example.com/{REQ_ID}/pipeline.log"
+
+    def test_no_artifacts_yet(self):
+        req = {**SAMPLE_REQUEST, "state": "queued", "run": None}
+        with _mock_cache_get(None), _mock_http(200, req):
+            result = handler.testing_farm_get_logs({"request_id": REQ_ID})
+            assert result["pipeline_log"] == ""
 
 
 # --- testing_farm_reserve ---
@@ -651,7 +804,7 @@ class TestSubmitTest:
                 "dry_run": True,
             }
         )
-        assert result["payload"]["settings"]["pipeline"]["timeout"] == 7200
+        assert result["payload"]["settings"]["pipeline"]["timeout"] == 120  # API takes minutes
 
     def test_submit(self):
         resp = {"id": "test-req", "state": "new"}

@@ -258,7 +258,7 @@ def testing_farm_whoami(_params):
     if cached:
         return cached
 
-    status, body, _ = http("GET", f"/{API_VERSION}/me")
+    status, body, _ = http("GET", f"/{API_VERSION}/whoami")
     if status != 200:
         raise ApiError(status, body)
 
@@ -291,6 +291,8 @@ def testing_farm_list_requests(params):
     if status != 200:
         raise ApiError(status, body)
 
+    # the API answers an empty match with null, not []
+    body = body or []
     if not isinstance(body, list):
         return body
 
@@ -298,7 +300,7 @@ def testing_farm_list_requests(params):
     for req in body:
         envs = req.get("environments_requested", [])
         env0 = envs[0] if envs else {}
-        compose = env0.get("os", {}).get("compose", "")
+        compose = (env0.get("os") or {}).get("compose", "")
         arch = env0.get("arch", "")
         test_name = req.get("test", {}).get("fmf", {}).get("name", "")
 
@@ -338,6 +340,11 @@ def _extract_result(req):
     return str(result) if result else "unknown"
 
 
+def _pipeline_log_url(artifacts_url):
+    """The API returns no log URL; the pipeline log sits at the artifacts root."""
+    return f"{artifacts_url}/pipeline.log" if artifacts_url else ""
+
+
 def testing_farm_get_request(params):
     """Get detailed status of a test request."""
     request_id = params["request_id"]
@@ -354,19 +361,22 @@ def testing_farm_get_request(params):
     api_result = body.get("result") or {}
     summary = api_result.get("summary", "") if isinstance(api_result, dict) else ""
 
+    stages = run.get("stages") or {}
+    pipeline = stages.get("pipeline") or []
+
     out = {
         "id": body.get("id", ""),
         "state": body.get("state", ""),
         "result": _extract_result(body),
-        "compose": env0.get("os", {}).get("compose", ""),
+        "compose": (env0.get("os") or {}).get("compose", ""),
         "arch": env0.get("arch", ""),
         "test_name": body.get("test", {}).get("fmf", {}).get("name", ""),
         "test_url": body.get("test", {}).get("fmf", {}).get("url", ""),
         "created": body.get("created", ""),
         "updated": body.get("updated", ""),
         "artifacts_url": artifacts_url,
-        "run_log": run.get("log", ""),
-        "run_stages": [{"name": s.get("name", ""), "status": s.get("status", "")} for s in (run.get("stages") or [])],
+        "run_log": _pipeline_log_url(artifacts_url),
+        "run_stages": [{"name": p.get("stage", ""), "status": p.get("status", "")} for p in pipeline],
     }
 
     if summary:
@@ -468,12 +478,19 @@ def testing_farm_wait_for_result(params):
 
 
 def testing_farm_list_composes(_params):
-    """List available OS composes."""
-    cached = cache_get("tf:composes")
+    """List available OS composes for the token's ranch."""
+    try:
+        ranch = testing_farm_whoami({}).get("token", {}).get("ranch") or "public"
+    except ApiError:
+        ranch = "public"
+
+    cache_key = f"tf:composes:{ranch}"
+    cached = cache_get(cache_key)
     if cached:
         return cached
 
-    status, body, _ = http("GET", f"/{API_VERSION}/composes")
+    # v0.1/coposes is deprecated, we need v0.2 for this endpoint
+    status, body, _ = http("GET", f"/v0.2/composes/{ranch}")
     if status != 200:
         raise ApiError(status, body)
 
@@ -488,7 +505,7 @@ def testing_farm_list_composes(_params):
                 trimmed[group] = composes
         body = trimmed
 
-    cache_set("tf:composes", body, ttl=14400)
+    cache_set(cache_key, body, ttl=14400)
     return body
 
 
@@ -507,20 +524,21 @@ def testing_farm_list_reservations(params):
     if status != 200:
         raise ApiError(status, body)
 
+    body = body or []  # the API answers an empty match with null, not []
     if not isinstance(body, list):
         return body
 
     results = []
     for req in body:
-        test_name = req.get("test", {}).get("fmf", {}).get("name", "")
+        test_name = req.get("test", {}).get("fmf", {}).get("name") or ""
         if "/testing-farm/reserve" not in test_name:
             continue
 
         envs = req.get("environments_requested", [])
         env0 = envs[0] if envs else {}
-        compose = env0.get("os", {}).get("compose", "")
+        compose = (env0.get("os") or {}).get("compose", "")
         arch = env0.get("arch", "")
-        duration = env0.get("variables", {}).get("TF_RESERVATION_DURATION", "")
+        duration = (env0.get("variables") or {}).get("TF_RESERVATION_DURATION", "")
 
         results.append(
             {
@@ -603,7 +621,7 @@ def testing_farm_get_ssh(params):
         "ssh_command": f"ssh root@{host}",
         "request_id": request_id,
         "state": state,
-        "compose": env0.get("os", {}).get("compose", ""),
+        "compose": (env0.get("os") or {}).get("compose", ""),
         "arch": env0.get("arch", ""),
         "artifacts_url": artifacts_url,
     }
@@ -763,7 +781,7 @@ def testing_farm_get_results(params):
         }
 
     api_result = body.get("result") or {}
-    xunit = api_result.get("xunit", "") if isinstance(api_result, dict) else ""
+    xunit_url = api_result.get("xunit_url", "") if isinstance(api_result, dict) else ""
     result_summary = api_result.get("summary", "") if isinstance(api_result, dict) else ""
 
     summary = {
@@ -775,7 +793,12 @@ def testing_farm_get_results(params):
     if result_summary:
         summary["summary"] = result_summary
 
-    if xunit:
+    if xunit_url:
+        summary["xunit_url"] = xunit_url
+        status, xunit, _ = http("GET", "/", url=xunit_url)
+        if status != 200:
+            return summary
+
         tests = _parse_xunit(xunit)
         summary["tests"] = tests
         summary["test_count"] = len(tests)
@@ -820,12 +843,14 @@ def testing_farm_get_logs(params):
     body = _fetch_request(request_id)
 
     run = body.get("run", {}) or {}
+    artifacts_url = run.get("artifacts", "")
 
     return {
         "request_id": request_id,
         "state": body.get("state", ""),
-        "pipeline_log": run.get("log", ""),
-        "artifacts_url": run.get("artifacts", ""),
+        "pipeline_log": _pipeline_log_url(artifacts_url),
+        "console_log": run.get("console", ""),
+        "artifacts_url": artifacts_url,
     }
 
 
@@ -947,7 +972,7 @@ def testing_farm_submit_test(params):
     }
 
     if timeout:
-        payload["settings"] = {"pipeline": {"timeout": int(timeout) * 60}}
+        payload["settings"] = {"pipeline": {"timeout": int(timeout)}}
 
     if dry_run is not False:
         return {
