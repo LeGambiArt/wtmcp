@@ -969,7 +969,7 @@ def testing_farm_submit_test(params):
     }
 
     if timeout:
-        payload["settings"] = {"pipeline": {"timeout": int(timeout) * 60}}
+        payload["settings"] = {"pipeline": {"timeout": int(timeout)}}
 
     if dry_run is not False:
         return {
