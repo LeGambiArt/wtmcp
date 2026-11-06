@@ -761,7 +761,7 @@ class TestSubmitTest:
                 "dry_run": True,
             }
         )
-        assert result["payload"]["settings"]["pipeline"]["timeout"] == 7200
+        assert result["payload"]["settings"]["pipeline"]["timeout"] == 120  # API takes minutes
 
     def test_submit(self):
         resp = {"id": "test-req", "state": "new"}
