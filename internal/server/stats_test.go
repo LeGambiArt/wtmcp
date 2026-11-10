@@ -26,7 +26,7 @@ func TestStats_SchemaRecording(t *testing.T) {
 	index := NewToolIndex(mgr, false)
 	_, _ = New("test", mgr, cfg, index, collector, nil, nil, nil, true)
 
-	cost := collector.SchemaCost()
+	cost := collector.SchemaCost(nil)
 	if cost.TotalTools != 2 {
 		t.Errorf("TotalTools = %d, want 2", cost.TotalTools)
 	}
@@ -65,7 +65,7 @@ func TestStats_SchemaRecordingMultiplePlugins(t *testing.T) {
 	index := NewToolIndex(mgr, false)
 	_, _ = New("test", mgr, cfg, index, collector, nil, nil, nil, true)
 
-	cost := collector.SchemaCost()
+	cost := collector.SchemaCost(nil)
 	if cost.TotalTools != 3 {
 		t.Errorf("TotalTools = %d, want 3", cost.TotalTools)
 	}
