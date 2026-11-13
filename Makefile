@@ -76,13 +76,20 @@ arapuca:
 else
 arapuca: $(ARAPUCA_STAMP)
 
-$(ARAPUCA_STAMP): third_party/arapuca/Cargo.toml $(wildcard third_party/arapuca/src/*.rs)
+$(ARAPUCA_STAMP): Makefile third_party/arapuca/Cargo.toml $(wildcard third_party/arapuca/src/*.rs)
 	@command -v cargo >/dev/null 2>&1 || \
 	    { echo "ERROR: Rust toolchain required to build libarapuca. Install from https://rustup.rs/"; exit 1; }
 	@test -f third_party/arapuca/Cargo.toml || \
 	    git submodule update --init third_party/arapuca
-	$(MAKE) -C third_party/arapuca package
+	RUSTFLAGS="-C embed-bitcode=no" $(MAKE) -C third_party/arapuca package
 	$(MAKE) -C third_party/arapuca install PREFIX=$(ARAPUCA_BUILD_DIR)
+	@objcopy=$$(command -v llvm-objcopy 2>/dev/null || find "$$(rustc --print sysroot)/lib/rustlib" -name llvm-objcopy -print -quit 2>/dev/null); \
+	    test -n "$$objcopy" || { echo "ERROR: llvm-objcopy is required to strip Rust LTO sections"; exit 1; }; \
+	    tmp=$$(mktemp -t wtmcp-arapuca.XXXXXX) || exit 1; \
+	    "$$objcopy" --remove-section=.llvmbc --remove-section=.llvmcmd \
+	        --remove-section=__LLVM,__bitcode --remove-section=__LLVM,__cmdline \
+	        "$(ARAPUCA_BUILD_DIR)/lib/libarapuca.a" "$$tmp" && \
+	    mv "$$tmp" "$(ARAPUCA_BUILD_DIR)/lib/libarapuca.a" || { rm -f "$$tmp"; exit 1; }
 	@touch $@
 endif
 
