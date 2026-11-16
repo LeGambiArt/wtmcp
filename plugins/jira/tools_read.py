@@ -207,6 +207,101 @@ def get_issues(params):
     return result
 
 
+def _changelog_entries(histories):
+    """Keep the change details needed to reconstruct prior field values."""
+    entries = []
+    for history in histories:
+        author = history.get("author") or {}
+        entries.append(
+            {
+                "id": history.get("id"),
+                "created": history.get("created"),
+                "author": author.get("displayName") or author.get("name") or "",
+                "items": [
+                    {
+                        "field": item.get("field"),
+                        "fieldId": item.get("fieldId"),
+                        "from": item.get("from"),
+                        "fromString": item.get("fromString"),
+                        "to": item.get("to"),
+                        "toString": item.get("toString"),
+                    }
+                    for item in history.get("items", [])
+                ],
+            }
+        )
+    return entries
+
+
+def get_changelog(params):
+    """Get a page of issue history, using the Cloud endpoint when available."""
+    issue_key = validate_issue_key(params.get("issue_key", ""))
+    start_at = max(int(params.get("start_at", 0)), 0)
+    max_results = min(max(int(params.get("max_results", 100)), 1), 100)
+
+    status, body, _ = handler.http(
+        "GET",
+        f"/rest/api/2/issue/{issue_key}/changelog",
+        query={"startAt": str(start_at), "maxResults": str(max_results)},
+    )
+
+    if not handler.is_cloud and status == 404:
+        # Older Server/DC releases expose changelog only through issue expansion.
+        status, body, _ = handler.http(
+            "GET",
+            f"/rest/api/2/issue/{issue_key}",
+            query={"expand": "changelog", "fields": "none"},
+        )
+        if status < 200 or status >= 300 or not isinstance(body, dict):
+            return http_error(status, body)
+
+        changelog = body.get("changelog")
+        if not isinstance(changelog, dict):
+            return {"error": "Jira did not return a changelog for this issue"}
+
+        histories = changelog.get("histories", [])
+        if not isinstance(histories, list):
+            return {"error": "Jira returned an invalid changelog"}
+        total = changelog.get("total")
+        complete = isinstance(total, int) and total <= len(histories) and start_at == 0
+        result = {
+            "issue_key": issue_key,
+            "start_at": changelog.get("startAt", 0),
+            "count": len(histories),
+            "total": total,
+            "histories": _changelog_entries(histories),
+            "complete": complete,
+        }
+        if not complete:
+            result["warning"] = (
+                "This Jira Server/DC issue expansion did not provide a complete, "
+                "pageable changelog. Do not infer the issue's initial field values."
+            )
+        return result
+
+    if status < 200 or status >= 300 or not isinstance(body, dict):
+        return http_error(status, body)
+
+    histories = body.get("values", [])
+    if not isinstance(histories, list):
+        return {"error": "Jira returned an invalid changelog"}
+    page_start = body.get("startAt", start_at)
+    total = body.get("total")
+    has_more = body.get("isLast") is False
+    if isinstance(total, int):
+        has_more = page_start + len(histories) < total
+
+    return {
+        "issue_key": issue_key,
+        "start_at": page_start,
+        "count": len(histories),
+        "total": total,
+        "has_more": has_more,
+        "next_start_at": page_start + len(histories) if has_more else None,
+        "histories": _changelog_entries(histories),
+    }
+
+
 def get_user(params):
     """Look up a Jira user."""
     username = params.get("username", "")
@@ -318,6 +413,7 @@ TOOLS = {
     "jira_get_myself": get_myself,
     "jira_search": search,
     "jira_get_issues": get_issues,
+    "jira_get_changelog": get_changelog,
     "jira_get_user": get_user,
     "jira_get_transitions": get_transitions,
     "jira_get_resolutions": get_resolutions,

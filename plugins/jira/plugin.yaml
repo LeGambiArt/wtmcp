@@ -96,6 +96,28 @@ tools:
         default: true
         description: "Return compact per-issue summaries (true) or full data (false)"
 
+  - name: jira_get_changelog
+    access: read
+    visibility: primary
+    description: >
+      Get a page of an issue's change history, including timestamps,
+      authors, and old and new field values. Jira Cloud returns the
+      oldest changes first. On Jira Server/DC, the response reports
+      when the available history is incomplete.
+    params:
+      issue_key:
+        type: string
+        required: true
+        description: "Issue key (e.g. PROJ-123)"
+      start_at:
+        type: integer
+        default: 0
+        description: "Zero-based changelog page offset"
+      max_results:
+        type: integer
+        default: 100
+        description: "Maximum changelog entries to return (1-100)"
+
   - name: jira_get_user
     access: read
     description: >
