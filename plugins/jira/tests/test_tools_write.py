@@ -179,12 +179,49 @@ class TestComments:
         result = tools_write.add_comment({"issue_key": "PROJ-1", "comment": "Nice work!", "dry_run": True})
         assert result["dry_run"] is True
         assert result["comment_preview"] == "Nice work!"
+        assert result["internal"] is False
+
+    def test_add_internal_comment_dry_run(self):
+        with patch.object(handler, "http") as mock_http:
+            result = tools_write.add_comment({"issue_key": "PROJ-1", "comment": "Internal note", "internal": True})
+        assert result["internal"] is True
+        mock_http.assert_not_called()
 
     def test_add_comment_success(self):
         with _mock_http(201, {"id": "100"}):
             result = tools_write.add_comment({"issue_key": "PROJ-1", "comment": "Done", "dry_run": False})
             assert result["success"] is True
             assert result["id"] == "100"
+            assert result["internal"] is False
+
+    @pytest.mark.parametrize("cloud", [False, True])
+    def test_add_internal_comment_uses_service_management_api(self, cloud):
+        with patch.object(handler, "is_cloud", cloud), _mock_http(201, {"id": "101", "public": False}) as mock_http:
+            result = tools_write.add_comment(
+                {"issue_key": "PROJ-1", "comment": "Internal note", "internal": True, "dry_run": False}
+            )
+        mock_http.assert_called_once_with(
+            "POST", "/rest/servicedeskapi/request/PROJ-1/comment", body={"body": "Internal note", "public": False}
+        )
+        assert result == {"success": True, "id": "101", "issue_key": "PROJ-1", "internal": True}
+
+    def test_add_internal_comment_never_falls_back_to_public_on_error(self):
+        with _mock_http(404, {"errorMessages": ["Customer request not found"]}) as mock_http:
+            result = tools_write.add_comment(
+                {"issue_key": "PROJ-1", "comment": "Internal note", "internal": True, "dry_run": False}
+            )
+        mock_http.assert_called_once()
+        assert result["error"] == "HTTP 404"
+
+    @pytest.mark.parametrize("body", [{"id": "101", "public": True}, {"id": "101"}, "unexpected response"])
+    def test_add_internal_comment_requires_private_confirmation(self, body):
+        with _mock_http(201, body):
+            result = tools_write.add_comment(
+                {"issue_key": "PROJ-1", "comment": "Internal note", "internal": True, "dry_run": False}
+            )
+        assert "did not confirm" in result["error"]
+        expected_id = body.get("id") if isinstance(body, dict) else None
+        assert result["id"] == expected_id
 
     def test_edit_comment_dry_run(self):
         result = tools_write.edit_comment(

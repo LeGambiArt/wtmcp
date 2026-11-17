@@ -618,6 +618,10 @@ All write tools default to `dry_run=true`. Cloud-aware (ADF format,
 accountId assignments). Auth variants: Cloud Basic, Server Bearer,
 Server Kerberos.
 
+Set `internal=true` on `jira_add_comment` to post an internal note to a
+Jira Service Management customer request. The Jira account needs permission
+to add internal comments. The default remains a regular Jira comment.
+
 ## Progressive Tool Discovery
 
 By default (`tools.discovery: full`), all tools are loaded into the
