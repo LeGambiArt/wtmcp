@@ -223,7 +223,9 @@ tools:
     visibility: primary
     description: >
       Add a comment to a Jira issue. Defaults to dry_run=true.
-      Uses ADF format for Cloud instances.
+      Set internal=true for a Jira Service Management internal note.
+      Internal notes require a customer request and suitable permissions.
+      Public comments use ADF format for Cloud instances.
     params:
       issue_key:
         type: string
@@ -233,6 +235,10 @@ tools:
         type: string
         required: true
         description: "Comment text"
+      internal:
+        type: boolean
+        default: false
+        description: "Post as a Jira Service Management internal note (not visible to customers)"
       dry_run:
         type: boolean
         default: true

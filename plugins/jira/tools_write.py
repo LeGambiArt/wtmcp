@@ -83,20 +83,41 @@ def create_issue(params):
 
 
 def add_comment(params):
-    """Add a comment to a Jira issue."""
+    """Add a Jira comment, optionally as a Service Management internal note."""
     issue_key = validate_issue_key(params.get("issue_key", ""))
     comment = params.get("comment", "")
+    internal = params.get("internal", False)
     dry_run = params.get("dry_run", True)
 
     if dry_run:
-        return {"dry_run": True, "action": "jira_add_comment", "issue_key": issue_key, "comment_preview": comment[:200]}
+        return {
+            "dry_run": True,
+            "action": "jira_add_comment",
+            "issue_key": issue_key,
+            "comment_preview": comment[:200],
+            "internal": internal,
+        }
 
-    body_data = {"body": text_to_adf(comment)} if handler.is_cloud else {"body": comment}
-    status, body, _ = handler.http("POST", f"/rest/api/2/issue/{issue_key}/comment", body=body_data)
+    if internal:
+        # The JSM request API sets portal visibility atomically. The general
+        # Jira issue-comment API cannot guarantee an internal note.
+        path = f"/rest/servicedeskapi/request/{issue_key}/comment"
+        body_data = {"body": comment, "public": False}
+    else:
+        path = f"/rest/api/2/issue/{issue_key}/comment"
+        body_data = {"body": text_to_adf(comment)} if handler.is_cloud else {"body": comment}
+
+    status, body, _ = handler.http("POST", path, body=body_data)
     if status < 200 or status >= 300:
         return http_error(status, body)
+    if internal and (not isinstance(body, dict) or body.get("public") is not False):
+        return {
+            "error": "Jira did not confirm the comment is internal",
+            "issue_key": issue_key,
+            "id": body.get("id") if isinstance(body, dict) else None,
+        }
     handler.invalidate_cache(issue_key)
-    return {"success": True, "id": body.get("id"), "issue_key": issue_key}
+    return {"success": True, "id": body.get("id"), "issue_key": issue_key, "internal": internal}
 
 
 def edit_comment(params):
