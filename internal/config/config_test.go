@@ -464,6 +464,82 @@ plugins:
 	}
 }
 
+func TestLoadConfigElicitationStrictWarning(t *testing.T) {
+	tests := []struct {
+		name       string
+		cfgYAML    string
+		wantWarn   bool
+		wantStrict bool
+	}{
+		{
+			name: "elicitation disabled, strict unset: no warning",
+			cfgYAML: `
+security:
+  elicitation: false
+`,
+			wantWarn:   false,
+			wantStrict: true, // ElicitationStrictEnabled() still defaults to true
+		},
+		{
+			name: "elicitation disabled, strict explicitly true: warn",
+			cfgYAML: `
+security:
+  elicitation: false
+  elicitation_strict: true
+`,
+			wantWarn:   true,
+			wantStrict: true,
+		},
+		{
+			name: "elicitation disabled, strict explicitly false: no warning",
+			cfgYAML: `
+security:
+  elicitation: false
+  elicitation_strict: false
+`,
+			wantWarn:   false,
+			wantStrict: false,
+		},
+		{
+			name: "elicitation enabled, strict true: no warning",
+			cfgYAML: `
+security:
+  elicitation: true
+  elicitation_strict: true
+`,
+			wantWarn:   false,
+			wantStrict: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			cfgFile := filepath.Join(dir, "config.yaml")
+			if err := os.WriteFile(cfgFile, []byte(tt.cfgYAML), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			var logBuf bytes.Buffer
+			log.SetOutput(&logBuf)
+			defer log.SetOutput(os.Stderr)
+
+			cfg, err := Load(cfgFile, dir)
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+
+			if got := cfg.Security.ElicitationStrictEnabled(); got != tt.wantStrict {
+				t.Errorf("ElicitationStrictEnabled() = %v, want %v", got, tt.wantStrict)
+			}
+			if got := strings.Contains(
+				logBuf.String(), "elicitation_strict"); got != tt.wantWarn {
+				t.Errorf("warning logged = %v, want %v (log: %q)", got, tt.wantWarn, logBuf.String())
+			}
+		})
+	}
+}
+
 func TestDefaultPluginDirs(t *testing.T) {
 	userDir := "/tmp/test-user-plugins"
 

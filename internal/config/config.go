@@ -395,7 +395,10 @@ func Load(configPath, workdir string) (*Config, error) {
 			cfg.HTTP.Timeout, cfg.Plugins.ToolCallTimeout)
 	}
 
-	if cfg.Security.ElicitationStrictEnabled() && !cfg.Security.ElicitationEnabled() {
+	// Only warn when the user explicitly set elicitation_strict; the default
+	// (nil → enabled) should not trigger a warning for an unset key.
+	if cfg.Security.ElicitationStrict != nil && *cfg.Security.ElicitationStrict &&
+		!cfg.Security.ElicitationEnabled() {
 		log.Printf("WARNING: security.elicitation_strict has no effect when security.elicitation is disabled")
 	}
 
