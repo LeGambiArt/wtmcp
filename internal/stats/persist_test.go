@@ -49,7 +49,7 @@ func TestPersist_RoundTrip(t *testing.T) {
 	}
 
 	// Verify schemas restored.
-	cost := c2.SchemaCost()
+	cost := c2.SchemaCost(nil)
 	if cost.TotalTools != 1 {
 		t.Errorf("TotalTools = %d, want 1", cost.TotalTools)
 	}

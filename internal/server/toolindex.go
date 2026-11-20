@@ -57,6 +57,29 @@ type ToolIndex struct {
 	mu       sync.RWMutex
 	entries  []ToolEntry
 	readOnly bool
+
+	// profilesActive reports whether agent profiles are configured. When
+	// true, the tool_search description omits the global category summary,
+	// since that summary (per-plugin tool counts and example tool names)
+	// cannot be filtered per connection and would otherwise reveal tools a
+	// restricted agent may not call.
+	profilesActive bool
+}
+
+// SetProfilesActive records whether agent profiles are configured. It
+// must be called before the tool_search tool is registered (i.e. before
+// server.New) so its description reflects the setting.
+func (idx *ToolIndex) SetProfilesActive(active bool) {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	idx.profilesActive = active
+}
+
+// ProfilesActive reports whether agent profiles are configured.
+func (idx *ToolIndex) ProfilesActive() bool {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	return idx.profilesActive
 }
 
 // NewToolIndex builds the index from loaded plugin manifests.
