@@ -49,6 +49,7 @@ func main() {
 
 	p.Handle("drive_get_file_by_id", toolGetFileByID)
 	p.Handle("drive_get_file_by_url", toolGetFileByURL)
+	p.Handle("drive_list_comments", toolListComments)
 	p.Handle("drive_extract_and_get_from_text", toolExtractAndGet)
 	p.Handle("drive_export_google_doc_text", toolExportDocText)
 	p.Handle("drive_export_google_sheet_csv", toolExportSheetCSV)

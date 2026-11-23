@@ -70,6 +70,26 @@ Supported URL formats:
 - `https://docs.google.com/spreadsheets/d/FILE_ID/edit`
 - `https://drive.google.com/file/d/FILE_ID/view`
 
+### Reading Comment Threads
+
+Use `drive_list_comments(file_id_or_url="...")` to retrieve comment
+threads and replies from a Google Doc. The tool includes resolved
+threads by default; set `include_resolved=false` to omit them. It accepts
+a raw file ID or an HTTPS URL on `docs.google.com` with the path
+`/document/d/FILE_ID` or `/document/d/FILE_ID/edit`.
+
+Follow `next_page_token` with another call's `page_token` until the token
+is empty. The `include_resolved` filter applies per request, so repeat
+`include_resolved=false` on every paginated call. A page can contain no
+comments and still have a next-page token when resolved threads are being
+filtered. The Drive API omits deleted
+comments by default. Comment anchors, when present, are returned as
+opaque values and are not stable document positions. This tool reads
+comments only; it does not create or modify comments or suggestions.
+
+Unlike other read tools, which mirror the Drive API's camelCase field
+names, this tool returns a normalized snake_case response.
+
 ### Exporting Documents
 
 All text export tools save to local files by default to avoid

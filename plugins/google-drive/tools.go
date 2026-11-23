@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -96,6 +97,154 @@ func toolGetFileByURL(params, _ json.RawMessage) (any, error) {
 		return nil, fmt.Errorf("get file: %w", err)
 	}
 	return res, nil
+}
+
+type listCommentsParams struct {
+	FileIDOrURL     string `json:"file_id_or_url"`
+	IncludeResolved *bool  `json:"include_resolved"`
+	PageToken       string `json:"page_token"`
+}
+
+type commentAuthor struct {
+	DisplayName  string `json:"display_name,omitempty"`
+	EmailAddress string `json:"email_address,omitempty"`
+}
+
+type commentReply struct {
+	ID          string         `json:"id"`
+	Content     string         `json:"content"`
+	Author      *commentAuthor `json:"author,omitempty"`
+	CreatedTime string         `json:"created_time,omitempty"`
+	Action      string         `json:"action,omitempty"`
+}
+
+type commentThread struct {
+	ID                string            `json:"id"`
+	Content           string            `json:"content"`
+	Author            *commentAuthor    `json:"author,omitempty"`
+	CreatedTime       string            `json:"created_time,omitempty"`
+	ModifiedTime      string            `json:"modified_time,omitempty"`
+	Resolved          bool              `json:"resolved"`
+	QuotedFileContent string            `json:"quoted_file_content,omitempty"`
+	Anchor            map[string]string `json:"anchor,omitempty"`
+	Replies           []commentReply    `json:"replies"`
+}
+
+type listCommentsResponse struct {
+	FileID        string          `json:"file_id"`
+	Comments      []commentThread `json:"comments"`
+	NextPageToken string          `json:"next_page_token"`
+}
+
+var (
+	commentFileIDPattern  = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+	commentDocPathPattern = regexp.MustCompile(`^/document/d/([A-Za-z0-9_-]+)(/edit)?$`)
+)
+
+func parseCommentFileID(fileIDOrURL string) (string, error) {
+	if fileIDOrURL == "" {
+		return "", fmt.Errorf("file_id_or_url is required")
+	}
+	if strings.TrimSpace(fileIDOrURL) != fileIDOrURL {
+		return "", fmt.Errorf("file_id_or_url must not include surrounding whitespace")
+	}
+	if commentFileIDPattern.MatchString(fileIDOrURL) {
+		return fileIDOrURL, nil
+	}
+	if !strings.Contains(fileIDOrURL, "://") {
+		return "", fmt.Errorf("invalid raw file ID: use only letters, digits, underscores, and hyphens")
+	}
+
+	u, err := url.Parse(fileIDOrURL)
+	if err != nil {
+		return "", fmt.Errorf("invalid file_id_or_url URL: %w", err)
+	}
+	if u.Scheme != "https" {
+		return "", fmt.Errorf("URL scheme must be https")
+	}
+	if u.Host != "docs.google.com" {
+		return "", fmt.Errorf("URL host must be exactly docs.google.com")
+	}
+	if u.User != nil {
+		return "", fmt.Errorf("URL must not include user information")
+	}
+	match := commentDocPathPattern.FindStringSubmatch(u.Path)
+	if len(match) != 3 {
+		return "", fmt.Errorf("unsupported Google Docs URL path: expected /document/d/{id} or /document/d/{id}/edit")
+	}
+	return match[1], nil
+}
+
+func mapCommentAuthor(user *drive.User) *commentAuthor {
+	if user == nil || (user.DisplayName == "" && user.EmailAddress == "") {
+		return nil
+	}
+	return &commentAuthor{DisplayName: user.DisplayName, EmailAddress: user.EmailAddress}
+}
+
+func toolListComments(params, _ json.RawMessage) (any, error) {
+	var p listCommentsParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("parse params: %w", err)
+	}
+	if p.FileIDOrURL == "" {
+		return nil, fmt.Errorf("file_id_or_url is required")
+	}
+	fileID, err := parseCommentFileID(p.FileIDOrURL)
+	if err != nil {
+		return nil, err
+	}
+
+	includeResolved := true
+	if p.IncludeResolved != nil {
+		includeResolved = *p.IncludeResolved
+	}
+	fields := googleapi.Field("nextPageToken,comments(id,content,author(displayName,emailAddress),createdTime,modifiedTime,resolved,quotedFileContent(value),anchor,replies(id,content,author(displayName,emailAddress),createdTime,action))")
+	call := driveSvc.Comments.List(fileID).Fields(fields)
+	if p.PageToken != "" {
+		call = call.PageToken(p.PageToken)
+	}
+	res, err := call.Do()
+	if err != nil {
+		return nil, fmt.Errorf("list comments for file %q: %w", fileID, err)
+	}
+
+	response := listCommentsResponse{
+		FileID:        fileID,
+		Comments:      make([]commentThread, 0, len(res.Comments)),
+		NextPageToken: res.NextPageToken,
+	}
+	for _, comment := range res.Comments {
+		if !includeResolved && comment.Resolved {
+			continue
+		}
+		thread := commentThread{
+			ID:           comment.Id,
+			Content:      comment.Content,
+			Author:       mapCommentAuthor(comment.Author),
+			CreatedTime:  comment.CreatedTime,
+			ModifiedTime: comment.ModifiedTime,
+			Resolved:     comment.Resolved,
+			Replies:      make([]commentReply, 0, len(comment.Replies)),
+		}
+		if comment.QuotedFileContent != nil {
+			thread.QuotedFileContent = comment.QuotedFileContent.Value
+		}
+		if comment.Anchor != "" {
+			thread.Anchor = map[string]string{"opaque": comment.Anchor}
+		}
+		for _, reply := range comment.Replies {
+			thread.Replies = append(thread.Replies, commentReply{
+				ID:          reply.Id,
+				Content:     reply.Content,
+				Author:      mapCommentAuthor(reply.Author),
+				CreatedTime: reply.CreatedTime,
+				Action:      reply.Action,
+			})
+		}
+		response.Comments = append(response.Comments, thread)
+	}
+	return response, nil
 }
 
 type extractAndGetParams struct {
