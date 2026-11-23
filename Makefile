@@ -97,6 +97,7 @@ $(ARAPUCA_STAMP): third_party/arapuca/Cargo.toml $(wildcard third_party/arapuca/
 	else \
 	    secs="--remove-section=.llvmbc --remove-section=.llvmcmd"; \
 	fi; \
+	DYLD_LIBRARY_PATH="$$(rustc --print sysroot)/lib" \
 	LD_LIBRARY_PATH="$$(rustc --print sysroot)/lib" "$$ro" $$secs $(ARAPUCA_BUILD_DIR)/lib/libarapuca.a
 	@touch $@
 endif
