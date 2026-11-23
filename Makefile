@@ -83,18 +83,21 @@ $(ARAPUCA_STAMP): third_party/arapuca/Cargo.toml $(wildcard third_party/arapuca/
 	    git submodule update --init third_party/arapuca
 	$(MAKE) -C third_party/arapuca package
 	$(MAKE) -C third_party/arapuca install PREFIX=$(ARAPUCA_BUILD_DIR)
-ifeq ($(shell uname -s),Darwin)
 	# Go 1.26.10+ rejects archives whose members embed LLVM bitcode
 	# (rustc puts them in every staticlib member, the precompiled std
-	# included), so the macOS link fails with "disallowed LTO section
-	# __LLVM,__bitcode". Drop them from the locally built library.
+	# included), so the cgo link fails with "disallowed LTO section".
+	# Drop them from the locally built library: __LLVM,__bitcode and
+	# __LLVM,__cmdline on Mach-O, .llvmbc and .llvmcmd on ELF.
 	# Temporary: goes away with the submodule bump to an arapuca release
 	# that strips in 'make package' itself.
 	ro="$$(rustc --print sysroot)/lib/rustlib/$$(rustc -vV | awk '/^host:/{print $$2}')/bin/rust-objcopy"; \
 	test -x "$$ro" || { echo "ERROR: rust-objcopy not found at $$ro"; exit 1; }; \
-	"$$ro" --remove-section=__LLVM,__bitcode \
-	       --remove-section=__LLVM,__cmdline $(ARAPUCA_BUILD_DIR)/lib/libarapuca.a
-endif
+	if [ "$$(uname -s)" = Darwin ]; then \
+	    secs="--remove-section=__LLVM,__bitcode --remove-section=__LLVM,__cmdline"; \
+	else \
+	    secs="--remove-section=.llvmbc --remove-section=.llvmcmd"; \
+	fi; \
+	LD_LIBRARY_PATH="$$(rustc --print sysroot)/lib" "$$ro" $$secs $(ARAPUCA_BUILD_DIR)/lib/libarapuca.a
 	@touch $@
 endif
 
