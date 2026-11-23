@@ -656,6 +656,20 @@ make test-nosandbox
 pre-commit run --all-files
 ```
 
+## Releases
+
+Releases are tag-driven. To cut a release:
+
+1. Bump the `VERSION` file and merge it to `main`.
+2. Tag the merge as `v<version>` (e.g. `v0.1.10`) and push the tag.
+
+The release workflow validates that the tag matches `VERSION` and points
+at a commit on `main`, then builds and tests `wtmcp`, `wtmcpctl`, and the
+Go plugin handlers for `linux-x86_64`, `linux-aarch64`, and
+`darwin-arm64`. Each platform ships as a tar.gz; the release includes
+combined SHA-256 checksums and a CycloneDX SBOM of the Go module's
+dependencies, all signed with cosign and attached to the GitHub release.
+
 ## Project Layout
 
 ```
