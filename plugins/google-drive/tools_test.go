@@ -240,6 +240,215 @@ func setupDriveTest(t *testing.T, handler http.Handler) {
 	driveSvc = svc
 }
 
+func TestParseCommentFileID(t *testing.T) {
+	tests := []struct {
+		name       string
+		input      string
+		want       string
+		wantErrMsg string
+	}{
+		{name: "raw ID", input: "abc_123-XYZ", want: "abc_123-XYZ"},
+		{name: "document URL", input: "https://docs.google.com/document/d/doc123/edit?tab=t.0#heading=h.1", want: "doc123"},
+		{name: "document URL without edit", input: "https://docs.google.com/document/d/doc123", want: "doc123"},
+		{name: "non-Google host", input: "https://example.com/document/d/doc123/edit", wantErrMsg: "host must be exactly docs.google.com"},
+		{name: "lookalike host", input: "https://docs.google.com.example.com/document/d/doc123/edit", wantErrMsg: "host must be exactly docs.google.com"},
+		{name: "HTTP URL", input: "http://docs.google.com/document/d/doc123/edit", wantErrMsg: "scheme must be https"},
+		{name: "user information", input: "https://user@docs.google.com/document/d/doc123/edit", wantErrMsg: "must not include user information"},
+		{name: "unsupported path", input: "https://docs.google.com/spreadsheets/d/doc123/edit", wantErrMsg: "unsupported Google Docs URL path"},
+		{name: "surrounding text", input: "see https://docs.google.com/document/d/doc123/edit", wantErrMsg: "invalid file_id_or_url URL"},
+		{name: "surrounding whitespace", input: " doc123", wantErrMsg: "surrounding whitespace"},
+		{name: "invalid ID characters", input: "doc/123", wantErrMsg: "invalid raw file ID"},
+		{name: "malformed URL", input: "https://[invalid", wantErrMsg: "invalid file_id_or_url URL"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseCommentFileID(tt.input)
+			if tt.wantErrMsg != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErrMsg) {
+					t.Fatalf("parseCommentFileID(%q) error = %v, want it to contain %q", tt.input, err, tt.wantErrMsg)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseCommentFileID(%q): %v", tt.input, err)
+			}
+			if got != tt.want {
+				t.Errorf("parseCommentFileID(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+// wantCommentFields mirrors the Drive API v3 comments.list schema. The
+// tool's fields mask must match it exactly, or the real API returns an
+// error or silently drops fields.
+const wantCommentFields = "nextPageToken,comments(id,content,author(displayName,emailAddress),createdTime,modifiedTime,resolved,quotedFileContent(value),anchor,replies(id,content,author(displayName,emailAddress),createdTime,action))"
+
+func TestToolListCommentsNormalized(t *testing.T) {
+	setupDriveTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/files/doc123/comments" {
+			t.Errorf("request = %s %s, want GET comments for doc123", r.Method, r.URL.Path)
+		}
+		if got := r.URL.Query().Get("fields"); got != wantCommentFields {
+			t.Errorf("fields mask = %q, want %q", got, wantCommentFields)
+		}
+		if r.URL.Query().Get("includeDeleted") == "true" {
+			t.Error("request should leave deleted comments excluded")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"comments":[{"id":"open1","content":"Clarify this","author":{"displayName":"Reviewer","emailAddress":"reviewer@example.com"},"createdTime":"2026-09-28T10:00:00Z","modifiedTime":"2026-09-28T10:05:00Z","resolved":false,"quotedFileContent":{"value":"Quoted text"},"anchor":"opaque-location","replies":[{"id":"reply1","content":"Will do","author":{"displayName":"Author"},"createdTime":"2026-09-28T10:05:00Z","action":"reopen"}]},{"id":"resolved1","content":"Done","resolved":true},{"id":"bare1","content":"No optional fields"}]}`)
+	}))
+
+	result, err := toolListComments(mustJSON(t, map[string]any{
+		"file_id_or_url": "https://docs.google.com/document/d/doc123/edit",
+	}), nil)
+	if err != nil {
+		t.Fatalf("toolListComments: %v", err)
+	}
+	response, ok := result.(listCommentsResponse)
+	if !ok {
+		t.Fatalf("result type = %T", result)
+	}
+	if response.FileID != "doc123" || len(response.Comments) != 3 || response.NextPageToken != "" {
+		t.Fatalf("response = %#v", response)
+	}
+	if response.Comments[0].Author == nil || response.Comments[0].Author.EmailAddress != "reviewer@example.com" {
+		t.Errorf("author = %#v", response.Comments[0].Author)
+	}
+	if response.Comments[0].QuotedFileContent != "Quoted text" || response.Comments[0].Anchor["opaque"] != "opaque-location" {
+		t.Errorf("quote/anchor = %q / %#v", response.Comments[0].QuotedFileContent, response.Comments[0].Anchor)
+	}
+	if len(response.Comments[0].Replies) != 1 || response.Comments[0].Replies[0].Action != "reopen" {
+		t.Errorf("replies = %#v", response.Comments[0].Replies)
+	}
+	if !response.Comments[1].Resolved || response.Comments[2].Resolved {
+		t.Errorf("resolved states = %t, %t", response.Comments[1].Resolved, response.Comments[2].Resolved)
+	}
+	if response.Comments[1].Author != nil || response.Comments[1].CreatedTime != "" || response.Comments[1].QuotedFileContent != "" || response.Comments[1].Anchor != nil {
+		t.Errorf("unavailable optional fields should be omitted: %#v", response.Comments[1])
+	}
+	if response.Comments[1].Replies == nil || len(response.Comments[1].Replies) != 0 {
+		t.Errorf("empty replies must be an array, got %#v", response.Comments[1].Replies)
+	}
+
+	encoded, err := json.Marshal(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var shape map[string]any
+	if err := json.Unmarshal(encoded, &shape); err != nil {
+		t.Fatal(err)
+	}
+	comments := shape["comments"].([]any)
+	thread := comments[0].(map[string]any)
+	if _, ok := thread["author"].(map[string]any); !ok {
+		t.Errorf("normalized author missing or malformed: %s", encoded)
+	}
+	anchor := thread["anchor"].(map[string]any)
+	if anchor["opaque"] != "opaque-location" {
+		t.Errorf("anchor is not explicitly opaque: %s", encoded)
+	}
+	bare := comments[2].(map[string]any)
+	if _, ok := bare["author"]; ok {
+		t.Errorf("unavailable author should be omitted: %s", encoded)
+	}
+	if replies, ok := bare["replies"].([]any); !ok || len(replies) != 0 {
+		t.Errorf("empty replies should serialize as an array: %s", encoded)
+	}
+}
+
+func TestToolListCommentsFiltersResolvedWithoutSkippingPage(t *testing.T) {
+	requests := 0
+	setupDriveTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if got := r.URL.Query().Get("fields"); got != wantCommentFields {
+			t.Errorf("fields mask = %q, want %q", got, wantCommentFields)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if requests == 1 {
+			if got := r.URL.Query().Get("pageToken"); got != "" {
+				t.Errorf("first page token = %q, want empty", got)
+			}
+			_, _ = fmt.Fprint(w, `{"comments":[{"id":"closed","content":"Resolved","resolved":true}],"nextPageToken":"page-2"}`)
+			return
+		}
+		if got := r.URL.Query().Get("pageToken"); got != "page-2" {
+			t.Errorf("second page token = %q, want page-2", got)
+		}
+		_, _ = fmt.Fprint(w, `{"comments":[{"id":"open","content":"Still open","resolved":false}],"nextPageToken":""}`)
+	}))
+
+	first, err := toolListComments(mustJSON(t, map[string]any{
+		"file_id_or_url":   "doc123",
+		"include_resolved": false,
+	}), nil)
+	if err != nil {
+		t.Fatalf("first page: %v", err)
+	}
+	firstPage := first.(listCommentsResponse)
+	if len(firstPage.Comments) != 0 || firstPage.Comments == nil || firstPage.NextPageToken != "page-2" {
+		t.Fatalf("resolved-only page = %#v", firstPage)
+	}
+
+	second, err := toolListComments(mustJSON(t, map[string]any{
+		"file_id_or_url":   "doc123",
+		"include_resolved": false,
+		"page_token":       firstPage.NextPageToken,
+	}), nil)
+	if err != nil {
+		t.Fatalf("second page: %v", err)
+	}
+	secondPage := second.(listCommentsResponse)
+	if requests != 2 || len(secondPage.Comments) != 1 || secondPage.Comments[0].ID != "open" || secondPage.NextPageToken != "" {
+		t.Fatalf("second page = %#v (requests %d)", secondPage, requests)
+	}
+}
+
+func TestToolListCommentsValidationAndAPIError(t *testing.T) {
+	requests := 0
+	setupDriveTest(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = fmt.Fprint(w, `{"error":{"code":403,"message":"permission denied"}}`)
+	}))
+
+	for _, params := range []map[string]any{
+		{},
+		{"file_id_or_url": "https://example.com/document/d/doc123/edit"},
+	} {
+		if _, err := toolListComments(mustJSON(t, params), nil); err == nil {
+			t.Errorf("toolListComments(%v) should fail before the API request", params)
+		}
+	}
+	if requests != 0 {
+		t.Fatalf("invalid input made %d API requests", requests)
+	}
+
+	_, err := toolListComments(mustJSON(t, map[string]any{"file_id_or_url": "doc123"}), nil)
+	if err == nil || !strings.Contains(err.Error(), `list comments for file "doc123"`) || !strings.Contains(err.Error(), "permission denied") {
+		t.Fatalf("API error should retain context, got %v", err)
+	}
+	if requests != 1 {
+		t.Fatalf("API error request count = %d, want 1", requests)
+	}
+}
+
+func TestToolListCommentsEmptyResponse(t *testing.T) {
+	setupDriveTest(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{}`)
+	}))
+	result, err := toolListComments(mustJSON(t, map[string]any{"file_id_or_url": "doc123"}), nil)
+	if err != nil {
+		t.Fatalf("toolListComments: %v", err)
+	}
+	response := result.(listCommentsResponse)
+	if response.Comments == nil || len(response.Comments) != 0 || response.NextPageToken != "" {
+		t.Fatalf("empty response = %#v", response)
+	}
+}
+
 func TestToolGetFileByID(t *testing.T) {
 	setupDriveTest(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

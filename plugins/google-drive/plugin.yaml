@@ -48,6 +48,22 @@ tools:
       fields:
         type: string
 
+  - name: drive_list_comments
+    access: read
+    description: "List comment threads and replies on a Google Doc"
+    params:
+      file_id_or_url:
+        type: string
+        required: true
+        description: "Google Docs URL or raw file ID"
+      include_resolved:
+        type: boolean
+        default: true
+        description: "Include resolved comment threads"
+      page_token:
+        type: string
+        description: "Page token returned by the previous call"
+
   - name: drive_extract_and_get_from_text
     access: read
     description: "Extract Drive/Docs links from text and fetch metadata"
