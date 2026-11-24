@@ -23,6 +23,11 @@ import (
 // whole message regardless of input size.
 const maxElicitParamLen = 1000
 
+// maxElicitMetaParamsBytes caps the size of the structured parameters
+// attachment on elicitation requests. Beyond it the attachment is
+// omitted and the bounded message summary remains the only payload.
+const maxElicitMetaParamsBytes = 1 << 20
+
 // Caps that bound the confirmation message regardless of input size.
 // The routing byte cap sits far above any legitimate routing value;
 // the field, item, and key caps bound output height and width; the

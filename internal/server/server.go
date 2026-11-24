@@ -309,18 +309,45 @@ func registerPluginTools(deps *serverDeps, manifest *plugin.Manifest) {
 
 			if !isRead && elicitation && !isDryRun {
 				scrubbedParams := elicitScrubber.ScrubJSON(params)
+				elicitParams := mcp.ElicitationParams{
+					Mode: mcp.ElicitationModeForm,
+					Message: fmt.Sprintf(
+						"Confirm: execute %s?\n\nParameters:\n%s",
+						formatElicitToolName(toolName), formatElicitParams(scrubbedParams, maxElicitParamLen)),
+					RequestedSchema: map[string]any{
+						"type":       "object",
+						"properties": map[string]any{},
+					},
+				}
+				// Structured attachment for clients that render confirmations
+				// themselves: the full scrubbed parameters, so such a client can
+				// collapse and expand them instead of relying on the bounded
+				// message summary above. The message remains the fallback for
+				// flat clients. Beyond a size cap a tombstone is attached so a
+				// capable client knows to fall back to the message markers; the
+				// summary and its markers apply either way. Versioned so the
+				// shape can evolve without a key rename.
+				confirmation := map[string]any{
+					"version":   1,
+					"tool_name": formatElicitToolName(toolName),
+				}
+				switch {
+				case string(scrubbedParams) == "null":
+					// No arguments: nothing to render beyond the message.
+					confirmation["omitted"] = "no_arguments"
+				case len(scrubbedParams) <= maxElicitMetaParamsBytes:
+					confirmation["arguments"] = scrubbedParams
+				default:
+					confirmation["omitted"] = "size_exceeded"
+				}
+				elicitParams.Meta = &mcp.Meta{
+					AdditionalFields: map[string]any{
+						"tool_call_confirmation": confirmation,
+					},
+				}
 				elicitResult, elicitErr := srv.RequestElicitation(ctx,
 					mcp.ElicitationRequest{
-						Params: mcp.ElicitationParams{
-							Mode: mcp.ElicitationModeForm,
-							Message: fmt.Sprintf(
-								"Confirm: execute %s?\n\nParameters:\n%s",
-								formatElicitToolName(toolName), formatElicitParams(scrubbedParams, maxElicitParamLen)),
-							RequestedSchema: map[string]any{
-								"type":       "object",
-								"properties": map[string]any{},
-							},
-						},
+						Params: elicitParams,
 					})
 
 				var elicitAction string

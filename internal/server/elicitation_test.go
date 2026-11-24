@@ -387,6 +387,98 @@ func TestElicitation_ParamsScrubbed(t *testing.T) {
 	}
 }
 
+func TestElicitation_MetaToolParamsAttached(t *testing.T) {
+	tools := []plugin.ToolDef{
+		{Name: "test_write", Description: "Write tool", Access: "write"},
+	}
+	srv := elicitTestServer(true, tools)
+	session := &mockElicitSession{action: mcp.ElicitationResponseActionAccept}
+	ctx := srv.WithContext(context.Background(), session)
+
+	fullBody := strings.Repeat("x", 4000)
+	callToolWithArgs(ctx, srv, "test_write", map[string]any{
+		"repo": "org/repo",
+		"comments": []any{map[string]any{
+			"path": "src/file.go", "line": 42, "body": fullBody, "token": "super-secret-value",
+		}},
+	})
+
+	req := session.lastReq
+	if req.Params.Meta == nil {
+		t.Fatal("structured params attachment expected in _meta")
+	}
+	confirmation, ok := req.Params.Meta.AdditionalFields["tool_call_confirmation"].(map[string]any)
+	if !ok {
+		t.Fatalf("tool_call_confirmation expected, got: %#v", req.Params.Meta.AdditionalFields)
+	}
+	if confirmation["tool_name"] != "test_write" {
+		t.Errorf("tool_name expected, got: %v", confirmation["tool_name"])
+	}
+	// The attachment carries the FULL scrubbed parameters — the body
+	// truncated in the message summary must be intact here.
+	arguments, err := json.Marshal(confirmation["arguments"])
+	if err != nil {
+		t.Fatalf("marshal arguments: %v", err)
+	}
+	if !strings.Contains(string(arguments), fullBody) {
+		t.Error("full body must be present in the structured attachment")
+	}
+	if strings.Contains(string(arguments), "super-secret-value") {
+		t.Error("nested token must be scrubbed in the attachment too")
+	}
+	if !strings.Contains(string(arguments), "[REDACTED]") {
+		t.Error("scrubbed token must render as [REDACTED] in the attachment")
+	}
+	// The message summary stays bounded and truncated.
+	if strings.Contains(req.Params.Message, fullBody) {
+		t.Error("message summary must not carry the full body")
+	}
+	// Wire format: the attachment must embed as a JSON object, not a
+	// double-encoded string, and survive the request's own marshaling.
+	wire, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	if !strings.Contains(string(wire), `"arguments":{"`) {
+		t.Errorf("arguments must embed as a JSON object on the wire, got: %s", wire)
+	}
+	if !strings.Contains(string(wire), `"version":1`) {
+		t.Errorf("attachment must carry its version, got: %s", wire)
+	}
+}
+
+func TestElicitation_MetaOmittedForHugeParams(t *testing.T) {
+	tools := []plugin.ToolDef{
+		{Name: "test_write", Description: "Write tool", Access: "write"},
+	}
+	srv := elicitTestServer(true, tools)
+	session := &mockElicitSession{action: mcp.ElicitationResponseActionAccept}
+	ctx := srv.WithContext(context.Background(), session)
+
+	callToolWithArgs(ctx, srv, "test_write", map[string]any{
+		"repo": "org/repo",
+		"body": strings.Repeat("y", 2<<20),
+	})
+
+	req := session.lastReq
+	if req.Params.Meta == nil {
+		t.Fatal("a tombstone must be attached beyond the size cap")
+	}
+	confirmation, ok := req.Params.Meta.AdditionalFields["tool_call_confirmation"].(map[string]any)
+	if !ok {
+		t.Fatalf("tool_call_confirmation expected, got: %#v", req.Params.Meta.AdditionalFields)
+	}
+	if confirmation["omitted"] != "size_exceeded" {
+		t.Errorf("size-exceeded tombstone expected, got: %#v", confirmation)
+	}
+	if _, has := confirmation["arguments"]; has {
+		t.Error("arguments must not be attached beyond the cap")
+	}
+	if !strings.Contains(req.Params.Message, "org/repo") {
+		t.Error("message summary must still render")
+	}
+}
+
 func TestElicitation_CompositeParamsBounded(t *testing.T) {
 	tools := []plugin.ToolDef{
 		{Name: "test_write", Description: "Write tool", Access: "write"},
