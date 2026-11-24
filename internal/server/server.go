@@ -3,7 +3,6 @@
 package server
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -316,7 +315,7 @@ func registerPluginTools(deps *serverDeps, manifest *plugin.Manifest) {
 							Mode: mcp.ElicitationModeForm,
 							Message: fmt.Sprintf(
 								"Confirm: execute %s?\n\nParameters:\n%s",
-								toolName, formatElicitParams(scrubbedParams, maxElicitParamLen)),
+								formatElicitToolName(toolName), formatElicitParams(scrubbedParams, maxElicitParamLen)),
 							RequestedSchema: map[string]any{
 								"type":       "object",
 								"properties": map[string]any{},
@@ -1006,128 +1005,6 @@ func registerHandleResources(srv *mcpserver.MCPServer, pluginName string, handle
 func isValidResourceURI(uri, pluginName string) bool {
 	return strings.HasPrefix(uri, "wtmcp://plugin/"+pluginName+"/") ||
 		strings.HasPrefix(uri, "wtmcp://"+pluginName+"/")
-}
-
-// maxElicitParamLen is the byte budget for content fields in
-// elicitation confirmation messages. Routing fields are never
-// truncated and may exceed this budget.
-const maxElicitParamLen = 500
-
-// contentFields are parameter names treated as free-text content.
-// These are shown last and truncated individually. All other fields
-// are treated as routing parameters and shown in full.
-var contentFields = map[string]bool{
-	"body":        true,
-	"content":     true,
-	"message":     true,
-	"description": true,
-}
-
-// formatElicitParams formats tool parameters for the confirmation
-// prompt. Routing parameters are shown first and never truncated.
-// Content parameters are shown last, truncated individually.
-func formatElicitParams(data json.RawMessage, maxLen int) string {
-	var params map[string]json.RawMessage
-	if err := json.Unmarshal(data, &params); err != nil {
-		return truncateJSON(data, maxLen)
-	}
-	if len(params) == 0 {
-		return "{}"
-	}
-
-	var routingKeys, cKeys []string
-	hasDryRun := false
-	for k := range params {
-		switch {
-		case k == "dry_run":
-			hasDryRun = true
-		case contentFields[k]:
-			cKeys = append(cKeys, k)
-		default:
-			routingKeys = append(routingKeys, k)
-		}
-	}
-	sort.Strings(routingKeys)
-	sort.Strings(cKeys)
-
-	ordered := make([]string, 0, len(routingKeys)+1)
-	if hasDryRun {
-		ordered = append(ordered, "dry_run")
-	}
-	ordered = append(ordered, routingKeys...)
-
-	var lines []string
-	routingBytes := 0
-	for _, k := range ordered {
-		line := fmt.Sprintf("  %q: %s", k, indentValue(params[k], "  "))
-		lines = append(lines, line)
-		routingBytes += len(line)
-	}
-
-	contentBudget := maxLen - routingBytes
-	if contentBudget < 0 {
-		contentBudget = 0
-	}
-	perField := 0
-	if len(cKeys) > 0 {
-		perField = contentBudget / len(cKeys)
-	}
-
-	for _, k := range cKeys {
-		rawLen := len(params[k])
-		if perField <= 0 {
-			lines = append(lines, fmt.Sprintf(
-				"  %q: [truncated, %d bytes total]", k, rawLen))
-			continue
-		}
-		pretty := indentValue(params[k], "  ")
-		if len(pretty) <= perField {
-			lines = append(lines, fmt.Sprintf("  %q: %s", k, pretty))
-		} else {
-			lines = append(lines, fmt.Sprintf(
-				"  %q: %s [truncated, %d bytes total]",
-				k, truncateUTF8(pretty, perField), rawLen))
-		}
-	}
-
-	var buf bytes.Buffer
-	buf.WriteString("{\n")
-	for i, line := range lines {
-		if i > 0 {
-			buf.WriteString(",\n")
-		}
-		buf.WriteString(line)
-	}
-	buf.WriteString("\n}")
-	return buf.String()
-}
-
-// indentValue pretty-prints a JSON value with the given prefix for
-// continuation lines.
-func indentValue(raw json.RawMessage, prefix string) string {
-	var buf bytes.Buffer
-	if err := json.Indent(&buf, raw, prefix, "  "); err != nil {
-		return string(raw)
-	}
-	return buf.String()
-}
-
-// truncateJSON pretty-prints JSON and truncates to maxLen bytes,
-// backing off to the last valid UTF-8 rune boundary.
-func truncateJSON(data json.RawMessage, maxLen int) string {
-	var buf bytes.Buffer
-	if err := json.Indent(&buf, data, "", "  "); err != nil {
-		s := string(data)
-		if len(s) > maxLen {
-			return truncateUTF8(s, maxLen) + "..."
-		}
-		return s
-	}
-	s := buf.String()
-	if len(s) > maxLen {
-		return truncateUTF8(s, maxLen) + "..."
-	}
-	return s
 }
 
 // truncateUTF8 truncates s to at most maxLen bytes on a valid
