@@ -46,10 +46,27 @@ def _fetch_current(path):
 
 
 def _get_flaw_embargoed(flaw_id):
-    current, err = _fetch_current(f"{FLAW_API}/{flaw_id}")
+    status, body, _headers = handler.http("GET", f"{FLAW_API}/{flaw_id}", query={"include_fields": "embargoed"})
+    if is_error(status):
+        return None, http_error(status, body)
+    return body.get("embargoed", False), None
+
+
+def _get_affect_embargoed(affect_id):
+    status, body, _headers = handler.http("GET", f"{AFFECT_API}/{affect_id}", query={"include_fields": "embargoed"})
+    if is_error(status):
+        return None, http_error(status, body)
+    return body.get("embargoed", False), None
+
+
+def _require_embargoed(params, fetch_fn, parent_id):
+    embargoed = params.get("embargoed")
+    if embargoed is not None:
+        return embargoed, None
+    val, err = fetch_fn(parent_id)
     if err:
-        return False
-    return current.get("embargoed", False)
+        return None, err
+    return val, None
 
 
 # -- Flaws -------------------------------------------------------------------
@@ -110,11 +127,10 @@ def flaw_comment_add(params):
     is_private = params.get("is_private")
     if is_private is not None:
         form_data["is_private"] = is_private
-    embargoed = params.get("embargoed")
-    if embargoed is not None:
-        form_data["embargoed"] = embargoed
-    else:
-        form_data["embargoed"] = _get_flaw_embargoed(flaw_id)
+    embargoed, err = _require_embargoed(params, _get_flaw_embargoed, flaw_id)
+    if err:
+        return err
+    form_data["embargoed"] = embargoed
     if dry_run:
         return dry_run_response("osidb_flaw_comment_add", flaw_id=flaw_id, data=form_data)
     return _api_post(f"{FLAW_API}/{flaw_id}/comments", form_data)
@@ -131,8 +147,10 @@ def flaw_reference_add(params):
     description = params.get("description")
     if description:
         form_data["description"] = description
-    embargoed = params.get("embargoed")
-    form_data["embargoed"] = embargoed if embargoed is not None else _get_flaw_embargoed(flaw_id)
+    embargoed, err = _require_embargoed(params, _get_flaw_embargoed, flaw_id)
+    if err:
+        return err
+    form_data["embargoed"] = embargoed
     if dry_run:
         return dry_run_response("osidb_flaw_reference_add", flaw_id=flaw_id, data=form_data)
     return _api_post(f"{FLAW_API}/{flaw_id}/references", form_data)
@@ -178,8 +196,10 @@ def flaw_acknowledgment_add(params):
         "affiliation": params.get("affiliation", ""),
         "from_upstream": params.get("from_upstream", False),
     }
-    embargoed = params.get("embargoed")
-    form_data["embargoed"] = embargoed if embargoed is not None else _get_flaw_embargoed(flaw_id)
+    embargoed, err = _require_embargoed(params, _get_flaw_embargoed, flaw_id)
+    if err:
+        return err
+    form_data["embargoed"] = embargoed
     if dry_run:
         return dry_run_response("osidb_flaw_acknowledgment_add", flaw_id=flaw_id, data=form_data)
     return _api_post(f"{FLAW_API}/{flaw_id}/acknowledgments", form_data)
@@ -223,8 +243,10 @@ def flaw_cvss_score_add(params):
     comment = params.get("comment")
     if comment:
         form_data["comment"] = comment
-    embargoed = params.get("embargoed")
-    form_data["embargoed"] = embargoed if embargoed is not None else _get_flaw_embargoed(flaw_id)
+    embargoed, err = _require_embargoed(params, _get_flaw_embargoed, flaw_id)
+    if err:
+        return err
+    form_data["embargoed"] = embargoed
     if dry_run:
         return dry_run_response("osidb_flaw_cvss_score_add", flaw_id=flaw_id, data=form_data)
     return _api_post(f"{FLAW_API}/{flaw_id}/cvss_scores", form_data)
@@ -267,8 +289,10 @@ def flaw_label_add(params):
     contributor = params.get("contributor")
     if contributor:
         form_data["contributor"] = contributor
-    embargoed = params.get("embargoed")
-    form_data["embargoed"] = embargoed if embargoed is not None else _get_flaw_embargoed(flaw_id)
+    embargoed, err = _require_embargoed(params, _get_flaw_embargoed, flaw_id)
+    if err:
+        return err
+    form_data["embargoed"] = embargoed
     if dry_run:
         return dry_run_response("osidb_flaw_label_add", flaw_id=flaw_id, data=form_data)
     return _api_post(f"{FLAW_API}/{flaw_id}/labels", form_data)
@@ -307,8 +331,10 @@ def flaw_package_version_add(params):
         "package": params["package"],
         "versions": params["versions"],
     }
-    embargoed = params.get("embargoed")
-    form_data["embargoed"] = embargoed if embargoed is not None else _get_flaw_embargoed(flaw_id)
+    embargoed, err = _require_embargoed(params, _get_flaw_embargoed, flaw_id)
+    if err:
+        return err
+    form_data["embargoed"] = embargoed
     if dry_run:
         return dry_run_response("osidb_flaw_package_version_add", flaw_id=flaw_id, data=form_data)
     return _api_post(f"{FLAW_API}/{flaw_id}/package_versions", form_data)
@@ -362,7 +388,14 @@ def affect_create(params):
         if val is not None:
             form_data[key] = val
     if "embargoed" not in form_data:
-        form_data["embargoed"] = False
+        flaw_id = form_data.get("flaw")
+        if flaw_id:
+            embargoed, err = _require_embargoed(params, _get_flaw_embargoed, flaw_id)
+            if err:
+                return err
+            form_data["embargoed"] = embargoed
+        else:
+            form_data["embargoed"] = False
     if dry_run:
         return dry_run_response("osidb_affect_create", data=form_data)
     return _api_post(AFFECT_API, form_data)
@@ -428,9 +461,10 @@ def affect_cvss_score_add(params):
     comment = params.get("comment")
     if comment:
         form_data["comment"] = comment
-    embargoed = params.get("embargoed")
-    if embargoed is not None:
-        form_data["embargoed"] = embargoed
+    embargoed, err = _require_embargoed(params, _get_affect_embargoed, affect_id)
+    if err:
+        return err
+    form_data["embargoed"] = embargoed
     if dry_run:
         return dry_run_response("osidb_affect_cvss_score_add", affect_id=affect_id, data=form_data)
     return _api_post(f"{AFFECT_API}/{affect_id}/cvss_scores", form_data)
@@ -446,6 +480,28 @@ def affect_cvss_score_delete(params):
 
 
 # -- Trackers ----------------------------------------------------------------
+
+
+def tracker_suggest(params):
+    flaw_uuids = params["flaw_uuids"]
+    dry_run = params.get("dry_run", True)
+    if isinstance(flaw_uuids, str):
+        flaw_uuids = [flaw_uuids]
+    if dry_run:
+        return dry_run_response(
+            "osidb_tracker_suggest",
+            flaw_uuids=flaw_uuids,
+            exclude_existing=params.get("exclude_existing", False),
+        )
+    query = {}
+    if params.get("exclude_existing", False):
+        query["exclude_existing_trackers"] = "true"
+    status, body, _headers = handler.http(
+        "POST", TRACKER_FILE_API, query=query or None, body={"flaw_uuids": flaw_uuids}
+    )
+    if is_error(status):
+        return http_error(status, body)
+    return body
 
 
 def tracker_create(params):
@@ -500,6 +556,7 @@ TOOLS = {
     "osidb_affect_bulk_delete": affect_bulk_delete,
     "osidb_affect_cvss_score_add": affect_cvss_score_add,
     "osidb_affect_cvss_score_delete": affect_cvss_score_delete,
+    "osidb_tracker_suggest": tracker_suggest,
     "osidb_tracker_create": tracker_create,
     "osidb_tracker_update": tracker_update,
 }

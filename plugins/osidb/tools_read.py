@@ -8,7 +8,6 @@ from helpers import (
     FLAW_API,
     LABEL_API,
     TRACKER_API,
-    TRACKER_FILE_API,
     build_affect_query,
     build_flaw_query,
     build_tracker_query,
@@ -418,25 +417,6 @@ def tracker_list(params):
     return _api_get(TRACKER_API, query=query)
 
 
-def tracker_suggest(params):
-    flaw_uuids = params["flaw_uuids"]
-    if isinstance(flaw_uuids, str):
-        flaw_uuids = [flaw_uuids]
-    query = {}
-    exclude_existing = params.get("exclude_existing", False)
-    if exclude_existing:
-        query["exclude_existing_trackers"] = "true"
-    status, body, _ = handler.http(
-        "POST",
-        TRACKER_FILE_API,
-        query=query or None,
-        body={"flaw_uuids": flaw_uuids},
-    )
-    if is_error(status):
-        return http_error(status, body)
-    return body
-
-
 # -- Global Labels -----------------------------------------------------------
 
 
@@ -476,7 +456,6 @@ TOOLS = {
     "osidb_affect_cvss_scores": affect_cvss_scores,
     "osidb_tracker_get": tracker_get,
     "osidb_tracker_list": tracker_list,
-    "osidb_tracker_suggest": tracker_suggest,
     "osidb_label_list": label_list,
     "osidb_label_get": label_get,
 }

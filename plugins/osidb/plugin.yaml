@@ -1250,10 +1250,10 @@ tools:
         description: "Preview without updating (default true)"
 
   - name: osidb_tracker_suggest
-    access: read
     description: >
       Get tracker filing suggestions for flaws. POSTs flaw UUIDs to the
       file endpoint and returns streams/components where trackers can be filed.
+      This is a write operation (same endpoint as tracker_create).
     params:
       flaw_uuids:
         type: array
@@ -1265,6 +1265,10 @@ tools:
         type: boolean
         default: false
         description: "Exclude streams that already have trackers"
+      dry_run:
+        type: boolean
+        default: true
+        description: "Preview suggestions without filing (default true)"
 
   # ── Global Labels (deferred) ────────────────────────────────────────────
   - name: osidb_label_list

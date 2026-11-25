@@ -140,15 +140,17 @@ class TestFlawLabelAdd:
 
 class TestAffectCreate:
     def test_dry_run(self):
-        result = tools_write.affect_create(
-            {
-                "flaw": "CVE-2024-1234",
-                "ps_module": "rhel-9",
-                "ps_component": "kernel",
-            }
-        )
+        with _mock_http(200, {"embargoed": False}):
+            result = tools_write.affect_create(
+                {
+                    "flaw": "CVE-2024-1234",
+                    "ps_module": "rhel-9",
+                    "ps_component": "kernel",
+                }
+            )
         assert result["dry_run"] is True
         assert result["data"]["ps_module"] == "rhel-9"
+        assert result["data"]["embargoed"] is False
 
     def test_execute(self):
         created = {"uuid": "a1", "ps_module": "rhel-9", "ps_component": "kernel"}
@@ -210,6 +212,21 @@ class TestAffectBulk:
         assert result["count"] == 2
 
 
+class TestTrackerSuggest:
+    def test_dry_run(self):
+        result = tools_write.tracker_suggest({"flaw_uuids": ["uuid1", "uuid2"]})
+        assert result["dry_run"] is True
+        assert result["flaw_uuids"] == ["uuid1", "uuid2"]
+
+    def test_execute(self):
+        resp = {"streams_components": [{"ps_update_stream": "rhel-9.0"}]}
+        with patch.object(handler, "http", return_value=(200, resp, {})) as mock:
+            result = tools_write.tracker_suggest({"flaw_uuids": ["uuid1"], "dry_run": False})
+            assert "streams_components" in result
+            assert mock.call_args[0][0] == "POST"
+            assert mock.call_args[1]["body"] == {"flaw_uuids": ["uuid1"]}
+
+
 class TestTrackerCreate:
     def test_dry_run(self):
         result = tools_write.tracker_create({"flaw_uuids": ["uuid1", "uuid2"]})
@@ -226,3 +243,38 @@ class TestTrackerUpdate:
             }
         )
         assert result["dry_run"] is True
+
+
+class TestEmbargoedHandling:
+    def test_flaw_comment_add_fetch_failure_returns_error(self):
+        with _mock_http(503, {"detail": "Service unavailable"}):
+            result = tools_write.flaw_comment_add({"flaw_id": "CVE-2024-1234", "text": "test", "dry_run": False})
+            assert "error" in result
+
+    def test_flaw_comment_add_explicit_embargoed_skips_fetch(self):
+        with _mock_http(200, {"uuid": "c1"}) as mock:
+            tools_write.flaw_comment_add(
+                {
+                    "flaw_id": "CVE-2024-1234",
+                    "text": "test",
+                    "embargoed": True,
+                    "dry_run": False,
+                }
+            )
+            assert mock.call_count == 1
+            assert mock.call_args[0][0] == "POST"
+
+    def test_affect_create_inherits_flaw_embargo(self):
+        responses = [
+            (200, {"embargoed": True}, {}),
+        ]
+        with _mock_http_sequence(responses):
+            result = tools_write.affect_create(
+                {
+                    "flaw": "CVE-2024-1234",
+                    "ps_module": "rhel-9",
+                    "ps_component": "kernel",
+                }
+            )
+            assert result["dry_run"] is True
+            assert result["data"]["embargoed"] is True

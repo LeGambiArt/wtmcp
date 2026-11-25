@@ -192,14 +192,6 @@ class TestTrackers:
             result = tools_read.tracker_list({"flaw_cve_id": "CVE-2024-1234"})
             assert result["count"] == 1
 
-    def test_tracker_suggest(self):
-        resp = {"streams_components": [{"ps_update_stream": "rhel-9.0"}]}
-        with patch.object(handler, "http", return_value=(200, resp, {})) as mock:
-            result = tools_read.tracker_suggest({"flaw_uuids": ["uuid1", "uuid2"]})
-            assert "streams_components" in result
-            assert mock.call_args[0][0] == "POST"
-            assert mock.call_args[1]["body"] == {"flaw_uuids": ["uuid1", "uuid2"]}
-
 
 class TestLabels:
     def test_label_list(self):
