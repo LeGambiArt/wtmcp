@@ -1,0 +1,1315 @@
+name: osidb
+version: "0.1.0"
+description: "OSIDB integration for vulnerability and flaw management"
+
+execution: persistent
+handler: ./handler.py
+credential_group: osidb
+priority: 50
+
+context_files:
+  - context.md
+
+services:
+  auth:
+    select: "${OSIDB_AUTH_TYPE:-auto}"
+    variants:
+      kerberos:
+        type: kerberos/spnego
+      token:
+        type: bearer
+        token: "${OSIDB_TOKEN}"
+  http:
+    base_url: "${OSIDB_URL}"
+    allow_private_ips: true
+  cache:
+    enabled: true
+    namespace: osidb
+    default_ttl: 300
+
+config:
+  osidb_url: "${OSIDB_URL}"
+
+tools:
+  # ── Status ───────────────────────────────────────────────────────────────
+  - name: osidb_status
+    access: read
+    visibility: primary
+    description: >
+      Check OSIDB API health status. Returns service info, flaw count,
+      version, and environment.
+    params: {}
+
+  # ── Flaws CRUD ──────────────────────────────────────────────────────────
+  - name: osidb_flaw_get
+    access: read
+    visibility: primary
+    description: >
+      Retrieve a flaw by CVE ID (e.g. CVE-2024-1234) or UUID. Use
+      include_fields/exclude_fields to control response size — full
+      flaw records can be very large.
+    params:
+      flaw_id:
+        type: string
+        required: true
+        description: "CVE ID (e.g. CVE-2024-1234) or flaw UUID"
+      include_history:
+        type: boolean
+        default: false
+        description: "Include change history in response"
+      include_fields:
+        type: array
+        items:
+          type: string
+        description: "Only return these fields"
+      exclude_fields:
+        type: array
+        items:
+          type: string
+        description: "Exclude these fields from response"
+
+  - name: osidb_flaw_list
+    access: read
+    visibility: primary
+    description: >
+      List flaws with filters. Supports 30+ filter parameters including
+      CVE ID, impact, owner, workflow state, affected products, labels,
+      date ranges, and DjangoQL queries. Use include_fields to limit
+      response size.
+    params:
+      cve_id:
+        type: string
+        description: "Filter by CVE ID"
+      impact:
+        type: string
+        description: "Filter by impact"
+        enum: [CRITICAL, IMPORTANT, MODERATE, LOW]
+      source:
+        type: string
+        description: "Filter by source (e.g. REDHAT, CUSTOMER, CVE)"
+      embargoed:
+        type: boolean
+        description: "Filter by embargo status"
+      owner:
+        type: string
+        description: "Filter by owner email"
+      owner_isempty:
+        type: boolean
+        description: "Filter by whether owner is empty (true = unowned)"
+      flaw_labels:
+        type: array
+        items:
+          type: string
+        description: "Filter by label names"
+      label_contributor:
+        type: string
+        description: "Filter by label contributor email (use with flaw_labels)"
+      label_contributor_isempty:
+        type: boolean
+        description: "Filter by whether label contributor is empty"
+      label_state:
+        type: string
+        description: "Filter by label state (use with flaw_labels)"
+        enum: [NEW, REQ, SKIP, DONE]
+      created_dt_gte:
+        type: string
+        description: "Created after (ISO 8601)"
+      created_dt_lte:
+        type: string
+        description: "Created before (ISO 8601)"
+      updated_dt_gte:
+        type: string
+        description: "Updated after (ISO 8601)"
+      updated_dt_lte:
+        type: string
+        description: "Updated before (ISO 8601)"
+      changed_after:
+        type: string
+        description: "Changed after (ISO 8601) — any field change"
+      changed_before:
+        type: string
+        description: "Changed before (ISO 8601)"
+      affects_ps_module:
+        type: string
+        description: "Filter by affected ps_module"
+      affects_ps_component:
+        type: string
+        description: "Filter by affected ps_component"
+      affects_ps_update_stream:
+        type: string
+        description: "Filter by affected ps_update_stream"
+      affects_affectedness:
+        type: string
+        description: "Filter by affectedness"
+        enum: [NEW, AFFECTED, NOTAFFECTED]
+      affects_resolution:
+        type: string
+        description: "Filter by resolution"
+        enum: [DEFER, WONTFIX, OOSS, DELEGATED]
+      workflow_state:
+        type: string
+        description: "Filter by workflow state (comma-separated for multiple)"
+      workflow_name:
+        type: string
+        description: "Filter by workflow name"
+      cwe_id:
+        type: string
+        description: "Filter by CWE ID"
+      title:
+        type: string
+        description: "Filter by title (substring match)"
+      components:
+        type: string
+        description: "Filter by component name"
+      major_incident_state:
+        type: string
+        description: "Filter by major incident state"
+      bz_id:
+        type: string
+        description: "Filter by Bugzilla ID"
+      search:
+        type: string
+        description: "Full-text search across title, CVE ID, comment_zero, description, statement"
+      query:
+        type: string
+        description: "DjangoQL query for advanced filtering"
+      limit:
+        type: integer
+        default: 50
+        description: "Results per page"
+      offset:
+        type: integer
+        default: 0
+        description: "Pagination offset"
+      order:
+        type: string
+        description: "Sort order (e.g. -created_dt for newest first)"
+      include_fields:
+        type: array
+        items:
+          type: string
+        description: "Only return these fields"
+      exclude_fields:
+        type: array
+        items:
+          type: string
+        description: "Exclude these fields from response"
+      include_history:
+        type: boolean
+        default: false
+        description: "Include change history"
+
+  - name: osidb_flaw_search
+    access: read
+    visibility: primary
+    description: >
+      Full-text search flaws using OSIDB's stored search vector with
+      English stemming. Searches title, cve_id, comment_zero,
+      cve_description, statement. Supports "quoted phrases" and
+      -exclusions.
+    params:
+      query:
+        type: string
+        required: true
+        description: "Full-text search query"
+      limit:
+        type: integer
+        default: 50
+        description: "Results per page"
+      offset:
+        type: integer
+        default: 0
+        description: "Pagination offset"
+      include_fields:
+        type: array
+        items:
+          type: string
+        description: "Only return these fields"
+      exclude_fields:
+        type: array
+        items:
+          type: string
+        description: "Exclude these fields from response"
+
+  - name: osidb_flaw_create
+    access: write
+    visibility: primary
+    description: >
+      Create a new flaw. Requires title and comment_zero at minimum.
+      Defaults to dry_run=true — set dry_run=false to actually create.
+    params:
+      title:
+        type: string
+        required: true
+        description: "Flaw title"
+      comment_zero:
+        type: string
+        required: true
+        description: "Initial comment describing the vulnerability"
+      embargoed:
+        type: boolean
+        default: false
+        description: "Whether the flaw is embargoed"
+      cve_id:
+        type: string
+        description: "CVE ID (e.g. CVE-2024-1234)"
+      impact:
+        type: string
+        description: "Impact level"
+        enum: [CRITICAL, IMPORTANT, MODERATE, LOW]
+      components:
+        type: array
+        items:
+          type: string
+        description: "Affected components"
+      source:
+        type: string
+        description: "Flaw source"
+      cwe_id:
+        type: string
+        description: "CWE ID"
+      major_incident_state:
+        type: string
+        description: "Major incident state"
+      mitigation:
+        type: string
+        description: "Mitigation text"
+      statement:
+        type: string
+        description: "Public statement"
+      cve_description:
+        type: string
+        description: "CVE description"
+      unembargo_dt:
+        type: string
+        description: "Unembargo date (ISO 8601)"
+      reported_dt:
+        type: string
+        description: "Reported date (ISO 8601)"
+      owner:
+        type: string
+        description: "Owner email"
+      dry_run:
+        type: boolean
+        default: true
+        description: "Preview without creating (default true)"
+
+  - name: osidb_flaw_update
+    access: write
+    visibility: primary
+    description: >
+      Update flaw fields. Auto-fetches current state for optimistic
+      locking via updated_dt. Defaults to dry_run=true.
+    params:
+      flaw_id:
+        type: string
+        required: true
+        description: "CVE ID or flaw UUID"
+      fields:
+        type: object
+        required: true
+        description: "Fields to update (e.g. {\"impact\": \"CRITICAL\", \"owner\": \"user@example.com\"})"
+      dry_run:
+        type: boolean
+        default: true
+        description: "Preview without updating (default true)"
+
+  - name: osidb_my_flaws
+    access: read
+    visibility: primary
+    description: >
+      Find flaws where the given user is the flaw owner or a label
+      contributor. Runs two queries and returns the deduplicated union.
+      Use analyse=true to sort by severity and group into
+      needs_attention vs completed.
+    params:
+      email:
+        type: string
+        required: true
+        description: "User email"
+      name:
+        type: string
+        description: "Display name for contributor matching (needed for inconsistent contributor formats)"
+      workflow_state:
+        type: string
+        description: "Filter by workflow state (comma-separated)"
+      impact:
+        type: string
+        description: "Filter by impact"
+        enum: [CRITICAL, IMPORTANT, MODERATE, LOW]
+      label:
+        type: string
+        default: "hybrid_bu"
+        description: "Label to check contributor on"
+      analyse:
+        type: boolean
+        default: false
+        description: "Sort by severity and group into needs_attention vs completed"
+      limit:
+        type: integer
+        default: 50
+        description: "Max results to return"
+      include_fields:
+        type: array
+        items:
+          type: string
+        description: "Only return these fields (ignored when analyse=true)"
+
+  # ── Affects ─────────────────────────────────────────────────────────────
+  - name: osidb_affect_list
+    access: read
+    visibility: primary
+    description: >
+      List affects with filters. Affects link flaws to specific product
+      streams (ps_module + ps_component).
+    params:
+      flaw_cve_id:
+        type: string
+        description: "Filter by flaw CVE ID"
+      flaw_uuid:
+        type: string
+        description: "Filter by flaw UUID"
+      affectedness:
+        type: string
+        description: "Filter by affectedness"
+        enum: [NEW, AFFECTED, NOTAFFECTED]
+      resolution:
+        type: string
+        description: "Filter by resolution"
+        enum: [DEFER, WONTFIX, OOSS, DELEGATED]
+      impact:
+        type: string
+        description: "Filter by impact"
+        enum: [CRITICAL, IMPORTANT, MODERATE, LOW]
+      ps_module:
+        type: string
+        description: "Filter by ps_module"
+      ps_component:
+        type: string
+        description: "Filter by ps_component"
+      ps_update_stream:
+        type: string
+        description: "Filter by ps_update_stream"
+      embargoed:
+        type: boolean
+        description: "Filter by embargo status"
+      created_dt_gte:
+        type: string
+        description: "Created after (ISO 8601)"
+      created_dt_lte:
+        type: string
+        description: "Created before (ISO 8601)"
+      updated_dt_gte:
+        type: string
+        description: "Updated after (ISO 8601)"
+      updated_dt_lte:
+        type: string
+        description: "Updated before (ISO 8601)"
+      limit:
+        type: integer
+        default: 50
+        description: "Results per page"
+      offset:
+        type: integer
+        default: 0
+        description: "Pagination offset"
+      order:
+        type: string
+        description: "Sort order"
+      include_fields:
+        type: array
+        items:
+          type: string
+        description: "Only return these fields"
+      exclude_fields:
+        type: array
+        items:
+          type: string
+        description: "Exclude these fields"
+
+  - name: osidb_affect_get
+    access: read
+    visibility: primary
+    description: >
+      Retrieve an affect by UUID.
+    params:
+      affect_id:
+        type: string
+        required: true
+        description: "Affect UUID"
+      include_fields:
+        type: array
+        items:
+          type: string
+        description: "Only return these fields"
+      exclude_fields:
+        type: array
+        items:
+          type: string
+        description: "Exclude these fields"
+
+  - name: osidb_affect_create
+    access: write
+    visibility: primary
+    description: >
+      Create an affect linking a flaw to a product stream. Requires
+      flaw ID, ps_module, and ps_component. Defaults to dry_run=true.
+    params:
+      flaw:
+        type: string
+        required: true
+        description: "Flaw CVE ID or UUID"
+      ps_module:
+        type: string
+        required: true
+        description: "Product stream module (e.g. rhel-9)"
+      ps_component:
+        type: string
+        required: true
+        description: "Product stream component (e.g. kernel)"
+      affectedness:
+        type: string
+        description: "Affectedness status"
+        enum: [NEW, AFFECTED, NOTAFFECTED]
+      resolution:
+        type: string
+        description: "Resolution status"
+        enum: [DEFER, WONTFIX, OOSS, DELEGATED]
+      impact:
+        type: string
+        description: "Impact override"
+        enum: [CRITICAL, IMPORTANT, MODERATE, LOW]
+      ps_update_stream:
+        type: string
+        description: "Product update stream"
+      embargoed:
+        type: boolean
+        description: "Embargo status"
+      dry_run:
+        type: boolean
+        default: true
+        description: "Preview without creating (default true)"
+
+  - name: osidb_affect_update
+    access: write
+    visibility: primary
+    description: >
+      Update an affect. Auto-fetches current state for optimistic
+      locking. Defaults to dry_run=true.
+    params:
+      affect_id:
+        type: string
+        required: true
+        description: "Affect UUID"
+      fields:
+        type: object
+        required: true
+        description: "Fields to update"
+      dry_run:
+        type: boolean
+        default: true
+        description: "Preview without updating (default true)"
+
+  - name: osidb_affect_delete
+    access: write
+    visibility: primary
+    description: >
+      Delete an affect. Defaults to dry_run=true.
+    params:
+      affect_id:
+        type: string
+        required: true
+        description: "Affect UUID"
+      dry_run:
+        type: boolean
+        default: true
+        description: "Preview without deleting (default true)"
+
+  # ── Trackers ────────────────────────────────────────────────────────────
+  - name: osidb_tracker_list
+    access: read
+    visibility: primary
+    description: >
+      List trackers with filters. Trackers are bug-tracking tickets
+      (Jira, Bugzilla) filed for affected product streams.
+    params:
+      affect_uuid:
+        type: string
+        description: "Filter by affect UUID"
+      flaw_cve_id:
+        type: string
+        description: "Filter by flaw CVE ID"
+      flaw_uuid:
+        type: string
+        description: "Filter by flaw UUID"
+      type:
+        type: string
+        description: "Filter by tracker type"
+      external_system_id:
+        type: string
+        description: "Filter by external system ID (e.g. Jira key)"
+      status:
+        type: string
+        description: "Filter by status"
+      resolution:
+        type: string
+        description: "Filter by resolution"
+      ps_update_stream:
+        type: string
+        description: "Filter by product update stream"
+      created_dt_gte:
+        type: string
+        description: "Created after (ISO 8601)"
+      created_dt_lte:
+        type: string
+        description: "Created before (ISO 8601)"
+      updated_dt_gte:
+        type: string
+        description: "Updated after (ISO 8601)"
+      updated_dt_lte:
+        type: string
+        description: "Updated before (ISO 8601)"
+      limit:
+        type: integer
+        default: 50
+        description: "Results per page"
+      offset:
+        type: integer
+        default: 0
+        description: "Pagination offset"
+      order:
+        type: string
+        description: "Sort order"
+      include_fields:
+        type: array
+        items:
+          type: string
+        description: "Only return these fields"
+      exclude_fields:
+        type: array
+        items:
+          type: string
+        description: "Exclude these fields"
+
+  # ── Flaw Comments (deferred) ────────────────────────────────────────────
+  - name: osidb_flaw_comments
+    access: read
+    description: >
+      List comments on a flaw.
+    params:
+      flaw_id:
+        type: string
+        required: true
+        description: "CVE ID or flaw UUID"
+      limit:
+        type: integer
+        default: 50
+        description: "Max results"
+      offset:
+        type: integer
+        description: "Pagination offset"
+
+  - name: osidb_flaw_comment_add
+    description: >
+      Add a comment to a flaw. Defaults to dry_run=true.
+    params:
+      flaw_id:
+        type: string
+        required: true
+        description: "CVE ID or flaw UUID"
+      text:
+        type: string
+        required: true
+        description: "Comment text"
+      is_private:
+        type: boolean
+        description: "Whether the comment is private"
+      embargoed:
+        type: boolean
+        description: "Override embargo status (defaults to flaw's embargo)"
+      dry_run:
+        type: boolean
+        default: true
+        description: "Preview without adding (default true)"
+
+  # ── Flaw References (deferred) ──────────────────────────────────────────
+  - name: osidb_flaw_references
+    access: read
+    description: >
+      List references on a flaw.
+    params:
+      flaw_id:
+        type: string
+        required: true
+        description: "CVE ID or flaw UUID"
+      limit:
+        type: integer
+        default: 50
+        description: "Max results"
+      offset:
+        type: integer
+        description: "Pagination offset"
+
+  - name: osidb_flaw_reference_add
+    description: >
+      Add a reference to a flaw. Types: ARTICLE, EXTERNAL (default),
+      SOURCE, UPSTREAM.
+    params:
+      flaw_id:
+        type: string
+        required: true
+        description: "CVE ID or flaw UUID"
+      url:
+        type: string
+        required: true
+        description: "Reference URL (max 2048 chars)"
+      reference_type:
+        type: string
+        default: "EXTERNAL"
+        description: "Reference type"
+        enum: [ARTICLE, EXTERNAL, SOURCE, UPSTREAM]
+      description:
+        type: string
+        description: "Reference description"
+      embargoed:
+        type: boolean
+        description: "Override embargo status"
+      dry_run:
+        type: boolean
+        default: true
+        description: "Preview without adding (default true)"
+
+  - name: osidb_flaw_reference_update
+    description: >
+      Update a reference on a flaw. Auto-fetches for optimistic locking.
+      Fields: url, type, description.
+    params:
+      flaw_id:
+        type: string
+        required: true
+        description: "CVE ID or flaw UUID"
+      reference_id:
+        type: string
+        required: true
+        description: "Reference UUID"
+      fields:
+        type: object
+        required: true
+        description: "Fields to update"
+      dry_run:
+        type: boolean
+        default: true
+        description: "Preview without updating (default true)"
+
+  - name: osidb_flaw_reference_delete
+    description: >
+      Delete a reference from a flaw.
+    params:
+      flaw_id:
+        type: string
+        required: true
+        description: "CVE ID or flaw UUID"
+      reference_id:
+        type: string
+        required: true
+        description: "Reference UUID"
+      dry_run:
+        type: boolean
+        default: true
+        description: "Preview without deleting (default true)"
+
+  # ── Flaw Acknowledgments (deferred) ─────────────────────────────────────
+  - name: osidb_flaw_acknowledgments
+    access: read
+    description: >
+      List acknowledgments on a flaw.
+    params:
+      flaw_id:
+        type: string
+        required: true
+        description: "CVE ID or flaw UUID"
+      limit:
+        type: integer
+        default: 50
+        description: "Max results"
+      offset:
+        type: integer
+        description: "Pagination offset"
+
+  - name: osidb_flaw_acknowledgment_add
+    description: >
+      Add an acknowledgment to a flaw. Unique constraint: one per
+      (flaw, name, affiliation).
+    params:
+      flaw_id:
+        type: string
+        required: true
+        description: "CVE ID or flaw UUID"
+      name:
+        type: string
+        required: true
+        description: "Name of the person/entity"
+      affiliation:
+        type: string
+        description: "Affiliation"
+      from_upstream:
+        type: boolean
+        default: false
+        description: "Whether from upstream"
+      embargoed:
+        type: boolean
+        description: "Override embargo status"
+      dry_run:
+        type: boolean
+        default: true
+        description: "Preview without adding (default true)"
+
+  - name: osidb_flaw_acknowledgment_update
+    description: >
+      Update an acknowledgment on a flaw. Fields: name, affiliation,
+      from_upstream.
+    params:
+      flaw_id:
+        type: string
+        required: true
+        description: "CVE ID or flaw UUID"
+      ack_id:
+        type: string
+        required: true
+        description: "Acknowledgment UUID"
+      fields:
+        type: object
+        required: true
+        description: "Fields to update"
+      dry_run:
+        type: boolean
+        default: true
+        description: "Preview without updating (default true)"
+
+  - name: osidb_flaw_acknowledgment_delete
+    description: >
+      Delete an acknowledgment from a flaw.
+    params:
+      flaw_id:
+        type: string
+        required: true
+        description: "CVE ID or flaw UUID"
+      ack_id:
+        type: string
+        required: true
+        description: "Acknowledgment UUID"
+      dry_run:
+        type: boolean
+        default: true
+        description: "Preview without deleting (default true)"
+
+  # ── Flaw CVSS Scores (deferred) ────────────────────────────────────────
+  - name: osidb_flaw_cvss_scores
+    access: read
+    description: >
+      List CVSS scores on a flaw.
+    params:
+      flaw_id:
+        type: string
+        required: true
+        description: "CVE ID or flaw UUID"
+      limit:
+        type: integer
+        default: 50
+        description: "Max results"
+      offset:
+        type: integer
+        description: "Pagination offset"
+
+  - name: osidb_flaw_cvss_score_add
+    description: >
+      Add a CVSS score to a flaw. Score is auto-computed from the
+      vector. Unique constraint: one per (flaw, cvss_version, issuer).
+    params:
+      flaw_id:
+        type: string
+        required: true
+        description: "CVE ID or flaw UUID"
+      vector:
+        type: string
+        required: true
+        description: "CVSS vector string"
+      issuer:
+        type: string
+        default: "RH"
+        description: "Score issuer"
+        enum: [RH, NIST, CVEORG, OSV, CISA]
+      cvss_version:
+        type: string
+        default: "V3"
+        description: "CVSS version"
+        enum: [V2, V3, V4]
+      comment:
+        type: string
+        description: "Comment on the score (RH scores only)"
+      embargoed:
+        type: boolean
+        description: "Override embargo status"
+      dry_run:
+        type: boolean
+        default: true
+        description: "Preview without adding (default true)"
+
+  - name: osidb_flaw_cvss_score_update
+    description: >
+      Update a CVSS score on a flaw. Fields: vector, cvss_version,
+      comment.
+    params:
+      flaw_id:
+        type: string
+        required: true
+        description: "CVE ID or flaw UUID"
+      score_id:
+        type: string
+        required: true
+        description: "CVSS score UUID"
+      fields:
+        type: object
+        required: true
+        description: "Fields to update"
+      dry_run:
+        type: boolean
+        default: true
+        description: "Preview without updating (default true)"
+
+  - name: osidb_flaw_cvss_score_delete
+    description: >
+      Delete a CVSS score from a flaw. Only RH-issued scores can be
+      deleted.
+    params:
+      flaw_id:
+        type: string
+        required: true
+        description: "CVE ID or flaw UUID"
+      score_id:
+        type: string
+        required: true
+        description: "CVSS score UUID"
+      dry_run:
+        type: boolean
+        default: true
+        description: "Preview without deleting (default true)"
+
+  # ── Flaw Labels (deferred) ──────────────────────────────────────────────
+  - name: osidb_flaw_labels
+    access: read
+    description: >
+      List labels on a flaw. Labels track BU ownership and workflow
+      routing (e.g. hybrid_bu, core_bu).
+    params:
+      flaw_id:
+        type: string
+        required: true
+        description: "CVE ID or flaw UUID"
+      limit:
+        type: integer
+        default: 50
+        description: "Max results"
+      offset:
+        type: integer
+        description: "Pagination offset"
+
+  - name: osidb_flaw_label_add
+    description: >
+      Add a label to a flaw. Labels have a name, state (NEW, REQ,
+      SKIP, DONE), and optional contributor.
+    params:
+      flaw_id:
+        type: string
+        required: true
+        description: "CVE ID or flaw UUID"
+      label_name:
+        type: string
+        required: true
+        description: "Label name (e.g. hybrid_bu, core_bu)"
+      state:
+        type: string
+        description: "Label state"
+        enum: [NEW, REQ, SKIP, DONE]
+      contributor:
+        type: string
+        description: "Contributor email"
+      embargoed:
+        type: boolean
+        description: "Override embargo status"
+      dry_run:
+        type: boolean
+        default: true
+        description: "Preview without adding (default true)"
+
+  - name: osidb_flaw_label_update
+    description: >
+      Update a label on a flaw. Fields: state, contributor.
+    params:
+      flaw_id:
+        type: string
+        required: true
+        description: "CVE ID or flaw UUID"
+      label_id:
+        type: string
+        required: true
+        description: "Label UUID"
+      fields:
+        type: object
+        required: true
+        description: "Fields to update"
+      dry_run:
+        type: boolean
+        default: true
+        description: "Preview without updating (default true)"
+
+  - name: osidb_flaw_label_delete
+    description: >
+      Delete a label from a flaw.
+    params:
+      flaw_id:
+        type: string
+        required: true
+        description: "CVE ID or flaw UUID"
+      label_id:
+        type: string
+        required: true
+        description: "Label UUID"
+      dry_run:
+        type: boolean
+        default: true
+        description: "Preview without deleting (default true)"
+
+  # ── Flaw Package Versions (deferred) ────────────────────────────────────
+  - name: osidb_flaw_package_versions
+    access: read
+    description: >
+      List package versions on a flaw.
+    params:
+      flaw_id:
+        type: string
+        required: true
+        description: "CVE ID or flaw UUID"
+      limit:
+        type: integer
+        default: 50
+        description: "Max results"
+      offset:
+        type: integer
+        description: "Pagination offset"
+
+  - name: osidb_flaw_package_version_add
+    description: >
+      Add a package version to a flaw.
+    params:
+      flaw_id:
+        type: string
+        required: true
+        description: "CVE ID or flaw UUID"
+      package:
+        type: string
+        required: true
+        description: "Package name"
+      versions:
+        type: array
+        required: true
+        items:
+          type: object
+          required: [version, status]
+          properties:
+            version:
+              type: string
+            status:
+              type: string
+        description: "List of version/status pairs"
+      embargoed:
+        type: boolean
+        description: "Override embargo status"
+      dry_run:
+        type: boolean
+        default: true
+        description: "Preview without adding (default true)"
+
+  - name: osidb_flaw_package_version_update
+    description: >
+      Update a package version on a flaw.
+    params:
+      flaw_id:
+        type: string
+        required: true
+        description: "CVE ID or flaw UUID"
+      version_id:
+        type: string
+        required: true
+        description: "Package version UUID"
+      fields:
+        type: object
+        required: true
+        description: "Fields to update"
+      dry_run:
+        type: boolean
+        default: true
+        description: "Preview without updating (default true)"
+
+  - name: osidb_flaw_package_version_delete
+    description: >
+      Delete a package version from a flaw.
+    params:
+      flaw_id:
+        type: string
+        required: true
+        description: "CVE ID or flaw UUID"
+      version_id:
+        type: string
+        required: true
+        description: "Package version UUID"
+      dry_run:
+        type: boolean
+        default: true
+        description: "Preview without deleting (default true)"
+
+  # ── Flaw Promotion Status (deferred) ────────────────────────────────────
+  - name: osidb_flaw_promotion_status
+    access: read
+    description: >
+      Check what a flaw needs for promotion to the next workflow state.
+      Returns current state, next state, all gate requirements with
+      pass/fail status, and which requirements block promotion. Requires
+      OSIDB_WORKFLOWS_URL to be configured.
+    params:
+      flaw_id:
+        type: string
+        required: true
+        description: "CVE ID or flaw UUID"
+
+  # ── Affect Bulk Operations (deferred) ───────────────────────────────────
+  - name: osidb_affect_bulk_create
+    description: >
+      Bulk create multiple affects at once.
+    params:
+      affects:
+        type: array
+        required: true
+        items:
+          type: object
+        description: "List of affect objects to create"
+      dry_run:
+        type: boolean
+        default: true
+        description: "Preview without creating (default true)"
+
+  - name: osidb_affect_bulk_update
+    description: >
+      Bulk update multiple affects at once.
+    params:
+      affects:
+        type: array
+        required: true
+        items:
+          type: object
+        description: "List of affect objects to update (must include uuid and updated_dt)"
+      dry_run:
+        type: boolean
+        default: true
+        description: "Preview without updating (default true)"
+
+  - name: osidb_affect_bulk_delete
+    description: >
+      Bulk delete multiple affects at once.
+    params:
+      affect_ids:
+        type: array
+        required: true
+        items:
+          type: string
+        description: "List of affect UUIDs to delete"
+      dry_run:
+        type: boolean
+        default: true
+        description: "Preview without deleting (default true)"
+
+  # ── Affect CVSS Scores (deferred) ───────────────────────────────────────
+  - name: osidb_affect_cvss_scores
+    access: read
+    description: >
+      List CVSS scores on an affect.
+    params:
+      affect_id:
+        type: string
+        required: true
+        description: "Affect UUID"
+      limit:
+        type: integer
+        default: 50
+        description: "Max results"
+      offset:
+        type: integer
+        description: "Pagination offset"
+
+  - name: osidb_affect_cvss_score_add
+    description: >
+      Add a CVSS score to an affect. Score is auto-computed from the
+      vector.
+    params:
+      affect_id:
+        type: string
+        required: true
+        description: "Affect UUID"
+      vector:
+        type: string
+        required: true
+        description: "CVSS vector string"
+      issuer:
+        type: string
+        default: "RH"
+        description: "Score issuer"
+      cvss_version:
+        type: string
+        default: "V3"
+        description: "CVSS version"
+      comment:
+        type: string
+        description: "Comment on the score"
+      embargoed:
+        type: boolean
+        description: "Override embargo status"
+      dry_run:
+        type: boolean
+        default: true
+        description: "Preview without adding (default true)"
+
+  - name: osidb_affect_cvss_score_delete
+    description: >
+      Delete a CVSS score from an affect.
+    params:
+      affect_id:
+        type: string
+        required: true
+        description: "Affect UUID"
+      score_id:
+        type: string
+        required: true
+        description: "CVSS score UUID"
+      dry_run:
+        type: boolean
+        default: true
+        description: "Preview without deleting (default true)"
+
+  # ── Tracker Get/Create/Update/Suggest (deferred) ────────────────────────
+  - name: osidb_tracker_get
+    access: read
+    description: >
+      Retrieve a tracker by UUID.
+    params:
+      tracker_id:
+        type: string
+        required: true
+        description: "Tracker UUID"
+      include_fields:
+        type: array
+        items:
+          type: string
+        description: "Only return these fields"
+      exclude_fields:
+        type: array
+        items:
+          type: string
+        description: "Exclude these fields"
+
+  - name: osidb_tracker_create
+    description: >
+      File trackers for flaws. POSTs flaw UUIDs to the file endpoint,
+      which creates bug-tracking tickets for all filedable affects.
+    params:
+      flaw_uuids:
+        type: array
+        required: true
+        items:
+          type: string
+        description: "List of flaw UUIDs to file trackers for"
+      dry_run:
+        type: boolean
+        default: true
+        description: "Preview without filing (default true)"
+
+  - name: osidb_tracker_update
+    description: >
+      Update a tracker. Auto-fetches for optimistic locking.
+    params:
+      tracker_id:
+        type: string
+        required: true
+        description: "Tracker UUID"
+      fields:
+        type: object
+        required: true
+        description: "Fields to update"
+      dry_run:
+        type: boolean
+        default: true
+        description: "Preview without updating (default true)"
+
+  - name: osidb_tracker_suggest
+    access: read
+    description: >
+      Get tracker filing suggestions for flaws. POSTs flaw UUIDs to the
+      file endpoint and returns streams/components where trackers can be filed.
+    params:
+      flaw_uuids:
+        type: array
+        required: true
+        items:
+          type: string
+        description: "List of flaw UUIDs"
+      exclude_existing:
+        type: boolean
+        default: false
+        description: "Exclude streams that already have trackers"
+
+  # ── Global Labels (deferred) ────────────────────────────────────────────
+  - name: osidb_label_list
+    access: read
+    description: >
+      List all available global labels (read-only).
+    params:
+      limit:
+        type: integer
+        description: "Max results"
+      offset:
+        type: integer
+        description: "Pagination offset"
+
+  - name: osidb_label_get
+    access: read
+    description: >
+      Retrieve a global label by UUID (read-only).
+    params:
+      label_id:
+        type: string
+        required: true
+        description: "Label UUID"
+
+setup:
+  credentials:
+    OSIDB_URL:
+      description: "OSIDB instance URL"
+      example: "https://osidb.example.com"
+      secret: false
+    OSIDB_AUTH_TYPE:
+      description: "Authentication type: auto, kerberos, or token"
+      example: "auto"
+      secret: false
+    OSIDB_TOKEN:
+      description: "OSIDB Bearer token (only needed for token auth)"
+      secret: true
+  variants:
+    kerberos:
+      label: "Kerberos"
+      description: "Authenticate using existing Kerberos ticket (kinit)"
+      required: [OSIDB_URL]
+    token:
+      label: "Bearer Token"
+      description: "Authenticate using a pre-obtained Bearer token"
+      required: [OSIDB_URL, OSIDB_TOKEN]
+  validation_tool: osidb_status
+  post_setup_message: "Restart the MCP server to apply changes."
