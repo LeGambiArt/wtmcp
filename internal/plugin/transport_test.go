@@ -7,12 +7,18 @@ import (
 	"errors"
 	"io"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/LeGambiArt/wtmcp/internal/protocol"
 	"github.com/LeGambiArt/wtmcp/internal/proxy"
 )
+
+// writerFunc adapts a function to io.Writer.
+type writerFunc func([]byte) (int, error)
+
+func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
 
 // mockServiceHandler implements ServiceHandler for testing.
 type mockServiceHandler struct {
@@ -397,22 +403,62 @@ func TestReadLoopOrphanedToolResult(t *testing.T) {
 
 func TestSendAndWaitReturnsResponse(t *testing.T) {
 	// Verify SendAndWait returns a normal response with context.Background().
+	// The response is fed only once the request has been written, which
+	// guarantees SendAndWait registered its pending entry first. Feeding it
+	// earlier lets ReadLoop consume it first and report an orphaned
+	// tool_result, which closes the transport and fails the test on slow
+	// (CI) runners.
 	resp := protocol.Message{ID: "req-1", Type: protocol.TypeToolResult, Result: json.RawMessage(`{"ok":true}`)}
 	data, _ := json.Marshal(resp)
 
-	pluginStdout := strings.NewReader(string(data) + "\n")
-	var pluginStdin bytes.Buffer
-	tr := NewTransport(&pluginStdin, pluginStdout, strings.NewReader(""), 1024*1024)
+	pr, pw := io.Pipe()
+	t.Cleanup(func() { _ = pw.Close() })
 
-	go tr.ReadLoop("test", 1, &mockServiceHandler{})
+	requestSent := make(chan struct{})
+	var once sync.Once
+	var stdin bytes.Buffer
+	stdinWriter := writerFunc(func(p []byte) (int, error) {
+		n, err := stdin.Write(p)
+		once.Do(func() { close(requestSent) })
+		return n, err
+	})
 
-	got, err := tr.SendAndWait(context.Background(), "req-1", protocol.Message{Type: protocol.TypeToolCall})
-	if err != nil {
-		t.Fatalf("SendAndWait returned error: %v", err)
+	tr := NewTransport(stdinWriter, pr, strings.NewReader(""), 1024*1024)
+	readDone := make(chan struct{})
+	go func() {
+		tr.ReadLoop("test", 1, &mockServiceHandler{})
+		close(readDone)
+	}()
+
+	type result struct {
+		msg protocol.Message
+		err error
 	}
-	if got.Type != protocol.TypeToolResult {
-		t.Errorf("Type = %q, want %q", got.Type, protocol.TypeToolResult)
+	resCh := make(chan result, 1)
+	go func() {
+		got, err := tr.SendAndWait(context.Background(), "req-1", protocol.Message{Type: protocol.TypeToolCall})
+		resCh <- result{msg: got, err: err}
+	}()
+
+	<-requestSent
+	if _, err := pw.Write(append(data, '\n')); err != nil {
+		t.Fatalf("write response: %v", err)
 	}
+
+	select {
+	case r := <-resCh:
+		if r.err != nil {
+			t.Fatalf("SendAndWait returned error: %v", r.err)
+		}
+		if r.msg.Type != protocol.TypeToolResult {
+			t.Errorf("Type = %q, want %q", r.msg.Type, protocol.TypeToolResult)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("SendAndWait did not return within 5s")
+	}
+
+	_ = pw.Close()
+	<-readDone
 }
 
 func TestSendAndWaitTimeout(t *testing.T) {
