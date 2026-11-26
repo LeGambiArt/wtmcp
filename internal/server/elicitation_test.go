@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -384,6 +387,139 @@ func TestElicitation_ParamsScrubbed(t *testing.T) {
 	}
 }
 
+func TestElicitation_MetaToolParamsAttached(t *testing.T) {
+	tools := []plugin.ToolDef{
+		{Name: "test_write", Description: "Write tool", Access: "write"},
+	}
+	srv := elicitTestServer(true, tools)
+	session := &mockElicitSession{action: mcp.ElicitationResponseActionAccept}
+	ctx := srv.WithContext(context.Background(), session)
+
+	fullBody := strings.Repeat("x", 4000)
+	callToolWithArgs(ctx, srv, "test_write", map[string]any{
+		"repo": "org/repo",
+		"comments": []any{map[string]any{
+			"path": "src/file.go", "line": 42, "body": fullBody, "token": "super-secret-value",
+		}},
+	})
+
+	req := session.lastReq
+	if req.Params.Meta == nil {
+		t.Fatal("structured params attachment expected in _meta")
+	}
+	confirmation, ok := req.Params.Meta.AdditionalFields["tool_call_confirmation"].(map[string]any)
+	if !ok {
+		t.Fatalf("tool_call_confirmation expected, got: %#v", req.Params.Meta.AdditionalFields)
+	}
+	if confirmation["tool_name"] != "test_write" {
+		t.Errorf("tool_name expected, got: %v", confirmation["tool_name"])
+	}
+	// The attachment carries the FULL scrubbed parameters — the body
+	// truncated in the message summary must be intact here.
+	arguments, err := json.Marshal(confirmation["arguments"])
+	if err != nil {
+		t.Fatalf("marshal arguments: %v", err)
+	}
+	if !strings.Contains(string(arguments), fullBody) {
+		t.Error("full body must be present in the structured attachment")
+	}
+	if strings.Contains(string(arguments), "super-secret-value") {
+		t.Error("nested token must be scrubbed in the attachment too")
+	}
+	if !strings.Contains(string(arguments), "[REDACTED]") {
+		t.Error("scrubbed token must render as [REDACTED] in the attachment")
+	}
+	// The message summary stays bounded and truncated.
+	if strings.Contains(req.Params.Message, fullBody) {
+		t.Error("message summary must not carry the full body")
+	}
+	// Wire format: the attachment must embed as a JSON object, not a
+	// double-encoded string, and survive the request's own marshaling.
+	wire, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	if !strings.Contains(string(wire), `"arguments":{"`) {
+		t.Errorf("arguments must embed as a JSON object on the wire, got: %s", wire)
+	}
+	if !strings.Contains(string(wire), `"version":1`) {
+		t.Errorf("attachment must carry its version, got: %s", wire)
+	}
+}
+
+func TestElicitation_MetaOmittedForHugeParams(t *testing.T) {
+	tools := []plugin.ToolDef{
+		{Name: "test_write", Description: "Write tool", Access: "write"},
+	}
+	srv := elicitTestServer(true, tools)
+	session := &mockElicitSession{action: mcp.ElicitationResponseActionAccept}
+	ctx := srv.WithContext(context.Background(), session)
+
+	callToolWithArgs(ctx, srv, "test_write", map[string]any{
+		"repo": "org/repo",
+		"body": strings.Repeat("y", 2<<20),
+	})
+
+	req := session.lastReq
+	if req.Params.Meta == nil {
+		t.Fatal("a tombstone must be attached beyond the size cap")
+	}
+	confirmation, ok := req.Params.Meta.AdditionalFields["tool_call_confirmation"].(map[string]any)
+	if !ok {
+		t.Fatalf("tool_call_confirmation expected, got: %#v", req.Params.Meta.AdditionalFields)
+	}
+	if confirmation["omitted"] != "size_exceeded" {
+		t.Errorf("size-exceeded tombstone expected, got: %#v", confirmation)
+	}
+	if _, has := confirmation["arguments"]; has {
+		t.Error("arguments must not be attached beyond the cap")
+	}
+	if !strings.Contains(req.Params.Message, "org/repo") {
+		t.Error("message summary must still render")
+	}
+}
+
+func TestElicitation_CompositeParamsBounded(t *testing.T) {
+	tools := []plugin.ToolDef{
+		{Name: "test_write", Description: "Write tool", Access: "write"},
+	}
+	srv := elicitTestServer(true, tools)
+	session := &mockElicitSession{action: mcp.ElicitationResponseActionAccept}
+	ctx := srv.WithContext(context.Background(), session)
+
+	comments := make([]map[string]any, 3)
+	for i := range comments {
+		comments[i] = map[string]any{
+			"path":  fmt.Sprintf("src/file%d.go", i),
+			"line":  100 + i,
+			"body":  strings.Repeat("x", 4000),
+			"token": "super-secret-value",
+		}
+	}
+	callToolWithArgs(ctx, srv, "test_write", map[string]any{
+		"repo":      "org/repo",
+		"pr_number": 42,
+		"comments":  comments,
+	})
+
+	msg := session.lastReq.Params.Message
+	if len(msg) > 4096 {
+		t.Errorf("message must stay bounded, got %d bytes:\n%s", len(msg), msg)
+	}
+	if !strings.Contains(msg, "org/repo") {
+		t.Errorf("routing scalars must be visible, got: %s", msg)
+	}
+	if !strings.Contains(msg, "[3 items,") {
+		t.Errorf("item count must be stated, got: %s", msg)
+	}
+	if strings.Contains(msg, "super-secret-value") {
+		t.Errorf("nested token must be scrubbed, got: %s", msg)
+	}
+	if !strings.Contains(msg, "[REDACTED]") {
+		t.Errorf("nested token must render as [REDACTED], got: %s", msg)
+	}
+}
+
 func TestElicitation_ScrubberNoOverRedaction(t *testing.T) {
 	tools := []plugin.ToolDef{
 		{Name: "test_write", Description: "Write tool", Access: "write"},
@@ -443,8 +579,11 @@ func TestTruncateJSON_Long(t *testing.T) {
 func TestTruncateJSON_Invalid(t *testing.T) {
 	input := json.RawMessage(`not-json`)
 	result := truncateJSON(input, 500)
-	if result != "not-json" {
-		t.Errorf("invalid JSON should pass through, got: %s", result)
+	if result != "[unparseable value, 8 bytes total]" {
+		t.Errorf("invalid JSON must render as an anomaly marker, got: %s", result)
+	}
+	if strings.ContainsAny(result, "\n\r") {
+		t.Errorf("fallback must stay single-line, got: %s", result)
 	}
 }
 
@@ -608,6 +747,375 @@ func TestFormatElicitParams_EmptyParams(t *testing.T) {
 	}
 }
 
+func TestFormatElicitParams_CompositeArrayBounded(t *testing.T) {
+	sentinel := "DEEP-SENTINEL-SHOULD-NOT-APPEAR"
+	bodies := make([]map[string]any, 3)
+	for i := range bodies {
+		bodies[i] = map[string]any{
+			"path": fmt.Sprintf("src/file%d.go", i),
+			"line": 100 + i,
+			"body": fmt.Sprintf("opening text %d ", i) + strings.Repeat("x", 5000) + sentinel,
+		}
+	}
+	commentsRaw, _ := json.Marshal(bodies)
+	data, _ := json.Marshal(map[string]any{
+		"dry_run":   false,
+		"repo":      "org/repo",
+		"pr_number": 42,
+		"comments":  bodies,
+	})
+	result := formatElicitParams(data, 500)
+
+	if len(result) > 1000 {
+		t.Errorf("output must stay bounded, got %d bytes:\n%s", len(result), result)
+	}
+	for _, s := range []string{"org/repo", "42", "false"} {
+		if !strings.Contains(result, s) {
+			t.Errorf("routing value %q must be fully visible, got:\n%s", s, result)
+		}
+	}
+	for i := 0; i < 3; i++ {
+		if !strings.Contains(result, fmt.Sprintf("opening text %d", i)) {
+			t.Errorf("item %d gist must be visible, got:\n%s", i, result)
+		}
+		if !strings.Contains(result, fmt.Sprintf("src/file%d.go", i)) {
+			t.Errorf("item %d path must be fully visible, got:\n%s", i, result)
+		}
+	}
+	if strings.Contains(result, sentinel) {
+		t.Error("truncated content must be absent from output")
+	}
+	if !strings.Contains(result, fmt.Sprintf("[3 items, %d bytes total]", len(commentsRaw))) {
+		t.Errorf("field marker must state item count and raw byte total, got:\n%s", result)
+	}
+	idx := func(s string) int { return strings.Index(result, s) }
+	if idx(`"dry_run"`) >= idx(`"pr_number"`) || idx(`"pr_number"`) >= idx(`"repo"`) || idx(`"repo"`) >= idx(`"comments"`) {
+		t.Errorf("ordering must be dry_run < routing < content, got:\n%s", result)
+	}
+	if !utf8.ValidString(result) {
+		t.Error("result must be valid UTF-8")
+	}
+}
+
+func TestFormatElicitParams_ScalarArrayRoutingFull(t *testing.T) {
+	addr := func(domain string) string { return strings.Repeat("a", 200) + "@" + domain }
+	data, _ := json.Marshal(map[string]any{
+		"cc":   []string{addr("safe.example.com"), addr("evil.example.com")},
+		"body": "short body",
+	})
+	result := formatElicitParams(data, 100)
+
+	if !strings.Contains(result, "@safe.example.com") {
+		t.Error("first address must be fully visible (no mid-element truncation)")
+	}
+	if !strings.Contains(result, "@evil.example.com") {
+		t.Error("second address must be fully visible (no mid-element truncation)")
+	}
+	if !strings.Contains(result, "[2 items,") {
+		t.Error("array must state its item count")
+	}
+}
+
+func TestFormatElicitParams_ItemCountCap(t *testing.T) {
+	items := make([]map[string]any, 200)
+	for i := range items {
+		items[i] = map[string]any{"id": i, "body": fmt.Sprintf("item %d ", i) + strings.Repeat("y", 200)}
+	}
+	data, err := json.Marshal(map[string]any{"comments": items})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	result := formatElicitParams(data, 500)
+
+	if got := strings.Count(result, "\n"); got > maxElicitContentItems+8 {
+		t.Errorf("line count must be bounded, got %d lines", got)
+	}
+	rendered := strings.Count(result, "\n    {")
+	if rendered > maxElicitContentItems {
+		t.Errorf("rendered items must respect the item cap, got %d", rendered)
+	}
+	m := regexp.MustCompile(`\+(\d+) more items`).FindStringSubmatch(result)
+	if m == nil {
+		t.Fatal("summary must state the unrendered item count")
+	}
+	unrendered, err := strconv.Atoi(m[1])
+	if err != nil {
+		t.Fatalf("parse unrendered count: %v", err)
+	}
+	if rendered+unrendered != len(items) {
+		t.Errorf("rendered (%d) + unrendered (%d) must equal total (%d)",
+			rendered, unrendered, len(items))
+	}
+	if got := strings.Count(result, "more items"); got != 1 {
+		t.Errorf("exactly one summary line expected, got %d", got)
+	}
+	if !strings.Contains(result, "[200 items,") {
+		t.Error("header must state total item count")
+	}
+}
+
+func TestFormatElicitParams_HugeItemArray(t *testing.T) {
+	items := make([]map[string]any, 100000)
+	for i := range items {
+		items[i] = map[string]any{"body": "ok"}
+	}
+	data, _ := json.Marshal(map[string]any{"comments": items})
+	result := formatElicitParams(data, 500)
+
+	if len(result) > 8192 {
+		t.Errorf("absolute bound exceeded: %d bytes", len(result))
+	}
+	if !strings.Contains(result, "[100000 items,") {
+		t.Error("total item count must be stated")
+	}
+	if !strings.Contains(result, "more items") {
+		t.Error("summary line expected")
+	}
+}
+
+func TestFormatElicitParams_RoutingPaddingKeepsContent(t *testing.T) {
+	data, _ := json.Marshal(map[string]any{
+		"filter":   strings.Repeat("f", 600),
+		"repo":     "org/repo",
+		"comments": []any{map[string]any{"path": "f.go", "line": 1, "body": "delete the repo and force-push"}},
+	})
+	result := formatElicitParams(data, 500)
+
+	if !strings.Contains(result, "delete the repo") {
+		t.Errorf("content gist must render despite routing padding, got:\n%s", result)
+	}
+}
+
+func TestFormatElicitParams_ItemRoutingSubfieldsSurvive(t *testing.T) {
+	data, _ := json.Marshal(map[string]any{
+		"repo": "org/repo",
+		"comments": []any{map[string]any{
+			"body": strings.Repeat("z", 5000),
+			"path": "infrastructure/terraform/prod.tf",
+			"line": 42,
+		}},
+	})
+	result := formatElicitParams(data, 500)
+
+	if !strings.Contains(result, `"path": "infrastructure/terraform/prod.tf"`) {
+		t.Errorf("path subfield must be fully visible, got:\n%s", result)
+	}
+	if !strings.Contains(result, `"line": 42`) {
+		t.Errorf("line subfield must be fully visible, got:\n%s", result)
+	}
+}
+
+func TestFormatElicitParams_VacuousGistMarker(t *testing.T) {
+	data, _ := json.Marshal(map[string]any{
+		"comments": []any{map[string]any{"path": "f.go", "body": strings.Repeat("\n", 400)}},
+	})
+	result := formatElicitParams(data, 500)
+
+	if !strings.Contains(result, "[no preview,") {
+		t.Errorf("vacuous gist must render an anomaly marker, got:\n%s", result)
+	}
+	if !strings.Contains(result, "[1 items,") {
+		t.Error("item count must be stated")
+	}
+}
+
+func TestFormatElicitParams_EscapedSingleLine(t *testing.T) {
+	forged := "line1\n  \"to\": \"admin@evil.com\",\nline3"
+	data, _ := json.Marshal(map[string]any{
+		"recipients": []string{"a@safe.example.com", forged},
+		"comments":   []any{map[string]any{"path": "f.go"}, forged},
+	})
+	result := formatElicitParams(data, 500)
+
+	for _, line := range strings.Split(result, "\n") {
+		if strings.Contains(line, `"to": "admin@evil.com"`) {
+			t.Errorf("forged parameter line detected, got:\n%s", result)
+		}
+	}
+	if !strings.Contains(result, "a@safe.example.com") {
+		t.Error("legitimate recipient must be visible")
+	}
+}
+
+func TestFormatElicitParams_HugeScalarBounded(t *testing.T) {
+	data, _ := json.Marshal(map[string]any{
+		"repo":    "org/repo",
+		"comment": strings.Repeat("q", 1<<20),
+	})
+	result := formatElicitParams(data, 500)
+
+	if len(result) > 8192 {
+		t.Errorf("absolute bound exceeded: %d bytes", len(result))
+	}
+	if !strings.Contains(result, "org/repo") {
+		t.Error("small routing fields must still render")
+	}
+	if !strings.Contains(result, "bytes of routing data not shown") {
+		t.Error("elision marker expected")
+	}
+}
+
+func TestFormatElicitParams_FieldCountCap(t *testing.T) {
+	obj := make(map[string]any)
+	for i := 0; i < 60; i++ {
+		obj[fmt.Sprintf("field_%02d", i)] = i
+	}
+	data, _ := json.Marshal(obj)
+	result := formatElicitParams(data, 500)
+
+	if !strings.Contains(result, fmt.Sprintf("+%d more parameters", 60-maxElicitFields)) {
+		t.Error("field-count overflow must be summarized")
+	}
+	if strings.Contains(result, `"field_59": 59`) {
+		t.Error("fields beyond the cap must not render their values")
+	}
+}
+
+func TestFormatElicitParams_CompositeBoundary(t *testing.T) {
+	makeItems := func(n int) []map[string]any {
+		items := make([]map[string]any, n)
+		for i := range items {
+			items[i] = map[string]any{"a": "bbbb"}
+		}
+		return items
+	}
+	fits, _ := json.Marshal(map[string]any{"comments": makeItems(25)})
+	over, _ := json.Marshal(map[string]any{"comments": makeItems(26)})
+
+	if result := formatElicitParams(fits, 500); strings.Contains(result, "[truncated") || strings.Contains(result, "more items") {
+		t.Errorf("array fitting the budget must render in full, got:\n%s", result)
+	}
+	if result := formatElicitParams(over, 500); !strings.Contains(result, "more items") {
+		t.Errorf("array over the budget must summarize, got:\n%s", result)
+	}
+}
+
+func TestFormatElicitParams_SingleHugeItem(t *testing.T) {
+	data, _ := json.Marshal(map[string]any{
+		"comments": []any{map[string]any{"body": strings.Repeat("w", 5000)}},
+	})
+	result := formatElicitParams(data, 500)
+
+	if !strings.Contains(result, "[1 items,") {
+		t.Error("single item count must be stated")
+	}
+	if len(result) > 1000 {
+		t.Errorf("single huge item must be bounded, got %d bytes", len(result))
+	}
+	if !strings.Contains(result, "[truncated]") {
+		t.Error("the huge body must carry its own truncation marker")
+	}
+}
+
+func TestFormatElicitParams_OversizedStringArray(t *testing.T) {
+	items := make([]string, 100)
+	for i := range items {
+		items[i] = fmt.Sprintf("recipient-%03d@example.com", i)
+	}
+	data, _ := json.Marshal(map[string]any{"cc": items})
+	result := formatElicitParams(data, 500)
+
+	if !strings.Contains(result, "recipient-000@example.com") {
+		t.Error("first items must render")
+	}
+	if !strings.Contains(result, fmt.Sprintf("+%d more items", 100-maxElicitRoutingItems)) {
+		t.Error("item cap must summarize the rest")
+	}
+	if len(result) > 8192 {
+		t.Errorf("bounded output expected, got %d bytes", len(result))
+	}
+}
+
+func TestFormatElicitParams_MixedItemArray(t *testing.T) {
+	data, _ := json.Marshal(map[string]any{
+		"comments": []any{"plain string", map[string]any{"k": "v"}, 5, nil},
+	})
+	result := formatElicitParams(data, 500)
+
+	if !utf8.ValidString(result) {
+		t.Errorf("result must be valid UTF-8: %q", result)
+	}
+	for _, s := range []string{"plain string", `{"k":"v"}`, "null"} {
+		if !strings.Contains(result, s) {
+			t.Errorf("%s must be visible, got:\n%s", s, result)
+		}
+	}
+}
+
+func TestFormatElicitParams_EmptyComposites(t *testing.T) {
+	data, _ := json.Marshal(map[string]any{"labels": []string{}, "config": map[string]any{}})
+	result := formatElicitParams(data, 500)
+
+	if strings.Contains(result, "truncated") || strings.Contains(result, "more items") {
+		t.Errorf("empty composites must not produce markers, got:\n%s", result)
+	}
+	if !strings.Contains(result, "[]") || !strings.Contains(result, "{}") {
+		t.Errorf("empty values must render, got:\n%s", result)
+	}
+}
+
+func TestFormatElicitParams_GistUTF8Boundary(t *testing.T) {
+	data, _ := json.Marshal(map[string]any{
+		"comments": []any{map[string]any{"body": strings.Repeat("あ", 200)}},
+	})
+	result := formatElicitParams(data, 500)
+
+	if !utf8.ValidString(result) {
+		t.Errorf("result must be valid UTF-8: %q", result)
+	}
+	if !strings.Contains(result, "[truncated]") {
+		t.Error("truncation expected")
+	}
+}
+
+func TestFormatElicitParams_NestedRedactionPreserved(t *testing.T) {
+	data, _ := json.Marshal(map[string]any{
+		"comments": []any{map[string]any{
+			"token": "[REDACTED]",
+			"body":  "visible gist of the comment",
+		}},
+	})
+	result := formatElicitParams(data, 500)
+
+	if !strings.Contains(result, "[REDACTED]") {
+		t.Errorf("scrubbed value must survive rendering, got:\n%s", result)
+	}
+}
+
+func TestFormatElicitParams_BidiStripped(t *testing.T) {
+	data, _ := json.Marshal(map[string]any{
+		"to": "user\u202e@safe.com@evil.com",
+	})
+	result := formatElicitParams(data, 500)
+
+	if strings.ContainsRune(result, 0x202e) {
+		t.Error("bidi override must be stripped from the confirmation message")
+	}
+	if !strings.Contains(result, "safe.com") {
+		t.Error("routing value must remain visible")
+	}
+}
+
+func TestFormatElicitParams_ZeroBudget(t *testing.T) {
+	data, _ := json.Marshal(map[string]any{
+		"comments": []any{
+			map[string]any{"path": "f.go", "body": "first item gist"},
+			map[string]any{"path": "g.go", "body": "second item"},
+		},
+	})
+	result := formatElicitParams(data, 0)
+
+	if !strings.Contains(result, "first item gist") {
+		t.Errorf("zero budget must still render the first item's one-liner, got:\n%s", result)
+	}
+	if strings.Contains(result, "second item") {
+		t.Error("only the first item may render at zero budget")
+	}
+	if !strings.Contains(result, "[2 items,") {
+		t.Error("item count must be stated")
+	}
+}
+
 // --- dry_run confirmation skip tests ---
 
 var dryRunTools = []plugin.ToolDef{
@@ -767,5 +1275,544 @@ func TestElicitation_StrictAllowsReadTools(t *testing.T) {
 	}
 	if strings.Contains(text, "elicitation") {
 		t.Errorf("read tools should not be affected by strict mode, got: %s", text)
+	}
+}
+
+// --- aggregate content bound and exit ceiling ---
+
+func TestFormatElicitParams_ManySubfieldsBounded(t *testing.T) {
+	item := make(map[string]any, 10000)
+	for i := 0; i < 10000; i++ {
+		item[fmt.Sprintf("subfield_%05d", i)] = fmt.Sprintf("value %d ", i) + strings.Repeat("x", 200)
+	}
+	data, err := json.Marshal(map[string]any{"comments": []any{item}})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	result := formatElicitParams(data, 1000)
+
+	if len(result) > maxElicitMessageBytes {
+		t.Errorf("key-count shapes must respect the absolute ceiling, got %d bytes", len(result))
+	}
+	if !strings.Contains(result, "more keys") {
+		t.Errorf("key-cap overflow must be summarized with a more-keys marker, got:\n%s", result)
+	}
+	if !strings.Contains(result, "[1 items,") {
+		t.Error("header must state the item count")
+	}
+}
+
+func TestFormatElicitParams_ManyContentKeysBounded(t *testing.T) {
+	obj := make(map[string]any, 10000)
+	for i := 0; i < 10000; i++ {
+		obj[fmt.Sprintf("content_%05d", i)] = []any{map[string]any{"path": "f.go", "body": "gist text"}}
+	}
+	data, err := json.Marshal(obj)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	result := formatElicitParams(data, 1000)
+
+	if len(result) > maxElicitMessageBytes {
+		t.Errorf("content-key-count shapes must respect the absolute ceiling, got %d bytes", len(result))
+	}
+	if !strings.Contains(result, "more content fields") {
+		t.Errorf("content-field elision must be summarized, got:\n%s", result)
+	}
+}
+
+func TestFormatElicitParams_HugeKeyNamesBounded(t *testing.T) {
+	hugeKey := strings.Repeat("k", 10*1024)
+	data, err := json.Marshal(map[string]any{
+		hugeKey:             []any{map[string]any{"path": "f.go"}},
+		hugeKey + "-second": "routing value",
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	result := formatElicitParams(data, 1000)
+
+	if len(result) > maxElicitMessageBytes {
+		t.Errorf("huge key names must respect the absolute ceiling, got %d bytes", len(result))
+	}
+	if strings.Contains(result, strings.Repeat("k", elicitKeyLen+1)) {
+		t.Errorf("rendered key names must be truncated to elicitKeyLen escaped bytes, got:\n%s", result)
+	}
+}
+
+func TestFormatElicitParams_SingleFieldBudgetClip(t *testing.T) {
+	// One content field whose items x keys x gist-floor arithmetic
+	// far exceeds the section cap: the field must render within its
+	// budget instead of scaling with the input.
+	items := make([]any, 200)
+	for i := range items {
+		item := make(map[string]any, 40)
+		for j := 0; j < 40; j++ {
+			item[fmt.Sprintf("sub_%02d", j)] = fmt.Sprintf("text %d/%d ", i, j) + strings.Repeat("y", 150)
+		}
+		items[i] = item
+	}
+	data, err := json.Marshal(map[string]any{"comments": items})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	result := formatElicitParams(data, 1000)
+
+	if len(result) > maxElicitMessageBytes {
+		t.Errorf("single-field amplification must be bounded, got %d bytes", len(result))
+	}
+	if !strings.Contains(result, "more items") {
+		t.Errorf("item elision must be summarized, got:\n%s", result)
+	}
+	if !strings.Contains(result, "more keys") {
+		t.Errorf("per-item key elision must be summarized, got:\n%s", result)
+	}
+}
+
+func TestBoundMessage(t *testing.T) {
+	small := strings.Repeat("a\n", 100)
+	if got := boundMessage(small); got != small {
+		t.Error("messages under the ceiling must pass through unchanged")
+	}
+
+	big := "  \"k\": " + strings.Repeat("a\n", maxElicitMessageBytes) + "}"
+	got := boundMessage(big)
+	if len(got) > maxElicitMessageBytes {
+		t.Errorf("ceiling must hold including the marker, got %d bytes", len(got))
+	}
+	if !strings.Contains(got, fmt.Sprintf("[message truncated, %d bytes total]", len(big))) {
+		t.Error("truncation marker must state the original size")
+	}
+	lines := strings.Split(got, "\n")
+	last := lines[len(lines)-1]
+	if !strings.HasPrefix(last, "[message truncated,") {
+		t.Errorf("marker must sit on its own line after a complete line, got %q", last)
+	}
+}
+
+func TestFormatElicitParams_SectionsStayBelowExitCeiling(t *testing.T) {
+	// Layering: adversarial input that the per-section caps handle
+	// must not reach the exit truncation — the ceiling is a backstop
+	// for section-cap regressions, not a rendering stage.
+	obj := make(map[string]any)
+	for i := 0; i < 40; i++ {
+		obj[fmt.Sprintf("pad_%02d", i)] = strings.Repeat("r", 400)
+	}
+	for i := 0; i < 300; i++ {
+		obj[fmt.Sprintf("content_%03d", i)] = []any{
+			map[string]any{"path": "f.go", "body": strings.Repeat("z", 300)},
+		}
+	}
+	data, err := json.Marshal(obj)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	result := formatElicitParams(data, 100000)
+
+	if len(result) > maxElicitMessageBytes {
+		t.Errorf("absolute ceiling must hold, got %d bytes", len(result))
+	}
+	if strings.Contains(result, "[message truncated,") {
+		t.Errorf("section caps must keep this input below the exit ceiling, got:\n%s", result)
+	}
+}
+
+func TestFormatElicitParams_ItemKeyCapBoundary(t *testing.T) {
+	// Scalar values sized so the compact render exceeds the field
+	// budget and the one-liner path (where the key cap applies) runs.
+	atCap := make(map[string]any, elicitItemKeys)
+	for i := 0; i < elicitItemKeys; i++ {
+		atCap[fmt.Sprintf("k%02d", i)] = fmt.Sprintf("v%02d", i) + strings.Repeat("x", 60)
+	}
+	data, err := json.Marshal(map[string]any{"comments": []any{atCap}})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	result := formatElicitParams(data, 1000)
+	if strings.Contains(result, "more keys") {
+		t.Errorf("exactly elicitItemKeys keys must all render, got:\n%s", result)
+	}
+
+	over := make(map[string]any, elicitItemKeys+1)
+	for k, v := range atCap {
+		over[k] = v
+	}
+	over["extra"] = "value"
+	data, err = json.Marshal(map[string]any{"comments": []any{over}})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	result = formatElicitParams(data, 1000)
+	if !strings.Contains(result, fmt.Sprintf("+%d more keys", 1)) {
+		t.Errorf("one key past the cap must be summarized, got:\n%s", result)
+	}
+	if !strings.Contains(result, "extra") {
+		t.Error("the dropped key must be named in the more-keys marker")
+	}
+}
+
+func TestFormatElicitParams_ContentFieldCapBoundary(t *testing.T) {
+	atCap := make(map[string]any, maxElicitContentFields)
+	for i := 0; i < maxElicitContentFields; i++ {
+		atCap[fmt.Sprintf("c%02d", i)] = []any{map[string]any{"p": i}}
+	}
+	data, err := json.Marshal(atCap)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	result := formatElicitParams(data, 100000)
+	if strings.Contains(result, "more content fields") {
+		t.Errorf("exactly maxElicitContentFields fields must all render, got:\n%s", result)
+	}
+
+	over := make(map[string]any, maxElicitContentFields+1)
+	for k, v := range atCap {
+		over[k] = v
+	}
+	over["extra"] = []any{map[string]any{"p": 0}}
+	data, err = json.Marshal(over)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	result = formatElicitParams(data, 100000)
+	if !strings.Contains(result, fmt.Sprintf("+%d more content fields", 1)) {
+		t.Errorf("one field past the cap must be summarized, got:\n%s", result)
+	}
+}
+
+func TestFormatElicitParams_KeyLengthBoundary(t *testing.T) {
+	// elicitKeyLen bounds the escaped form (quotes included), so a
+	// raw key of elicitKeyLen-2 bytes renders in full.
+	atCap := strings.Repeat("k", elicitKeyLen-2)
+	data, err := json.Marshal(map[string]any{atCap: 1})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	result := formatElicitParams(data, 1000)
+	if !strings.Contains(result, `"`+atCap+`"`) {
+		t.Errorf("key at the escaped cap must render in full, got:\n%s", result)
+	}
+
+	over := strings.Repeat("k", elicitKeyLen-1)
+	data, err = json.Marshal(map[string]any{over: 1})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	result = formatElicitParams(data, 1000)
+	if strings.Contains(result, `"`+over+`"`) {
+		t.Errorf("key past the escaped cap must be truncated, got:\n%s", result)
+	}
+}
+
+func FuzzFormatElicitParamsBounded(f *testing.F) {
+	f.Add(`{"a": 1}`)
+	f.Add(`{"comments": [{"path": "f.go", "body": "text"}]}`)
+	f.Add(`{"cc": ["a@x.com", "b@x.com"], "body": "hello"}`)
+	f.Add(`[1, 2, 3]`)
+	f.Add(`not json`)
+	f.Fuzz(func(t *testing.T, in string) {
+		out := formatElicitParams(json.RawMessage(in), 1000)
+		if len(out) > maxElicitMessageBytes {
+			t.Fatalf("output exceeds the absolute ceiling: %d bytes", len(out))
+		}
+		if !utf8.ValidString(out) {
+			t.Fatalf("output must be valid UTF-8: %q", out)
+		}
+		var obj map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(in), &obj); err == nil {
+			if !strings.HasPrefix(out, "{") {
+				t.Fatalf("object input must open a JSON-looking message: %q", out)
+			}
+			if !strings.HasSuffix(out, "}") && !strings.Contains(out, "[message truncated,") {
+				t.Fatalf("object input must close the message: %q", out)
+			}
+		}
+	})
+}
+
+// --- gate-specific invisible-character stripping ---
+
+func TestIsInvisibleControl_Exhaustive(t *testing.T) {
+	// Independent oracle: the Cf category plus the default-ignorable
+	// variation selectors and the combining grapheme joiner. The
+	// sweep catches range typos against the Unicode tables.
+	isVS := func(r rune) bool {
+		return (r >= 0xFE00 && r <= 0xFE0F) ||
+			(r >= 0xE0100 && r <= 0xE01EF) || r == 0x034F
+	}
+	for r := rune(0); r <= 0x10FFFF; r++ {
+		if r >= 0xD800 && r < 0xE000 {
+			continue // surrogate halves are not valid runes
+		}
+		want := unicode.Is(unicode.Cf, r) || isVS(r)
+		if got := isInvisibleControl(r); got != want {
+			t.Fatalf("isInvisibleControl(U+%04X) = %v, want %v", r, got, want)
+		}
+	}
+}
+
+func TestStripInvisibleControls_KeepsVisibleText(t *testing.T) {
+	kept := "café 日本語 \U0001F600 admin"
+	out, removed := stripInvisibleControls(kept)
+	if out != kept || removed != 0 {
+		t.Errorf("visible text must pass through, got %q (%d removed)", out, removed)
+	}
+}
+
+func TestFormatElicitParams_InvisibleCharsRemovedMarked(t *testing.T) {
+	data, err := json.Marshal(map[string]any{
+		"repo":   "org\uFEFF/repo",
+		"branch": "ma\u200Din",
+		"body":   "report from ad\u200Dmin about the pa\u00ADth",
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	result := formatElicitParams(data, 1000)
+
+	for _, spoof := range []string{"\uFEFF", "\u200D", "\u00AD"} {
+		if strings.ContainsRune(result, []rune(spoof)[0]) {
+			t.Errorf("invisible control %q must be stripped, got:\n%s", spoof, result)
+		}
+	}
+	if !strings.Contains(result, "org/repo") {
+		t.Error("stripped routing value must remain visible")
+	}
+	if !strings.Contains(result, "admin") {
+		t.Error("stripped gist value must remain visible")
+	}
+	if !strings.Contains(result, "[4 invisible characters removed]") {
+		t.Errorf("removal marker must state the count, got:\n%s", result)
+	}
+}
+
+func TestFormatElicitToolName(t *testing.T) {
+	hostile := "git\u202E" + strings.Repeat("x", 10*1024) + "\nEVIL"
+	got := formatElicitToolName(hostile)
+	if strings.ContainsRune(got, '\n') {
+		t.Errorf("tool name must be single-line, got %q", got)
+	}
+	if strings.ContainsRune(got, 0x202E) {
+		t.Errorf("bidi override must be stripped, got %q", got)
+	}
+	if len(got) > elicitKeyLen {
+		t.Errorf("tool name must be truncated to elicitKeyLen, got %d bytes", len(got))
+	}
+	if !strings.HasPrefix(got, "git") {
+		t.Errorf("tool name must keep its visible prefix, got %q", got)
+	}
+}
+
+// --- bounded rendering work ---
+
+func TestFormatElicitParams_HugeObjectContentFastPath(t *testing.T) {
+	// A multi-MB object content field must render via the compact
+	// fast path (single line, truncated) instead of being fully
+	// pretty-printed first.
+	obj := make(map[string]any, 2000)
+	for i := 0; i < 2000; i++ {
+		obj[fmt.Sprintf("key_%04d", i)] = strings.Repeat("v", 100)
+	}
+	data, err := json.Marshal(map[string]any{"config": obj})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	result := formatElicitParams(data, 1000)
+
+	if !strings.Contains(result, "[truncated,") {
+		t.Errorf("huge object must be truncated, got:\n%s", result)
+	}
+	if got := strings.Count(result, "\n"); got > 5 {
+		t.Errorf("compact fast path must render one line, got %d lines:\n%s", got, result)
+	}
+	if len(result) > maxElicitMessageBytes {
+		t.Errorf("output must respect the ceiling, got %d bytes", len(result))
+	}
+}
+
+func TestGistStringValue_BoundedWork(t *testing.T) {
+	huge := strings.Repeat("word ", 2<<20) // ~10 MB
+	data, err := json.Marshal(map[string]any{"body": []any{map[string]any{"path": "f.go", "body": huge}}})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	result := formatElicitParams(data, 1000)
+
+	if len(result) > maxElicitMessageBytes {
+		t.Errorf("huge gist must be bounded, got %d bytes", len(result))
+	}
+	if !strings.Contains(result, "[truncated]") && !strings.Contains(result, "more keys") {
+		t.Errorf("huge gist must degrade visibly, got:\n%s", result)
+	}
+}
+
+// --- routing fidelity ---
+
+func TestFormatElicitParams_ByteHeavyRoutingListPartial(t *testing.T) {
+	// A 30-address list sized just over the routing byte cap: it must
+	// degrade to first-N-addresses plus a more-items marker, not
+	// vanish from the message entirely.
+	addresses := make([]string, 30)
+	for i := range addresses {
+		addresses[i] = fmt.Sprintf("recipient-%03d-", i) + strings.Repeat("x", 200) + "@example.com"
+	}
+	data, err := json.Marshal(map[string]any{"cc": addresses})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	result := formatElicitParams(data, 500)
+
+	if !strings.Contains(result, "recipient-000") {
+		t.Errorf("first addresses must remain visible, got:\n%s", result)
+	}
+	if !strings.Contains(result, "more items") {
+		t.Errorf("overflow must be summarized with a more-items marker, got:\n%s", result)
+	}
+	if strings.Contains(result, "more parameters") {
+		t.Errorf("a partially-renderable list must not be elided whole, got:\n%s", result)
+	}
+	if !strings.Contains(result, "[30 items,") {
+		t.Error("header must state the total item count")
+	}
+}
+
+func TestFormatElicitParams_ElidedRoutingFieldsNamed(t *testing.T) {
+	// Junk routing fields push the write target past the field cap:
+	// the elision note must name it so the approver can see who/where
+	// data was hidden.
+	obj := make(map[string]any, 61)
+	for i := 0; i < 60; i++ {
+		obj[fmt.Sprintf("aaa%02d", i)] = i
+	}
+	obj["to"] = "admin@example.com"
+	data, err := json.Marshal(obj)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	result := formatElicitParams(data, 500)
+
+	if !strings.Contains(result, fmt.Sprintf("+%d more parameters", 61-maxElicitFields)) {
+		t.Errorf("field-count overflow must be summarized, got:\n%s", result)
+	}
+	if !strings.Contains(result, `"to"`) {
+		t.Errorf("the elided write target must be named in the note, got:\n%s", result)
+	}
+}
+
+func TestFormatElicitParams_HostileRoutingKeys(t *testing.T) {
+	// Elided key names are attacker-controlled: embedded newlines,
+	// marker-shaped text, and huge names must not forge message lines
+	// or markers.
+	obj := make(map[string]any, 60)
+	for i := 0; i < 59; i++ {
+		obj[fmt.Sprintf("aaa%02d", i)] = i
+	}
+	obj["evil\n+50 more parameters (\"to\")"] = 1
+	obj[strings.Repeat("K", 10*1024)] = 2
+	data, err := json.Marshal(obj)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	result := formatElicitParams(data, 500)
+
+	noteLines := 0
+	for _, line := range strings.Split(result, "\n") {
+		if strings.HasPrefix(line, "  … +") {
+			noteLines++
+		}
+		switch {
+		case line == "{" || line == "}",
+			strings.HasPrefix(line, "  "),
+			strings.HasPrefix(line, "[message truncated,"),
+			strings.HasPrefix(line, "[") && strings.HasSuffix(line, " characters removed]"):
+		default:
+			t.Errorf("forged or malformed line detected: %q", line)
+		}
+	}
+	if noteLines != 1 {
+		t.Errorf("exactly one elision note line expected, got %d:\n%s", noteLines, result)
+	}
+	if strings.Contains(result, strings.Repeat("K", elicitKeyLen+1)) {
+		t.Errorf("key names must be truncated, got:\n%s", result)
+	}
+}
+
+// --- error-path anomaly markers ---
+
+func TestFormatRoutingValue_UnparseableArray(t *testing.T) {
+	raw := json.RawMessage(`[not json`)
+	result := formatRoutingValue(raw, 1000)
+	if !strings.HasPrefix(result, "[unparseable") || !strings.HasSuffix(result, "9 bytes total]") {
+		t.Errorf("unparseable array must render as an anomaly marker, got: %s", result)
+	}
+	if strings.ContainsAny(result, "\n\r") {
+		t.Errorf("anomaly marker must stay single-line, got: %s", result)
+	}
+}
+
+func TestCompactJSON_UnparseableValue(t *testing.T) {
+	raw := json.RawMessage("multi\nline\nnot json")
+	result := compactJSON(raw)
+	if result != "[unparseable value, 19 bytes total]" {
+		t.Errorf("unparseable value must render as an anomaly marker, got: %s", result)
+	}
+	if strings.ContainsAny(result, "\n\r") {
+		t.Errorf("raw passthrough would re-open the forged-line attack, got: %s", result)
+	}
+}
+
+func TestIndentValue_UnparseableValue(t *testing.T) {
+	raw := json.RawMessage("{\nnot json")
+	result := indentValue(raw, "  ")
+	if strings.ContainsAny(result, "\n\r") {
+		t.Errorf("error fallback must be single-line-safe, got: %s", result)
+	}
+}
+
+func TestFormatElicitParams_ElisionNoteTailNames(t *testing.T) {
+	// More than 16 elided routing fields: the note names the first 8,
+	// an ellipsis, and the last 8 in sorted order — so a write target
+	// sorted among the tail stays identifiable.
+	obj := make(map[string]any, 70)
+	for i := 0; i < 69; i++ {
+		obj[fmt.Sprintf("aaa%02d", i)] = i
+	}
+	obj["to"] = "admin@example.com"
+	data, err := json.Marshal(obj)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	result := formatElicitParams(data, 500)
+
+	var note string
+	for _, line := range strings.Split(result, "\n") {
+		if strings.HasPrefix(line, "  … +") {
+			note = line
+		}
+	}
+	if note == "" {
+		t.Fatal("elision note expected")
+	}
+	elided := 70 - maxElicitFields
+	if !strings.Contains(note, fmt.Sprintf("+%d more parameters", elided)) {
+		t.Errorf("note must state the elided count, got: %s", note)
+	}
+	// Head: first 8 elided; tail: last 8 elided (aaa62..aaa68, to);
+	// the middle (aaa58..aaa61) collapses into the ellipsis.
+	for _, want := range []string{`"aaa50"`, `"aaa57"`, `"aaa62"`, `"aaa68"`, `"to"`} {
+		if !strings.Contains(note, want) {
+			t.Errorf("note must name %s, got: %s", want, note)
+		}
+	}
+	for _, gap := range []string{`"aaa58"`, `"aaa60"`} {
+		if strings.Contains(note, gap) {
+			t.Errorf("middle elided keys must collapse into the ellipsis, got: %s", note)
+		}
+	}
+	i62 := strings.Index(note, `"aaa62"`)
+	i68 := strings.Index(note, `"aaa68"`)
+	ito := strings.Index(note, `"to"`)
+	if i62 >= i68 || i68 >= ito {
+		t.Errorf("tail names must stay in sorted order, got: %s", note)
 	}
 }

@@ -14,6 +14,12 @@ var htmlCommentRE = regexp.MustCompile(`<!--[\s\S]*?-->`)
 // Cf) that can encode hidden instructions: zero-width spaces, bidi
 // overrides, tag characters, soft hyphens, etc. U+200D (zero-width
 // joiner) is preserved for emoji sequences and Indic scripts.
+//
+// The elicitation confirmation path deliberately diverges: its
+// stripper (isInvisibleControl in elicitation.go) also removes
+// U+200D and the default-ignorable variation selectors, because a
+// human approval gate needs the strictest display fidelity. Changes
+// to the invisible-character policy must be reviewed against both.
 func stripFormatChars(r rune) rune {
 	if r == '\u200d' {
 		return r
