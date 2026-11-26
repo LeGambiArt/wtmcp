@@ -25,6 +25,22 @@ FLAW_RESPONSE = {
 }
 
 
+class TestWriteIdValidation:
+    def test_flaw_update_rejects_path_traversal(self):
+        result = tools_write.flaw_update({"flaw_id": "../../admin", "fields": {"impact": "LOW"}})
+        assert "error" in result
+        assert "Invalid flaw_id" in result["error"]
+
+    def test_flaw_comment_add_rejects_bad_id(self):
+        result = tools_write.flaw_comment_add({"flaw_id": "not-valid", "text": "test"})
+        assert "error" in result
+
+    def test_affect_update_rejects_slash(self):
+        result = tools_write.affect_update({"affect_id": "foo/bar", "fields": {}})
+        assert "error" in result
+        assert "affect_id" in result["error"]
+
+
 class TestFlawCreate:
     def test_dry_run_default(self):
         result = tools_write.flaw_create(

@@ -55,6 +55,34 @@ class TestStatus:
             assert "error" in result
 
 
+class TestIdValidation:
+    def test_flaw_get_rejects_path_traversal(self):
+        result = tools_read.flaw_get({"flaw_id": "../../../../admin/secret"})
+        assert "error" in result
+        assert "Invalid flaw_id" in result["error"]
+
+    def test_flaw_get_rejects_arbitrary_string(self):
+        result = tools_read.flaw_get({"flaw_id": "not-a-valid-id"})
+        assert "error" in result
+
+    def test_flaw_comments_rejects_bad_id(self):
+        result = tools_read.flaw_comments({"flaw_id": "../../../etc/passwd"})
+        assert "error" in result
+
+    def test_affect_get_rejects_slash(self):
+        result = tools_read.affect_get({"affect_id": "foo/bar"})
+        assert "error" in result
+        assert "affect_id" in result["error"]
+
+    def test_tracker_get_rejects_dotdot(self):
+        result = tools_read.tracker_get({"tracker_id": "..secret"})
+        assert "error" in result
+
+    def test_label_get_rejects_path_traversal(self):
+        result = tools_read.label_get({"label_id": "../admin"})
+        assert "error" in result
+
+
 class TestFlawGet:
     def test_get_by_cve_id(self):
         with _mock_http(200, FLAW_RESPONSE) as mock:
@@ -149,12 +177,45 @@ class TestMyFlaws:
             assert result["summary"]["total"] == 1
 
 
+class TestMyFlawsAnalyseIncludeFields:
+    def test_analyse_ignores_include_fields(self):
+        flaw = {
+            **FLAW_RESPONSE,
+            "owner": "analyst@example.com",
+            "impact": "CRITICAL",
+            "classification": {"state": "TRIAGE", "workflow": "DEFAULT"},
+            "created_dt": "2024-01-01T00:00:00Z",
+            "labels": [{"name": "hybrid_bu", "state": "NEW", "contributor": "analyst@example.com"}],
+        }
+        list_resp = {"count": 1, "results": [flaw], "next": None, "previous": None}
+        with _mock_http(200, list_resp) as mock:
+            result = tools_read.my_flaws(
+                {
+                    "email": "analyst@example.com",
+                    "analyse": True,
+                    "include_fields": ["cve_id", "title"],
+                }
+            )
+            assert "summary" in result
+            assert result["needs_attention"][0]["impact"] == "CRITICAL"
+            query = mock.call_args[1].get("query") or mock.call_args[0][2]
+            assert "impact" in query.get("include_fields", "")
+            assert "classification" in query.get("include_fields", "")
+
+
 class TestFlawSubresources:
     def test_flaw_comments(self):
         response = {"count": 1, "results": [{"uuid": "c1", "text": "A comment"}]}
         with _mock_http(200, response):
             result = tools_read.flaw_comments({"flaw_id": "CVE-2024-1234"})
             assert result["count"] == 1
+
+    def test_subresource_default_limit(self):
+        response = {"count": 0, "results": []}
+        with _mock_http(200, response) as mock:
+            tools_read.flaw_comments({"flaw_id": "CVE-2024-1234"})
+            query = mock.call_args[1].get("query") or mock.call_args[0][2]
+            assert query["limit"] == 50
 
     def test_flaw_references(self):
         response = {"count": 0, "results": []}

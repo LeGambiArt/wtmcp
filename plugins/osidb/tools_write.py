@@ -14,6 +14,8 @@ from helpers import (
     dry_run_response,
     http_error,
     is_error,
+    validate_flaw_id,
+    validate_path_segment,
 )
 
 
@@ -104,6 +106,9 @@ def flaw_create(params):
 
 def flaw_update(params):
     flaw_id = params["flaw_id"]
+    err = validate_flaw_id(flaw_id)
+    if err:
+        return err
     fields = params.get("fields", {})
     dry_run = params.get("dry_run", True)
     if dry_run:
@@ -121,6 +126,9 @@ def flaw_update(params):
 
 def flaw_comment_add(params):
     flaw_id = params["flaw_id"]
+    err = validate_flaw_id(flaw_id)
+    if err:
+        return err
     text = params["text"]
     dry_run = params.get("dry_run", True)
     form_data = {"text": text}
@@ -141,6 +149,9 @@ def flaw_comment_add(params):
 
 def flaw_reference_add(params):
     flaw_id = params["flaw_id"]
+    err = validate_flaw_id(flaw_id)
+    if err:
+        return err
     url = params["url"]
     dry_run = params.get("dry_run", True)
     form_data = {"url": url, "type": params.get("reference_type", "EXTERNAL")}
@@ -159,6 +170,9 @@ def flaw_reference_add(params):
 def flaw_reference_update(params):
     flaw_id = params["flaw_id"]
     reference_id = params["reference_id"]
+    err = validate_flaw_id(flaw_id) or validate_path_segment(reference_id, "reference_id")
+    if err:
+        return err
     fields = params.get("fields", {})
     dry_run = params.get("dry_run", True)
     if dry_run:
@@ -178,6 +192,9 @@ def flaw_reference_update(params):
 def flaw_reference_delete(params):
     flaw_id = params["flaw_id"]
     reference_id = params["reference_id"]
+    err = validate_flaw_id(flaw_id) or validate_path_segment(reference_id, "reference_id")
+    if err:
+        return err
     dry_run = params.get("dry_run", True)
     if dry_run:
         return dry_run_response("osidb_flaw_reference_delete", flaw_id=flaw_id, reference_id=reference_id)
@@ -189,6 +206,9 @@ def flaw_reference_delete(params):
 
 def flaw_acknowledgment_add(params):
     flaw_id = params["flaw_id"]
+    err = validate_flaw_id(flaw_id)
+    if err:
+        return err
     name = params["name"]
     dry_run = params.get("dry_run", True)
     form_data = {
@@ -208,6 +228,9 @@ def flaw_acknowledgment_add(params):
 def flaw_acknowledgment_update(params):
     flaw_id = params["flaw_id"]
     ack_id = params["ack_id"]
+    err = validate_flaw_id(flaw_id) or validate_path_segment(ack_id, "ack_id")
+    if err:
+        return err
     fields = params.get("fields", {})
     dry_run = params.get("dry_run", True)
     if dry_run:
@@ -222,6 +245,9 @@ def flaw_acknowledgment_update(params):
 def flaw_acknowledgment_delete(params):
     flaw_id = params["flaw_id"]
     ack_id = params["ack_id"]
+    err = validate_flaw_id(flaw_id) or validate_path_segment(ack_id, "ack_id")
+    if err:
+        return err
     dry_run = params.get("dry_run", True)
     if dry_run:
         return dry_run_response("osidb_flaw_acknowledgment_delete", flaw_id=flaw_id, ack_id=ack_id)
@@ -233,6 +259,9 @@ def flaw_acknowledgment_delete(params):
 
 def flaw_cvss_score_add(params):
     flaw_id = params["flaw_id"]
+    err = validate_flaw_id(flaw_id)
+    if err:
+        return err
     vector = params["vector"]
     dry_run = params.get("dry_run", True)
     form_data = {
@@ -255,6 +284,9 @@ def flaw_cvss_score_add(params):
 def flaw_cvss_score_update(params):
     flaw_id = params["flaw_id"]
     score_id = params["score_id"]
+    err = validate_flaw_id(flaw_id) or validate_path_segment(score_id, "score_id")
+    if err:
+        return err
     fields = params.get("fields", {})
     dry_run = params.get("dry_run", True)
     if dry_run:
@@ -269,6 +301,9 @@ def flaw_cvss_score_update(params):
 def flaw_cvss_score_delete(params):
     flaw_id = params["flaw_id"]
     score_id = params["score_id"]
+    err = validate_flaw_id(flaw_id) or validate_path_segment(score_id, "score_id")
+    if err:
+        return err
     dry_run = params.get("dry_run", True)
     if dry_run:
         return dry_run_response("osidb_flaw_cvss_score_delete", flaw_id=flaw_id, score_id=score_id)
@@ -280,6 +315,9 @@ def flaw_cvss_score_delete(params):
 
 def flaw_label_add(params):
     flaw_id = params["flaw_id"]
+    err = validate_flaw_id(flaw_id)
+    if err:
+        return err
     label_name = params["label_name"]
     dry_run = params.get("dry_run", True)
     form_data = {"name": label_name}
@@ -301,6 +339,9 @@ def flaw_label_add(params):
 def flaw_label_update(params):
     flaw_id = params["flaw_id"]
     label_id = params["label_id"]
+    err = validate_flaw_id(flaw_id) or validate_path_segment(label_id, "label_id")
+    if err:
+        return err
     fields = params.get("fields", {})
     dry_run = params.get("dry_run", True)
     if dry_run:
@@ -315,6 +356,9 @@ def flaw_label_update(params):
 def flaw_label_delete(params):
     flaw_id = params["flaw_id"]
     label_id = params["label_id"]
+    err = validate_flaw_id(flaw_id) or validate_path_segment(label_id, "label_id")
+    if err:
+        return err
     dry_run = params.get("dry_run", True)
     if dry_run:
         return dry_run_response("osidb_flaw_label_delete", flaw_id=flaw_id, label_id=label_id)
@@ -326,6 +370,9 @@ def flaw_label_delete(params):
 
 def flaw_package_version_add(params):
     flaw_id = params["flaw_id"]
+    err = validate_flaw_id(flaw_id)
+    if err:
+        return err
     dry_run = params.get("dry_run", True)
     form_data = {
         "package": params["package"],
@@ -343,6 +390,9 @@ def flaw_package_version_add(params):
 def flaw_package_version_update(params):
     flaw_id = params["flaw_id"]
     version_id = params["version_id"]
+    err = validate_flaw_id(flaw_id) or validate_path_segment(version_id, "version_id")
+    if err:
+        return err
     fields = params.get("fields", {})
     dry_run = params.get("dry_run", True)
     if dry_run:
@@ -362,6 +412,9 @@ def flaw_package_version_update(params):
 def flaw_package_version_delete(params):
     flaw_id = params["flaw_id"]
     version_id = params["version_id"]
+    err = validate_flaw_id(flaw_id) or validate_path_segment(version_id, "version_id")
+    if err:
+        return err
     dry_run = params.get("dry_run", True)
     if dry_run:
         return dry_run_response("osidb_flaw_package_version_delete", flaw_id=flaw_id, version_id=version_id)
@@ -403,6 +456,9 @@ def affect_create(params):
 
 def affect_update(params):
     affect_id = params["affect_id"]
+    err = validate_path_segment(affect_id, "affect_id")
+    if err:
+        return err
     fields = params.get("fields", {})
     dry_run = params.get("dry_run", True)
     if dry_run:
@@ -416,6 +472,9 @@ def affect_update(params):
 
 def affect_delete(params):
     affect_id = params["affect_id"]
+    err = validate_path_segment(affect_id, "affect_id")
+    if err:
+        return err
     dry_run = params.get("dry_run", True)
     if dry_run:
         return dry_run_response("osidb_affect_delete", affect_id=affect_id)
@@ -451,6 +510,9 @@ def affect_bulk_delete(params):
 
 def affect_cvss_score_add(params):
     affect_id = params["affect_id"]
+    err = validate_path_segment(affect_id, "affect_id")
+    if err:
+        return err
     vector = params["vector"]
     dry_run = params.get("dry_run", True)
     form_data = {
@@ -473,6 +535,9 @@ def affect_cvss_score_add(params):
 def affect_cvss_score_delete(params):
     affect_id = params["affect_id"]
     score_id = params["score_id"]
+    err = validate_path_segment(affect_id, "affect_id") or validate_path_segment(score_id, "score_id")
+    if err:
+        return err
     dry_run = params.get("dry_run", True)
     if dry_run:
         return dry_run_response("osidb_affect_cvss_score_delete", affect_id=affect_id, score_id=score_id)
@@ -516,6 +581,9 @@ def tracker_create(params):
 
 def tracker_update(params):
     tracker_id = params["tracker_id"]
+    err = validate_path_segment(tracker_id, "tracker_id")
+    if err:
+        return err
     fields = params.get("fields", {})
     dry_run = params.get("dry_run", True)
     if dry_run:

@@ -47,6 +47,19 @@ def is_uuid(value):
     return bool(_UUID_RE.match(value))
 
 
+def validate_flaw_id(value):
+    if not (is_cve_id(value) or is_uuid(value)):
+        return {"error": "Invalid flaw_id: expected CVE ID (CVE-YYYY-NNNN+) or UUID"}
+    return None
+
+
+def validate_path_segment(value, name="id"):
+    s = str(value)
+    if "/" in s or ".." in s:
+        return {"error": f"Invalid {name}: must not contain '/' or '..'"}
+    return None
+
+
 def build_flaw_query(params, extra=None):
     """Build query dict for the flaws list endpoint from tool params."""
     DIRECT = [
@@ -249,14 +262,11 @@ def normalize_djangoql(query):
 
 def subresource_query(params):
     """Build query dict for sub-resource list endpoints (comments, refs, etc.)."""
-    query = {}
-    limit = params.get("limit")
-    if limit is not None:
-        query["limit"] = limit
+    query = {"limit": params.get("limit", 50)}
     offset = params.get("offset")
     if offset is not None:
         query["offset"] = offset
-    return query or None
+    return query
 
 
 def dry_run_response(action, **details):
