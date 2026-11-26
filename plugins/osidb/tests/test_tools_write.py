@@ -35,10 +35,17 @@ class TestWriteIdValidation:
         result = tools_write.flaw_comment_add({"flaw_id": "not-valid", "text": "test"})
         assert "error" in result
 
-    def test_affect_update_rejects_slash(self):
+    def test_affect_update_rejects_non_uuid(self):
         result = tools_write.affect_update({"affect_id": "foo/bar", "fields": {}})
         assert "error" in result
         assert "affect_id" in result["error"]
+
+    def test_affect_create_rejects_traversal_flaw(self):
+        result = tools_write.affect_create(
+            {"flaw": "../../private/endpoint", "ps_module": "rhel-9", "ps_component": "kernel"}
+        )
+        assert "error" in result
+        assert "Invalid flaw_id" in result["error"]
 
 
 class TestFlawCreate:
@@ -184,7 +191,8 @@ class TestAffectCreate:
 
 class TestAffectUpdate:
     def test_execute_fetches_then_puts(self):
-        current = {"uuid": "a1", "affectedness": "NEW", "updated_dt": "2024-01-01T00:00:00Z"}
+        affect_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        current = {"uuid": affect_id, "affectedness": "NEW", "updated_dt": "2024-01-01T00:00:00Z"}
         updated = {**current, "affectedness": "AFFECTED"}
         responses = [
             (200, current, {}),
@@ -193,7 +201,7 @@ class TestAffectUpdate:
         with _mock_http_sequence(responses):
             result = tools_write.affect_update(
                 {
-                    "affect_id": "a1",
+                    "affect_id": affect_id,
                     "fields": {"affectedness": "AFFECTED"},
                     "dry_run": False,
                 }
@@ -203,12 +211,14 @@ class TestAffectUpdate:
 
 class TestAffectDelete:
     def test_dry_run(self):
-        result = tools_write.affect_delete({"affect_id": "a1"})
+        affect_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        result = tools_write.affect_delete({"affect_id": affect_id})
         assert result["dry_run"] is True
 
     def test_execute(self):
+        affect_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
         with _mock_http(204, ""):
-            result = tools_write.affect_delete({"affect_id": "a1", "dry_run": False})
+            result = tools_write.affect_delete({"affect_id": affect_id, "dry_run": False})
             assert result["deleted"] is True
 
 
@@ -254,7 +264,7 @@ class TestTrackerUpdate:
     def test_dry_run(self):
         result = tools_write.tracker_update(
             {
-                "tracker_id": "t1",
+                "tracker_id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
                 "fields": {"status": "CLOSED"},
             }
         )

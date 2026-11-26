@@ -15,7 +15,7 @@ from helpers import (
     http_error,
     is_error,
     validate_flaw_id,
-    validate_path_segment,
+    validate_uuid,
 )
 
 
@@ -170,7 +170,7 @@ def flaw_reference_add(params):
 def flaw_reference_update(params):
     flaw_id = params["flaw_id"]
     reference_id = params["reference_id"]
-    err = validate_flaw_id(flaw_id) or validate_path_segment(reference_id, "reference_id")
+    err = validate_flaw_id(flaw_id) or validate_uuid(reference_id, "reference_id")
     if err:
         return err
     fields = params.get("fields", {})
@@ -192,7 +192,7 @@ def flaw_reference_update(params):
 def flaw_reference_delete(params):
     flaw_id = params["flaw_id"]
     reference_id = params["reference_id"]
-    err = validate_flaw_id(flaw_id) or validate_path_segment(reference_id, "reference_id")
+    err = validate_flaw_id(flaw_id) or validate_uuid(reference_id, "reference_id")
     if err:
         return err
     dry_run = params.get("dry_run", True)
@@ -228,7 +228,7 @@ def flaw_acknowledgment_add(params):
 def flaw_acknowledgment_update(params):
     flaw_id = params["flaw_id"]
     ack_id = params["ack_id"]
-    err = validate_flaw_id(flaw_id) or validate_path_segment(ack_id, "ack_id")
+    err = validate_flaw_id(flaw_id) or validate_uuid(ack_id, "ack_id")
     if err:
         return err
     fields = params.get("fields", {})
@@ -245,7 +245,7 @@ def flaw_acknowledgment_update(params):
 def flaw_acknowledgment_delete(params):
     flaw_id = params["flaw_id"]
     ack_id = params["ack_id"]
-    err = validate_flaw_id(flaw_id) or validate_path_segment(ack_id, "ack_id")
+    err = validate_flaw_id(flaw_id) or validate_uuid(ack_id, "ack_id")
     if err:
         return err
     dry_run = params.get("dry_run", True)
@@ -284,7 +284,7 @@ def flaw_cvss_score_add(params):
 def flaw_cvss_score_update(params):
     flaw_id = params["flaw_id"]
     score_id = params["score_id"]
-    err = validate_flaw_id(flaw_id) or validate_path_segment(score_id, "score_id")
+    err = validate_flaw_id(flaw_id) or validate_uuid(score_id, "score_id")
     if err:
         return err
     fields = params.get("fields", {})
@@ -301,7 +301,7 @@ def flaw_cvss_score_update(params):
 def flaw_cvss_score_delete(params):
     flaw_id = params["flaw_id"]
     score_id = params["score_id"]
-    err = validate_flaw_id(flaw_id) or validate_path_segment(score_id, "score_id")
+    err = validate_flaw_id(flaw_id) or validate_uuid(score_id, "score_id")
     if err:
         return err
     dry_run = params.get("dry_run", True)
@@ -339,7 +339,7 @@ def flaw_label_add(params):
 def flaw_label_update(params):
     flaw_id = params["flaw_id"]
     label_id = params["label_id"]
-    err = validate_flaw_id(flaw_id) or validate_path_segment(label_id, "label_id")
+    err = validate_flaw_id(flaw_id) or validate_uuid(label_id, "label_id")
     if err:
         return err
     fields = params.get("fields", {})
@@ -356,7 +356,7 @@ def flaw_label_update(params):
 def flaw_label_delete(params):
     flaw_id = params["flaw_id"]
     label_id = params["label_id"]
-    err = validate_flaw_id(flaw_id) or validate_path_segment(label_id, "label_id")
+    err = validate_flaw_id(flaw_id) or validate_uuid(label_id, "label_id")
     if err:
         return err
     dry_run = params.get("dry_run", True)
@@ -390,7 +390,7 @@ def flaw_package_version_add(params):
 def flaw_package_version_update(params):
     flaw_id = params["flaw_id"]
     version_id = params["version_id"]
-    err = validate_flaw_id(flaw_id) or validate_path_segment(version_id, "version_id")
+    err = validate_flaw_id(flaw_id) or validate_uuid(version_id, "version_id")
     if err:
         return err
     fields = params.get("fields", {})
@@ -412,7 +412,7 @@ def flaw_package_version_update(params):
 def flaw_package_version_delete(params):
     flaw_id = params["flaw_id"]
     version_id = params["version_id"]
-    err = validate_flaw_id(flaw_id) or validate_path_segment(version_id, "version_id")
+    err = validate_flaw_id(flaw_id) or validate_uuid(version_id, "version_id")
     if err:
         return err
     dry_run = params.get("dry_run", True)
@@ -425,6 +425,11 @@ def flaw_package_version_delete(params):
 
 
 def affect_create(params):
+    flaw = params.get("flaw")
+    if flaw is not None:
+        err = validate_flaw_id(flaw)
+        if err:
+            return err
     dry_run = params.get("dry_run", True)
     form_data = {}
     for key in (
@@ -456,7 +461,7 @@ def affect_create(params):
 
 def affect_update(params):
     affect_id = params["affect_id"]
-    err = validate_path_segment(affect_id, "affect_id")
+    err = validate_uuid(affect_id, "affect_id")
     if err:
         return err
     fields = params.get("fields", {})
@@ -472,7 +477,7 @@ def affect_update(params):
 
 def affect_delete(params):
     affect_id = params["affect_id"]
-    err = validate_path_segment(affect_id, "affect_id")
+    err = validate_uuid(affect_id, "affect_id")
     if err:
         return err
     dry_run = params.get("dry_run", True)
@@ -510,7 +515,7 @@ def affect_bulk_delete(params):
 
 def affect_cvss_score_add(params):
     affect_id = params["affect_id"]
-    err = validate_path_segment(affect_id, "affect_id")
+    err = validate_uuid(affect_id, "affect_id")
     if err:
         return err
     vector = params["vector"]
@@ -535,7 +540,7 @@ def affect_cvss_score_add(params):
 def affect_cvss_score_delete(params):
     affect_id = params["affect_id"]
     score_id = params["score_id"]
-    err = validate_path_segment(affect_id, "affect_id") or validate_path_segment(score_id, "score_id")
+    err = validate_uuid(affect_id, "affect_id") or validate_uuid(score_id, "score_id")
     if err:
         return err
     dry_run = params.get("dry_run", True)
@@ -581,7 +586,7 @@ def tracker_create(params):
 
 def tracker_update(params):
     tracker_id = params["tracker_id"]
-    err = validate_path_segment(tracker_id, "tracker_id")
+    err = validate_uuid(tracker_id, "tracker_id")
     if err:
         return err
     fields = params.get("fields", {})

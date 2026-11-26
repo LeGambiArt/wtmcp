@@ -232,9 +232,10 @@ class TestFlawSubresources:
 
 class TestAffects:
     def test_affect_get(self):
-        affect = {"uuid": "a1", "ps_module": "rhel-9", "ps_component": "kernel", "affectedness": "AFFECTED"}
+        affect_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        affect = {"uuid": affect_id, "ps_module": "rhel-9", "ps_component": "kernel", "affectedness": "AFFECTED"}
         with _mock_http(200, affect):
-            result = tools_read.affect_get({"affect_id": "a1"})
+            result = tools_read.affect_get({"affect_id": affect_id})
             assert result["ps_module"] == "rhel-9"
 
     def test_affect_list(self):
@@ -262,9 +263,10 @@ class TestLabels:
             assert result["count"] == 2
 
     def test_label_get(self):
-        response = {"uuid": "l1", "name": "hybrid_bu", "description": "Hybrid Platforms BU"}
+        label_id = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+        response = {"uuid": label_id, "name": "hybrid_bu", "description": "Hybrid Platforms BU"}
         with _mock_http(200, response):
-            result = tools_read.label_get({"label_id": "l1"})
+            result = tools_read.label_get({"label_id": label_id})
             assert result["name"] == "hybrid_bu"
 
 

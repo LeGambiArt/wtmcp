@@ -16,7 +16,7 @@ from helpers import (
     is_error,
     subresource_query,
     validate_flaw_id,
-    validate_path_segment,
+    validate_uuid,
 )
 
 
@@ -403,7 +403,7 @@ def _extract_promotion_blockers(workflow_data):
 
 def affect_get(params):
     affect_id = params["affect_id"]
-    err = validate_path_segment(affect_id, "affect_id")
+    err = validate_uuid(affect_id, "affect_id")
     if err:
         return err
     query = {}
@@ -423,7 +423,7 @@ def affect_list(params):
 
 def affect_cvss_scores(params):
     affect_id = params["affect_id"]
-    err = validate_path_segment(affect_id, "affect_id")
+    err = validate_uuid(affect_id, "affect_id")
     if err:
         return err
     return _api_get(f"{AFFECT_API}/{affect_id}/cvss_scores", query=subresource_query(params))
@@ -434,7 +434,7 @@ def affect_cvss_scores(params):
 
 def tracker_get(params):
     tracker_id = params["tracker_id"]
-    err = validate_path_segment(tracker_id, "tracker_id")
+    err = validate_uuid(tracker_id, "tracker_id")
     if err:
         return err
     query = {}
@@ -468,7 +468,7 @@ def label_list(params):
 
 def label_get(params):
     label_id = params["label_id"]
-    err = validate_path_segment(label_id, "label_id")
+    err = validate_uuid(label_id, "label_id")
     if err:
         return err
     return _api_get(f"{LABEL_API}/{label_id}")

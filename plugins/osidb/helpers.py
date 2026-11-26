@@ -40,11 +40,11 @@ def is_error(status):
 
 
 def is_cve_id(value):
-    return bool(_CVE_RE.match(value))
+    return isinstance(value, str) and bool(_CVE_RE.match(value))
 
 
 def is_uuid(value):
-    return bool(_UUID_RE.match(value))
+    return isinstance(value, str) and bool(_UUID_RE.match(value))
 
 
 def validate_flaw_id(value):
@@ -53,10 +53,9 @@ def validate_flaw_id(value):
     return None
 
 
-def validate_path_segment(value, name="id"):
-    s = str(value)
-    if "/" in s or ".." in s:
-        return {"error": f"Invalid {name}: must not contain '/' or '..'"}
+def validate_uuid(value, name="id"):
+    if not is_uuid(value):
+        return {"error": f"Invalid {name}: expected UUID"}
     return None
 
 
