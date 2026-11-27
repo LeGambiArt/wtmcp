@@ -94,6 +94,58 @@ enabled: true
 	}
 }
 
+func TestValidateEnvEntry(t *testing.T) {
+	tests := []struct {
+		entry string
+		want  string // "" means valid
+	}{
+		{entry: "JIRA_URL"},
+		{entry: "weird-name.ok"}, // exact entries stay unvalidated
+		{entry: "GITLAB_*_URL"},
+		{entry: "*_URL"},
+		{entry: "GITLAB_*"},
+		{entry: "*", want: "bare wildcard is not allowed"},
+		{entry: "**", want: "bare wildcard is not allowed"},
+		{entry: "GITLAB_[AB]_URL", want: "glob may contain only"},
+		{entry: "GITLAB_?_URL", want: "glob may contain only"},
+		{entry: "GITLAB_*_URL|x", want: "glob may contain only"},
+		{entry: "1BAD*_URL", want: "glob may contain only"},
+	}
+	for _, tt := range tests {
+		err := validateEnvEntry(tt.entry)
+		if tt.want == "" && err != nil {
+			t.Errorf("validateEnvEntry(%q) = %v, want nil", tt.entry, err)
+		}
+		if tt.want != "" && (err == nil || !strings.Contains(err.Error(), tt.want)) {
+			t.Errorf("validateEnvEntry(%q) = %v, want error containing %q", tt.entry, err, tt.want)
+		}
+	}
+}
+
+func TestLoadManifestEnvGlobs(t *testing.T) {
+	dir := t.TempDir()
+	handlerPath := filepath.Join(dir, "handler")
+	if err := os.WriteFile(handlerPath, []byte("#!/bin/bash\n"), 0o755); err != nil { //nolint:gosec // test needs executable
+		t.Fatal(err)
+	}
+	manifest := `name: glob-plugin
+version: "1.0.0"
+handler: ./handler
+env:
+  - GITLAB_URL
+  - GITLAB_*_URL
+  - odd-exact.name
+tools: []
+`
+	path := filepath.Join(dir, "plugin.yaml")
+	if err := os.WriteFile(path, []byte(manifest), 0o644); err != nil { //nolint:gosec // test config file
+		t.Fatal(err)
+	}
+	if _, err := LoadManifest(path); err != nil {
+		t.Fatalf("LoadManifest with env globs failed: %v", err)
+	}
+}
+
 func TestLoadManifestDefaults(t *testing.T) {
 	dir := t.TempDir()
 	handlerPath := filepath.Join(dir, "handler")
@@ -198,9 +250,54 @@ func TestManifestValidation(t *testing.T) {
 			wantErr: "invalid credential_group",
 		},
 		{
-			name:    "invalid env_passthrough",
-			yaml:    `name: ok-name` + "\nversion: '1.0'\nhandler: ./handler\nenv_passthrough: 'YES'\ntools: []",
-			wantErr: "env_passthrough must be 'all' or empty",
+			name:    "env_passthrough rejected",
+			yaml:    `name: ok-name` + "\nversion: '1.0'\nhandler: ./handler\nenv_passthrough: 'all'\ntools: []",
+			wantErr: "env_passthrough is no longer supported",
+		},
+		{
+			name:    "auth token var in env list",
+			yaml:    `name: ok-name` + "\nversion: '1.0'\nhandler: ./handler\ntools: []\nenv:\n  - MY_TOKEN\nservices:\n  auth:\n    type: bearer\n    token: ${MY_TOKEN}",
+			wantErr: "passes credential variable \"MY_TOKEN\"",
+		},
+		{
+			name:    "auth token var matched by env glob",
+			yaml:    `name: ok-name` + "\nversion: '1.0'\nhandler: ./handler\ntools: []\nenv:\n  - MY_*\nservices:\n  auth:\n    type: bearer\n    token: ${MY_TOKEN}",
+			wantErr: "passes credential variable \"MY_TOKEN\"",
+		},
+		{
+			name:    "variant username var in env list",
+			yaml:    `name: ok-name` + "\nversion: '1.0'\nhandler: ./handler\ntools: []\nenv:\n  - SVC_USER\nservices:\n  auth:\n    type: basic\n    variants:\n      pw:\n        username: ${SVC_USER}\n        password: ${SVC_PW}",
+			wantErr: "passes credential variable \"SVC_USER\"",
+		},
+		{
+			name:    "auth token var referenced from config",
+			yaml:    `name: ok-name` + "\nversion: '1.0'\nhandler: ./handler\ntools: []\nconfig:\n  api_token: ${MY_TOKEN}\nservices:\n  auth:\n    type: bearer\n    token: ${MY_TOKEN}",
+			wantErr: "references credential variable \"MY_TOKEN\"",
+		},
+		{
+			name:    "auth token var with hostname modifier in env list",
+			yaml:    `name: ok-name` + "\nversion: '1.0'\nhandler: ./handler\ntools: []\nenv:\n  - 'A:-b'\nservices:\n  auth:\n    type: bearer\n    token: ${A:-b|hostname}",
+			wantErr: "passes credential variable \"A:-b\"",
+		},
+		{
+			name:    "auth token var referenced from config with modifier",
+			yaml:    `name: ok-name` + "\nversion: '1.0'\nhandler: ./handler\ntools: []\nconfig:\n  api_token: ${MY_TOKEN:-fallback}\nservices:\n  auth:\n    type: bearer\n    token: ${MY_TOKEN}",
+			wantErr: "references credential variable \"MY_TOKEN\"",
+		},
+		{
+			name:    "tls client key var in env list",
+			yaml:    `name: ok-name` + "\nversion: '1.0'\nhandler: ./handler\ntools: []\nenv:\n  - TLS_KEY\nservices:\n  http:\n    tls:\n      client_cert: /cert.pem\n      client_key: ${TLS_KEY}",
+			wantErr: "passes credential variable \"TLS_KEY\"",
+		},
+		{
+			name:    "env bare wildcard",
+			yaml:    `name: ok-name` + "\nversion: '1.0'\nhandler: ./handler\ntools: []\nenv:\n  - '*'",
+			wantErr: "bare wildcard is not allowed",
+		},
+		{
+			name:    "env glob with bad charset",
+			yaml:    `name: ok-name` + "\nversion: '1.0'\nhandler: ./handler\ntools: []\nenv:\n  - 'GITLAB_[AB]_URL'",
+			wantErr: "glob may contain only letters, digits, underscores and '*'",
 		},
 		{
 			name:    "allow_private_ips without domains or base_url",
@@ -1596,5 +1693,129 @@ func TestValidate_TokenFileTraversal(t *testing.T) {
 				t.Errorf("Validate() should accept token_file=%q: %v", tf, err)
 			}
 		})
+	}
+}
+
+// TestBundledManifestsPassLint loads every bundled plugin manifest
+// and asserts it passes validation, including the credential-leak
+// lint. This is the guard that keeps the bundled tree compliant
+// with the no-secrets-to-handlers contract.
+func TestBundledManifestsPassLint(t *testing.T) {
+	manifests, err := filepath.Glob(filepath.Join("..", "..", "plugins", "*", "plugin.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(manifests) < 10 {
+		t.Fatalf("expected at least 10 bundled manifests, found %d", len(manifests))
+	}
+	for _, path := range manifests {
+		t.Run(filepath.Base(filepath.Dir(path)), func(t *testing.T) {
+			m, err := LoadManifest(path)
+			if err != nil {
+				t.Fatalf("LoadManifest: %v", err)
+			}
+			if err := m.Validate(); err != nil {
+				t.Errorf("Validate: %v", err)
+			}
+		})
+	}
+}
+
+// TestBundledManifestsNoCredentialEnvLeak is a dynamic oracle for
+// the no-secrets-to-handlers contract: it feeds every bundled
+// manifest its auth-referenced variables with sentinel values and
+// asserts none of them survive into the handler environment map.
+// The static lint should make this impossible; this test catches
+// silent regressions in buildPluginEnvMap itself.
+func TestBundledManifestsNoCredentialEnvLeak(t *testing.T) {
+	manifests, err := filepath.Glob(filepath.Join("..", "..", "plugins", "*", "plugin.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range manifests {
+		t.Run(filepath.Base(filepath.Dir(path)), func(t *testing.T) {
+			m, err := LoadManifest(path)
+			if err != nil {
+				t.Fatalf("LoadManifest: %v", err)
+			}
+
+			const sentinel = "LEAK-CHECK-SENTINEL"
+			groupVars := make(map[string]string)
+			for _, name := range m.credentialVarRefs() {
+				groupVars[name] = sentinel
+			}
+			if len(groupVars) == 0 {
+				t.Skip("no credential vars referenced")
+			}
+
+			env := buildPluginEnvMap(m, groupVars)
+			for key, val := range env {
+				if val == sentinel {
+					t.Errorf("credential variable %q leaked into handler env", key)
+				}
+			}
+		})
+	}
+}
+
+func TestLoadManifestSetupSecretLint(t *testing.T) {
+	dir := t.TempDir()
+	handlerPath := filepath.Join(dir, "handler")
+	if err := os.WriteFile(handlerPath, []byte("#!/bin/bash\n"), 0o755); err != nil { //nolint:gosec // test needs executable
+		t.Fatal(err)
+	}
+
+	secret := `name: secret-plugin
+version: "1.0.0"
+handler: ./handler
+credential_group: svc
+env:
+  - SVC_DSN
+setup:
+  credentials:
+    SVC_DSN:
+      description: "Database DSN"
+      secret: true
+tools: []
+`
+	path := filepath.Join(dir, "plugin.yaml")
+	if err := os.WriteFile(path, []byte(secret), 0o644); err != nil { //nolint:gosec // test config file
+		t.Fatal(err)
+	}
+	_, err := LoadManifest(path)
+	if err == nil || !strings.Contains(err.Error(), `passes credential variable "SVC_DSN"`) {
+		t.Fatalf("err = %v, want secret-flagged var rejected from env list", err)
+	}
+
+	// secret: false vars are configuration, not credentials.
+	plain := strings.Replace(secret, "secret: true", "secret: false", 1)
+	if err := os.WriteFile(path, []byte(plain), 0o644); err != nil { //nolint:gosec // test config file
+		t.Fatal(err)
+	}
+	if _, err := LoadManifest(path); err != nil {
+		t.Fatalf("secret:false var should be allowed in env list: %v", err)
+	}
+}
+
+func TestEnvDelivers(t *testing.T) {
+	m := &Manifest{Env: []string{"SVC_URL", "GITLAB_*_URL", "SVC_*"}}
+	tests := []struct {
+		varName string
+		want    bool
+	}{
+		{"SVC_URL", true},
+		{"GITLAB_STAGING_URL", true},
+		{"SVC_STAGING_TOKEN", true},
+		{"GITLAB_TOKEN", false},
+		{"OTHER_URL", false},
+	}
+	for _, tt := range tests {
+		entry, ok := m.envDelivers(tt.varName)
+		if ok != tt.want {
+			t.Errorf("envDelivers(%q) = %q, %v; want ok=%v", tt.varName, entry, ok, tt.want)
+		}
+		if ok && entry == "" {
+			t.Errorf("envDelivers(%q) matched with empty entry", tt.varName)
+		}
 	}
 }

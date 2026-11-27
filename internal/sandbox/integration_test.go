@@ -5,16 +5,19 @@ package sandbox
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"sync"
 	"testing"
 
 	arapuca "github.com/LeGambiArt/go-arapuca"
 
 	"github.com/LeGambiArt/wtmcp/internal/config"
+	"github.com/LeGambiArt/wtmcp/internal/secrets/securefile"
 )
 
 var netNSOnce sync.Once
@@ -106,7 +109,7 @@ func integrationTestManager(t *testing.T) *Manager {
 		t.Skip("network namespace isolation unavailable (unshare --user --net not permitted)")
 	}
 	dataDir := filepath.Join(t.TempDir(), "data")
-	mgr, err := NewManager(cfg, "", dataDir)
+	mgr, err := NewManager(cfg, dataDir)
 	if err != nil {
 		t.Logf("NOTICE: sandbox integration tests skipping — sandbox init failed: %v", err)
 		t.Skipf("sandbox unavailable: %v", err)
@@ -310,6 +313,10 @@ func TestIntegration_CannotReadOtherPluginCredentials(t *testing.T) {
 	if err := os.WriteFile(secretFile, []byte("SECRET=hunter2"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	ownSecret := filepath.Join(groupA, "token.env")
+	if err := os.WriteFile(ownSecret, []byte("SECRET=hunter2"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	if runtime.GOOS == "linux" && !netNSAvailable() {
 		t.Skip("network namespace isolation unavailable (unshare --user --net not permitted)")
@@ -319,7 +326,7 @@ func TestIntegration_CannotReadOtherPluginCredentials(t *testing.T) {
 			MaxMemoryMB: 256, MaxCPUPct: 100, MaxPIDs: 32, MaxFileSizeMB: 10,
 		},
 	}
-	mgr, err := NewManager(cfg, credDir, filepath.Join(t.TempDir(), "data"))
+	mgr, err := NewManager(cfg, filepath.Join(t.TempDir(), "data"))
 	if err != nil {
 		t.Skipf("sandbox unavailable: %v", err)
 	}
@@ -336,9 +343,17 @@ func TestIntegration_CannotReadOtherPluginCredentials(t *testing.T) {
 	if resp.OK {
 		t.Error("plugin-a should NOT be able to read plugin-b's credentials")
 	}
+
+	// The credentials dir is not part of the sandbox read profile at
+	// all: plugins cannot read their own group's credential files
+	// either. Auth and TLS are handled by the core proxy.
+	resp = runProbe(t, mgr, info, nil, probeRequest{Cmd: "read_file", Path: ownSecret})
+	if resp.OK {
+		t.Error("plugin-a should NOT be able to read its own credential group's files")
+	}
 }
 
-func TestIntegration_EnvPassthrough(t *testing.T) {
+func TestIntegration_LaunchEnv(t *testing.T) {
 	skipIfIntegrationDisabled(t)
 
 	bin := buildProbe(t)
@@ -454,5 +469,116 @@ func TestIntegration_TmpdirOverride(t *testing.T) {
 	expected := mgr.TmpDir("tmpdir-test")
 	if resp.Data != expected {
 		t.Errorf("TMPDIR = %q, want %q", resp.Data, expected)
+	}
+}
+
+// fdNumberOf extracts the fd number from a securefile's
+// /proc/self/fd/N path.
+func fdNumberOf(t *testing.T, path string) int {
+	t.Helper()
+	var fd int
+	if _, err := fmt.Sscanf(path, "/proc/self/fd/%d", &fd); err != nil {
+		t.Fatalf("parse fd path %q: %v", path, err)
+	}
+	return fd
+}
+
+// TestIntegration_ChildCannotInheritCloexecMemfd is the end-to-end
+// check of the memfd leak fix: a close-on-exec securefile created in
+// the core (here: the test process) must not be readable from inside
+// a sandboxed child through /proc/self/fd. Before the fix the fd was
+// inheritable and every handler's fd table carried every group's
+// decrypted credentials.
+func TestIntegration_ChildCannotInheritCloexecMemfd(t *testing.T) {
+	skipIfIntegrationDisabled(t)
+	if runtime.GOOS != "linux" {
+		t.Skip("/proc/self/fd fd-table test, Linux only")
+	}
+
+	sf, err := securefile.CreateCloexec("leak-check")
+	if err != nil {
+		t.Fatalf("CreateCloexec: %v", err)
+	}
+	defer sf.Close() //nolint:errcheck // test cleanup
+	if err := sf.Write([]byte("SECRET=hunter2")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	fd := fdNumberOf(t, sf.Path())
+
+	bin := buildProbe(t)
+	mgr := integrationTestManager(t)
+
+	info := PluginInfo{
+		Name:    "fd-leak-check",
+		Dir:     filepath.Dir(bin),
+		Handler: filepath.Base(bin),
+	}
+
+	resp := runProbe(t, mgr, info, nil, probeRequest{Cmd: "read_fd", Key: strconv.Itoa(fd)})
+	if resp.OK {
+		t.Errorf("sandboxed child must not read the close-on-exec memfd (fd %d): got %q", fd, resp.Data)
+	}
+}
+
+// TestExecFdInheritanceControl is the sanity oracle for the probe's
+// read_fd command: under plain exec (no sandbox), an inheritable fd
+// IS readable in the child and a close-on-exec fd is NOT. This proves
+// the probe detects inherited fds, so the sandboxed test above cannot
+// pass merely because the probe is broken.
+func TestExecFdInheritanceControl(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("/proc/self/fd fd-table test, Linux only")
+	}
+
+	secret, err := securefile.CreateCloexec("control-secret")
+	if err != nil {
+		t.Fatalf("CreateCloexec: %v", err)
+	}
+	defer secret.Close() //nolint:errcheck // test cleanup
+	if err := secret.Write([]byte("SECRET=control")); err != nil {
+		t.Fatalf("write secret: %v", err)
+	}
+
+	canary, err := securefile.Create("control-canary")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	defer canary.Close() //nolint:errcheck // test cleanup
+	if err := canary.Write([]byte("CANARY=live")); err != nil {
+		t.Fatalf("write canary: %v", err)
+	}
+
+	bin := buildProbe(t)
+	run := func(fd int) probeResponse {
+		cmd := exec.Command(bin)
+		stdin, err := cmd.StdinPipe()
+		if err != nil {
+			t.Fatalf("stdin pipe: %v", err)
+		}
+		stdout, err := cmd.StdoutPipe()
+		if err != nil {
+			t.Fatalf("stdout pipe: %v", err)
+		}
+		if err := cmd.Start(); err != nil {
+			t.Fatalf("start: %v", err)
+		}
+		req, _ := json.Marshal(probeRequest{Cmd: "read_fd", Key: strconv.Itoa(fd)})
+		_, _ = stdin.Write(append(req, '\n'))
+		_ = stdin.Close()
+		var resp probeResponse
+		if err := json.NewDecoder(stdout).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		_ = cmd.Wait()
+		return resp
+	}
+
+	resp := run(fdNumberOf(t, canary.Path()))
+	if !resp.OK || resp.Data != "CANARY=live" {
+		t.Errorf("inheritable canary must be readable in the child: ok=%v data=%q err=%q", resp.OK, resp.Data, resp.Error)
+	}
+	resp = run(fdNumberOf(t, secret.Path()))
+	if resp.OK {
+		t.Errorf("close-on-exec fd must not be readable in the child: got %q", resp.Data)
 	}
 }

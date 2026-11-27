@@ -31,3 +31,24 @@ func TestIsHomeDir(t *testing.T) {
 		t.Error("isHomeDir(/) should be false")
 	}
 }
+
+func TestDirWithin(t *testing.T) {
+	tests := []struct {
+		parent, dir string
+		want        bool
+	}{
+		{"/home/u/proj", "/home/u/proj", true},
+		{"/home/u/proj", "/home/u/proj/credentials", true},
+		{"/home/u/proj", "/home/u/proj/sub/env.d", true},
+		{"/home/u", "/home/u2/credentials", false},
+		{"/home/u/proj", "/home/u/project2", false},
+		{"/home/u/proj", "/etc", false},
+		{"", "/home/u/proj", false},
+		{"/home/u/proj", "", false},
+	}
+	for _, tt := range tests {
+		if got := dirWithin(tt.parent, tt.dir); got != tt.want {
+			t.Errorf("dirWithin(%q, %q) = %v, want %v", tt.parent, tt.dir, got, tt.want)
+		}
+	}
+}

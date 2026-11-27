@@ -5,7 +5,6 @@ description: "GitLab integration for repositories, MRs, pipelines, and issues"
 execution: persistent
 handler: ./handler
 credential_group: gitlab
-env_passthrough: all
 
 services:
   auth:
@@ -25,9 +24,11 @@ context_files:
   - context.md
 
 env:
-  # Listed for documentation; not used as filter when env_passthrough is "all"
-  - GITLAB_TOKEN
+  # Non-secret configuration. Token variables stay with the core;
+  # the proxy injects auth and the handler learns what is
+  # configured via the _group_var_names init config signal.
   - GITLAB_URL
+  - GITLAB_*_URL
 
 tools:
   - name: gitlab_get_commits

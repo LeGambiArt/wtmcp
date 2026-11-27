@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -50,6 +51,7 @@ type Manager struct {
 	configDisabled map[string]*Manifest // plugins skipped via plugins.disabled config
 	envGroups      config.EnvGroups
 	envErrors      map[string]string // credential group → error message
+	manifestErrors map[string]string // plugin dir name → manifest load error
 	envDirError    string            // env.d directory-level error
 	workdir        string
 	sessionDir     string
@@ -121,6 +123,7 @@ func NewManager(authReg *auth.Registry, p *proxy.Proxy, c cache.Store, cfg *conf
 		configDisabled: make(map[string]*Manifest),
 		envGroups:      envGroups,
 		envErrors:      envErrors,
+		manifestErrors: make(map[string]string),
 		envDirError:    envDirError,
 		workdir:        workdir,
 		sessionDir:     sessionDir,
@@ -166,6 +169,7 @@ func (m *Manager) Discover(dirs []string, userDir string) error {
 	// Track all plugin names seen during discovery (including
 	// manifest-disabled) for post-loop validation of plugins.disabled.
 	seenNames := make(map[string]bool)
+	m.manifestErrors = make(map[string]string)
 
 	for _, dir := range dirs {
 		entries, err := os.ReadDir(dir)
@@ -187,7 +191,8 @@ func (m *Manager) Discover(dirs []string, userDir string) error {
 			}
 			manifest, err := LoadManifest(manifestPath)
 			if err != nil {
-				log.Printf("skipping plugin %s: %v", entry.Name(), err)
+				log.Printf("WARNING: skipping plugin %s: %v", entry.Name(), err)
+				m.manifestErrors[entry.Name()] = err.Error()
 				continue
 			}
 			seenNames[manifest.Name] = true
@@ -453,7 +458,21 @@ func (m *Manager) startLevel(ctx context.Context, names []string) {
 			r.handle.manifest.Version, r.handle.manifest.Execution, r.duration.Round(time.Millisecond))
 		m.registerPluginDirs(r.name, r.handle)
 		m.registerDynamicDomains(r.name, r.handle)
-		m.registerAuthBindings(r.name, r.handle)
+		if err := m.registerAuthBindings(r.name, r.handle); err != nil {
+			// Same treatment as a start failure: the env var is
+			// already in the running process, so stop it and disable
+			// the plugin with the fix in the reason.
+			log.Printf("failed to start plugin %s (%s): %v", r.name, r.duration.Round(time.Millisecond), err)
+			_ = r.handle.Stop(ctx)
+			m.proxy.UnregisterPlugin(r.name)
+			delete(m.handles, r.name)
+			m.disabled[r.name] = DisabledPlugin{
+				Name:     r.name,
+				Reason:   m.sanitizeReason(err.Error()),
+				Manifest: m.manifests[r.name],
+			}
+			continue
+		}
 	}
 	m.handlesMu.Unlock()
 }
@@ -478,7 +497,11 @@ func (m *Manager) Load(ctx context.Context, name string) error {
 	m.registerPluginDirs(name, handle)
 
 	m.registerDynamicDomains(name, handle)
-	m.registerAuthBindings(name, handle)
+	if err := m.registerAuthBindings(name, handle); err != nil {
+		_ = handle.Stop(ctx)
+		m.proxy.UnregisterPlugin(name)
+		return err
+	}
 
 	m.handlesMu.Lock()
 	m.handles[name] = handle
@@ -545,10 +568,10 @@ func (m *Manager) registerDynamicDomains(name string, handle *Handle) {
 // plugin's init_ok response and installs a DomainProvider on the
 // proxy. Must be called after registerDynamicDomains (ordering
 // invariant: domains are allowed before auth is installed).
-func (m *Manager) registerAuthBindings(name string, handle *Handle) {
+func (m *Manager) registerAuthBindings(name string, handle *Handle) error {
 	bindings := handle.AuthBindings()
 	if len(bindings) == 0 {
-		return
+		return nil
 	}
 
 	if len(bindings) > maxDynamicDomains {
@@ -570,7 +593,7 @@ func (m *Manager) registerAuthBindings(name string, handle *Handle) {
 	authCfg := manifest.Services.Auth
 	if authCfg.Type == "" {
 		log.Printf("[%s] WARNING: auth_bindings present but no services.auth configured; ignoring", name)
-		return
+		return nil
 	}
 
 	vars := m.pluginVars(manifest)
@@ -589,6 +612,16 @@ func (m *Manager) registerAuthBindings(name string, handle *Handle) {
 			continue
 		}
 
+		// The load-time lint cannot see vars nominated here — they are
+		// only known at runtime — so a manifest can pass them through
+		// its env list while validating clean. The env var has already
+		// been delivered to the running process, so the only remedy is
+		// to refuse the plugin: stop it and let the operator remove the
+		// env entry.
+		if entry, delivers := manifest.envDelivers(envVar); delivers {
+			return fmt.Errorf("auth binding %q uses %s, which env entry %q also passes to the handler; remove the env entry so the credential stays with the proxy", domain, envVar, entry)
+		}
+
 		p, err := auth.NewBearerProvider(token, authCfg.Header, authCfg.Prefix)
 		if err != nil {
 			log.Printf("[%s] WARNING: auth binding %q: %v", name, domain, err)
@@ -599,17 +632,18 @@ func (m *Manager) registerAuthBindings(name string, handle *Handle) {
 
 	if len(providers) == 0 {
 		log.Printf("[%s] WARNING: no valid auth bindings resolved", name)
-		return
+		return nil
 	}
 
 	dp, err := auth.NewDomainProvider(providers)
 	if err != nil {
 		log.Printf("[%s] WARNING: create domain provider: %v", name, err)
-		return
+		return nil
 	}
 
 	m.proxy.SetPluginProvider(name, dp)
 	log.Printf("[%s] installed per-domain auth for %d domain(s)", name, len(providers))
+	return nil
 }
 
 // preparePlugin resolves config, registers with the proxy, and creates
@@ -1038,6 +1072,20 @@ func (m *Manager) Manifests() map[string]*Manifest {
 	return snapshot
 }
 
+// ManifestErrors returns plugins whose manifest failed to load,
+// keyed by plugin directory name, with the load error. Unlike
+// disabled plugins these have no manifest and no tools — surfacing
+// them keeps rejected plugins visible to plugin_list and reload.
+func (m *Manager) ManifestErrors() map[string]string {
+	m.handlesMu.RLock()
+	defer m.handlesMu.RUnlock()
+	snapshot := make(map[string]string, len(m.manifestErrors))
+	for k, v := range m.manifestErrors {
+		snapshot[k] = v
+	}
+	return snapshot
+}
+
 // DisabledPlugins returns a snapshot of plugins that were discovered
 // but could not be loaded (e.g., bad env.d permissions, TLS/cert
 // errors, missing dependencies, process start failures). Thread-safe.
@@ -1070,6 +1118,10 @@ func (m *Manager) disablePlugin(name, reason string) {
 	}
 	delete(m.handles, name)
 	m.svcHandler.unregisterPluginDirs(name)
+	// Release decrypted credential memfds and shadow dirs tracked for
+	// this plugin; without this a plugin that fails after prepare
+	// keeps plaintext resident until shutdown.
+	m.secureTracker.ClosePlugin(name)
 	m.handlesMu.Unlock()
 
 	if m.proxy != nil {
@@ -1248,10 +1300,21 @@ func (m *Manager) pluginVars(manifest *Manifest) map[string]string {
 }
 
 func (m *Manager) resolveConfig(name string, manifest *Manifest) map[string]string {
-	resolved := config.ResolveVarsMap(manifest.Config, m.pluginVars(manifest))
+	groupVars := m.pluginVars(manifest)
+	resolved := config.ResolveVarsMap(manifest.Config, groupVars)
+	if names := groupVarNames(groupVars); names != "" {
+		resolved["_group_var_names"] = names
+	}
 	if m.cfg.CredentialsDir != "" && manifest.CredentialGroup != "" {
 		credDir := filepath.Join(m.cfg.CredentialsDir, manifest.CredentialGroup)
-		if hasVaultFiles(credDir) {
+		// With the sandbox active, nothing on the plugin side can read
+		// the shadow dir — it is not in the read profile and its fds
+		// are close-on-exec — so building it only keeps decrypted
+		// plaintext in core memory serving no consumer. Keep
+		// _credentials_dir as the real path hint. Nosandbox builds
+		// keep the shadow dir, where it is the delivery mechanism for
+		// vault-encrypted credential files.
+		if hasVaultFiles(credDir) && (m.sbMgr == nil || !m.sbMgr.Enabled()) {
 			shadowDir, err := m.buildShadowCredentialsDir(name, credDir)
 			if err != nil {
 				log.Printf("[%s] shadow dir failed, using original: %v", name, err)
@@ -1276,6 +1339,42 @@ func (m *Manager) resolveConfig(name string, manifest *Manifest) map[string]stri
 		}
 	}
 	return resolved
+}
+
+// envVarNamePattern matches environment variable names that are safe
+// to embed in the comma-separated _group_var_names list. Keys that do
+// not match (for example names containing commas) are skipped to keep
+// the list unambiguous.
+var envVarNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// groupVarNames renders the sorted, comma-separated list of
+// non-empty group variable names injected as _group_var_names.
+// Names only -- values never cross the process boundary. Variables
+// with empty values are excluded so consumers cannot distinguish
+// "declared but empty" from "configured".
+func groupVarNames(vars map[string]string) string {
+	if len(vars) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(vars))
+	var skipped []string
+	for key, val := range vars {
+		if val == "" {
+			continue
+		}
+		if !envVarNamePattern.MatchString(key) {
+			skipped = append(skipped, key)
+			continue
+		}
+		names = append(names, key)
+	}
+	if len(skipped) > 0 {
+		sort.Strings(skipped)
+		log.Printf("credentials: excluding non-conforming variable names from _group_var_names: %s",
+			strings.Join(skipped, ","))
+	}
+	sort.Strings(names)
+	return strings.Join(names, ",")
 }
 
 // discoverSSHPublicKeys reads SSH public keys from ~/.ssh/id_*.pub.
@@ -1372,9 +1471,9 @@ func hasVaultFiles(dir string) bool {
 
 // buildShadowCredentialsDir creates a per-plugin shadow directory
 // with symlinks to credential files. Encrypted files are decrypted
-// to inheritable securefiles; plaintext files are symlinked to the
-// originals. Token file writes follow the symlink back to the
-// original file.
+// to memfd-backed securefiles (close-on-exec when the sandbox is
+// active); plaintext files are symlinked to the originals. Token
+// file writes follow the symlink back to the original file.
 func (m *Manager) buildShadowCredentialsDir(pluginName, originalDir string) (string, error) {
 	base := os.Getenv("XDG_RUNTIME_DIR")
 	if base == "" {
@@ -1421,7 +1520,7 @@ func (m *Manager) buildShadowCredentialsDir(pluginName, originalDir string) (str
 		}
 
 		if secrets.IsEncrypted(data) {
-			sfPath, err := m.decryptCredentialToInheritable(pluginName, entry.Name(), data)
+			sfPath, err := m.decryptCredentialToSecurefile(pluginName, entry.Name(), data)
 			if err != nil {
 				log.Printf("[%s] shadow decrypt %s: %v", pluginName, entry.Name(), err)
 				continue
@@ -1439,16 +1538,29 @@ func (m *Manager) buildShadowCredentialsDir(pluginName, originalDir string) (str
 	return shadowDir, nil
 }
 
-// decryptCredentialToInheritable decrypts vault data to an
-// inheritable securefile (no MFD_CLOEXEC) so plugin subprocesses
-// can read via /proc/self/fd/N.
-func (m *Manager) decryptCredentialToInheritable(pluginName, fileName string, data []byte) (string, error) {
+// decryptCredentialToSecurefile decrypts vault data to a
+// memfd-backed securefile and returns its /proc/self/fd path for
+// the shadow directory.
+//
+// When the sandbox is active the fd is close-on-exec: all plugins
+// are prepared before any process spawns, so inheritable fds would
+// place every group's decrypted credentials in every handler's fd
+// table, readable via /proc/self (which the sandbox allows). In
+// nosandbox builds the fd stays inheritable -- there the shadow
+// dir symlink is the delivery mechanism for vault-encrypted
+// credential files, and there is no sandbox boundary to defend.
+func (m *Manager) decryptCredentialToSecurefile(pluginName, fileName string, data []byte) (string, error) {
 	plaintext, err := m.decryptVaultData(data, pluginName)
 	if err != nil {
 		return "", err
 	}
 
-	sf, err := securefile.Create(fileName)
+	var sf *securefile.SecureFile
+	if m.sbMgr != nil && m.sbMgr.Enabled() {
+		sf, err = securefile.CreateCloexec(fileName)
+	} else {
+		sf, err = securefile.Create(fileName)
+	}
 	if err != nil {
 		vault.ZeroBytes(plaintext)
 		return "", fmt.Errorf("create securefile: %w", err)

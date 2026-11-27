@@ -646,3 +646,80 @@ func resolveVarExpression(inner string, lookup func(string) (string, bool)) stri
 	val, _ := lookup(inner)
 	return val
 }
+
+// ExtractVarRefs returns the names of all ${...} variable
+// references in s, mirroring the expression syntax understood by
+// the resolver (${VAR}, ${VAR:-default}, ${VAR:+value},
+// ${VAR|hostname}, $$ escapes, nesting). Names referenced from
+// nested defaults ("${A:-${B}}") are included.
+func ExtractVarRefs(s string) []string {
+	var names []string
+	extractVarRefs(s, &names)
+	return names
+}
+
+func extractVarRefs(s string, names *[]string) {
+	i := 0
+	for i < len(s) {
+		if i+1 < len(s) && s[i] == '$' && s[i+1] == '$' {
+			i += 2
+			continue
+		}
+		if i+1 < len(s) && s[i] == '$' && s[i+1] == '{' {
+			// Find matching }
+			depth := 1
+			j := i + 2
+			for j < len(s) && depth > 0 {
+				switch {
+				case j+1 < len(s) && s[j] == '$' && s[j+1] == '{':
+					depth++
+					j += 2
+				case s[j] == '}':
+					depth--
+					j++
+				default:
+					j++
+				}
+			}
+			if depth == 0 {
+				inner := s[i+2 : j-1]
+				name, rest := splitVarExpression(inner)
+				if name != "" {
+					*names = append(*names, name)
+				}
+				if rest != "" {
+					extractVarRefs(rest, names)
+				}
+				i = j
+				continue
+			}
+		}
+		i++
+	}
+}
+
+// splitVarExpression splits a ${...} inner expression into the
+// variable name and the remainder after the first top-level
+// operator, mirroring the operator precedence in
+// resolveVarExpression.
+func splitVarExpression(inner string) (name, rest string) {
+	// Mirror resolveVarExpression's precedence exactly: a trailing
+	// |hostname operator is checked before the :-/:+ positional
+	// operators, so for "A:-b|hostname" the resolver reads var
+	// "A:-b" and the extractor must report the same name.
+	if i := findTopLevelPattern(inner, "|hostname"); i >= 0 && i+len("|hostname") == len(inner) {
+		return inner[:i], ""
+	}
+	idxDefault := findTopLevelPattern(inner, ":-")
+	idxConditional := findTopLevelPattern(inner, ":+")
+	best := -1
+	for _, i := range []int{idxDefault, idxConditional} {
+		if i >= 0 && (best < 0 || i < best) {
+			best = i
+		}
+	}
+	if best < 0 {
+		return inner, ""
+	}
+	return inner[:best], inner[best:]
+}

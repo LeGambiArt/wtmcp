@@ -3,37 +3,53 @@ package main
 import (
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"strings"
 	"testing"
 
 	"github.com/LeGambiArt/wtmcp/pkg/handler"
 	gogitlab "gitlab.com/gitlab-org/api/client-go"
 )
 
-func TestScanMultiInstanceNone(t *testing.T) {
-	t.Setenv("GITLAB_TOKEN", "tok")
-	for _, env := range os.Environ() {
-		key, _, _ := strings.Cut(env, "=")
-		if key != "GITLAB_TOKEN" && key != "GITLAB_URL" &&
-			len(key) > 7 && key[:7] == "GITLAB_" && key[len(key)-6:] == "_TOKEN" {
-			t.Setenv(key, "")
+func TestParseGroupVarNames(t *testing.T) {
+	tests := []struct {
+		in   string
+		want []string
+	}{
+		{"", nil},
+		{"GITLAB_TOKEN", []string{"GITLAB_TOKEN"}},
+		{"GITLAB_URL,GITLAB_TOKEN", []string{"GITLAB_URL", "GITLAB_TOKEN"}},
+		{" GITLAB_URL , GITLAB_TOKEN ", []string{"GITLAB_URL", "GITLAB_TOKEN"}},
+		{",,", nil},
+	}
+	for _, tt := range tests {
+		got := parseGroupVarNames(tt.in)
+		if len(got) != len(tt.want) {
+			t.Errorf("parseGroupVarNames(%q) = %v, want %v", tt.in, got, tt.want)
+			continue
+		}
+		for i := range got {
+			if got[i] != tt.want[i] {
+				t.Errorf("parseGroupVarNames(%q)[%d] = %q, want %q", tt.in, i, got[i], tt.want[i])
+			}
 		}
 	}
+}
 
-	entries := scanMultiInstance()
+func TestScanMultiInstanceNone(t *testing.T) {
+	t.Setenv("GITLAB_TOKEN", "tok")
+
+	names := parseGroupVarNames("GITLAB_TOKEN,GITLAB_URL")
+	entries := scanMultiInstance(names)
 	if len(entries) != 0 {
 		t.Errorf("expected no multi-instance, got %v", entries)
 	}
 }
 
 func TestScanMultiInstanceFound(t *testing.T) {
-	t.Setenv("GITLAB_PUBLIC_TOKEN", "pub-token")
 	t.Setenv("GITLAB_PUBLIC_URL", "https://gitlab.com")
-	t.Setenv("GITLAB_INTERNAL_TOKEN", "int-token")
 	t.Setenv("GITLAB_INTERNAL_URL", "https://gitlab.cee.redhat.com")
 
-	entries := scanMultiInstance()
+	names := parseGroupVarNames("GITLAB_INTERNAL_TOKEN,GITLAB_PUBLIC_TOKEN,GITLAB_URL")
+	entries := scanMultiInstance(names)
 	if len(entries) != 2 {
 		t.Fatalf("expected 2 entries, got %d", len(entries))
 	}
@@ -63,11 +79,28 @@ func TestScanMultiInstanceFound(t *testing.T) {
 	}
 }
 
-func TestScanMultiInstanceDefaultURL(t *testing.T) {
-	t.Setenv("GITLAB_TOKEN", "")
-	t.Setenv("GITLAB_MYINST_TOKEN", "tok")
+func TestScanMultiInstanceEmptyNameSkipped(t *testing.T) {
+	// GITLAB__TOKEN would yield an empty instance name; the guard
+	// must keep skipping it.
+	names := parseGroupVarNames("GITLAB__TOKEN")
+	entries := scanMultiInstance(names)
+	if len(entries) != 0 {
+		t.Errorf("expected empty instance name to be skipped, got %v", entries)
+	}
+}
 
-	entries := scanMultiInstance()
+func TestScanMultiInstanceIgnoresNonTokenVars(t *testing.T) {
+	names := parseGroupVarNames("GITLAB_URL,GITLAB_PUBLIC_URL,OTHER_TOKEN")
+	entries := scanMultiInstance(names)
+	if len(entries) != 0 {
+		t.Errorf("expected no entries from URL vars, got %v", entries)
+	}
+}
+
+func TestScanMultiInstanceDefaultURL(t *testing.T) {
+	names := parseGroupVarNames("GITLAB_MYINST_TOKEN")
+
+	entries := scanMultiInstance(names)
 	if len(entries) != 1 {
 		t.Fatalf("expected 1 entry, got %d", len(entries))
 	}
@@ -80,12 +113,27 @@ func TestSetupSingleInstanceDefaultsToAnonymousGitLabCom(t *testing.T) {
 	t.Setenv("GITLAB_URL", "")
 	t.Setenv("GITLAB_TOKEN", "")
 
-	if err := setupSingleInstance(handler.New(), &http.Client{}); err != nil {
+	if err := setupSingleInstance(handler.New(), &http.Client{}, nil); err != nil {
 		t.Fatalf("setupSingleInstance: %v", err)
 	}
 
 	if got := instances["default"].URL; got != "https://gitlab.com" {
 		t.Errorf("URL = %q, want https://gitlab.com", got)
+	}
+	if instances["default"].Authenticated {
+		t.Error("Authenticated should be false without GITLAB_TOKEN in the names list")
+	}
+}
+
+func TestSetupSingleInstanceAuthenticatedFromNames(t *testing.T) {
+	t.Setenv("GITLAB_URL", "")
+
+	names := parseGroupVarNames("GITLAB_TOKEN,GITLAB_URL")
+	if err := setupSingleInstance(handler.New(), &http.Client{}, names); err != nil {
+		t.Fatalf("setupSingleInstance: %v", err)
+	}
+	if !instances["default"].Authenticated {
+		t.Error("Authenticated should be true with GITLAB_TOKEN in the names list")
 	}
 }
 
@@ -102,7 +150,7 @@ func TestSetupSingleInstanceURLWithoutToken(t *testing.T) {
 	defer ts.Close()
 	t.Setenv("GITLAB_URL", ts.URL)
 
-	if err := setupSingleInstance(handler.New(), ts.Client()); err != nil {
+	if err := setupSingleInstance(handler.New(), ts.Client(), nil); err != nil {
 		t.Fatalf("setupSingleInstance: %v", err)
 	}
 	if _, _, err := instances["default"].Client.Projects.GetProject("group/project", nil); err != nil {

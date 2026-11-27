@@ -222,12 +222,24 @@ security:
 
 ### Credential Isolation
 
-Plugin processes receive only the credentials they need.
+In sandboxed (default) builds, plugin processes never see raw
+credentials: auth is injected by the HTTP proxy, credential files
+are outside the sandbox read profile, and manifests that would
+pass the credential variables they declare — auth-field references
+and `setup.credentials` entries marked `secret: true` — to the
+handler (env list or config) are rejected at load time. Runtime
+checks and warnings cover the classes static validation cannot see
+(per-instance auth bindings). `make nosandbox` builds have no
+Landlock enforcement and retain filesystem access by design.
+
+Plugin processes receive only the configuration they need.
 
 - **Scoped env.d** — each plugin receives only its credential
   group's variables
 - **Filtered environment** — allowlist of safe system vars passed
   to plugins (PATH, HOME, LANG, TZ, TMPDIR, XDG_* dirs, etc.)
+- **Credential files unreadable** — the credentials directory is
+  not in the sandbox read profile, not even the plugin's own group
 - **File permission enforcement** — env.d files and directories
   require 0600/0700 (SSH-style)
 - **Symlink rejection** on credential files, CA certs, and env.d
@@ -426,8 +438,11 @@ Plugin authentication (particularly for OAuth-enabled plugins) is managed throug
 
 env.d files can be encrypted with [Ansible Vault](https://docs.ansible.com/ansible/latest/vault_guide/)
 for at-rest protection. The server auto-detects encrypted files by
-magic header and decrypts them transparently at startup. Plugins
-receive plaintext credentials as usual — no plugin changes needed.
+magic header and decrypts them transparently at startup. Credential
+resolution works as usual — the proxy and the core see plaintext
+values — so no plugin changes are needed. In sandboxed (default)
+builds, plugins never see the plaintext; in `make nosandbox` builds
+they retain filesystem access and can read it by design.
 
 ### Quick Start
 

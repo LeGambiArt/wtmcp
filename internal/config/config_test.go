@@ -765,3 +765,39 @@ server:
 		t.Errorf("error should mention server.host, got: %v", err)
 	}
 }
+
+func TestExtractVarRefs(t *testing.T) {
+	tests := []struct {
+		in   string
+		want []string
+	}{
+		{"", nil},
+		{"no refs here", nil},
+		{"$$escaped", nil},
+		{"${MY_VAR}", []string{"MY_VAR"}},
+		{"${A}${B}", []string{"A", "B"}},
+		{"prefix ${A:-default} suffix", []string{"A"}},
+		{"${A:+value}", []string{"A"}},
+		{"${A|hostname}", []string{"A"}},
+		{"${A:-${B}}", []string{"A", "B"}},
+		{"${A:-${B:-${C}}}", []string{"A", "B", "C"}},
+		// Trailing |hostname is checked before positional operators by
+		// BOTH parsers — the extractor must report the var the resolver
+		// actually reads ("A:-b"), not the pre-operator name.
+		{"${A:-b|hostname}", []string{"A:-b"}},
+		{"${A:+b|hostname}", []string{"A:+b"}},
+		{"${A|hostname:-b}", []string{"A|hostname"}},
+	}
+	for _, tt := range tests {
+		got := ExtractVarRefs(tt.in)
+		if len(got) != len(tt.want) {
+			t.Errorf("ExtractVarRefs(%q) = %v, want %v", tt.in, got, tt.want)
+			continue
+		}
+		for i := range got {
+			if got[i] != tt.want[i] {
+				t.Errorf("ExtractVarRefs(%q)[%d] = %q, want %q", tt.in, i, got[i], tt.want[i])
+			}
+		}
+	}
+}

@@ -8,18 +8,24 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/LeGambiArt/wtmcp/internal/auth"
 	"github.com/LeGambiArt/wtmcp/internal/cache"
 	"github.com/LeGambiArt/wtmcp/internal/config"
+	"github.com/LeGambiArt/wtmcp/internal/credentials"
 	"github.com/LeGambiArt/wtmcp/internal/protocol"
 	"github.com/LeGambiArt/wtmcp/internal/proxy"
+	"github.com/LeGambiArt/wtmcp/internal/sandbox"
 	"github.com/LeGambiArt/wtmcp/internal/secrets/securefile"
 )
 
@@ -118,6 +124,246 @@ func TestResolveConfigSessionDir(t *testing.T) {
 			t.Error("_output_dir should not be set when sessionDir is empty")
 		}
 	})
+}
+
+func TestResolveConfigGroupVarNames(t *testing.T) {
+	t.Run("injects sorted non-empty names from env group", func(t *testing.T) {
+		m := &Manager{
+			envGroups: config.EnvGroups{
+				"gitlab": {
+					"GITLAB_URL":         "https://gitlab.com",
+					"GITLAB_TOKEN":       "tok",
+					"GITLAB_STAGING_URL": "https://staging.gitlab.com",
+					"GITLAB_EMPTY":       "",
+					"BAD,NAME":           "x",
+				},
+			},
+			cfg: &config.Config{},
+		}
+		manifest := &Manifest{CredentialGroup: "gitlab", Config: map[string]string{}}
+
+		got := m.resolveConfig("gitlab", manifest)
+
+		want := "GITLAB_STAGING_URL,GITLAB_TOKEN,GITLAB_URL"
+		if got["_group_var_names"] != want {
+			t.Errorf("_group_var_names = %q, want %q", got["_group_var_names"], want)
+		}
+	})
+
+	t.Run("omits when group has no vars", func(t *testing.T) {
+		m := &Manager{cfg: &config.Config{}}
+		manifest := &Manifest{Config: map[string]string{}}
+
+		got := m.resolveConfig("hello", manifest)
+
+		if _, ok := got["_group_var_names"]; ok {
+			t.Error("_group_var_names should not be set without group vars")
+		}
+	})
+
+	t.Run("omits when all vars are empty or malformed", func(t *testing.T) {
+		m := &Manager{
+			envGroups: config.EnvGroups{"gitlab": {"GITLAB_TOKEN": "", "BAD,NAME": "x"}},
+			cfg:       &config.Config{},
+		}
+		manifest := &Manifest{CredentialGroup: "gitlab", Config: map[string]string{}}
+
+		got := m.resolveConfig("gitlab", manifest)
+
+		if _, ok := got["_group_var_names"]; ok {
+			t.Errorf("_group_var_names = %q, want omitted", got["_group_var_names"])
+		}
+	})
+}
+
+// TestResolveConfigGroupVarNamesCredentialService pins the manager
+// wiring: when a credential service is available, _group_var_names
+// must come from it (env.d resolution via GetAll), not from the
+// legacy envGroups fallback.
+func TestResolveConfigGroupVarNamesCredentialService(t *testing.T) {
+	envDir := t.TempDir()
+	envFile := filepath.Join(envDir, "gitlab.env")
+	content := "GITLAB_TOKEN=tok\nGITLAB_URL=https://gitlab.example.com\n"
+	if err := os.WriteFile(envFile, []byte(content), 0o600); err != nil { //nolint:gosec // test config file
+		t.Fatal(err)
+	}
+
+	svc, err := credentials.NewService(envDir, filepath.Join(t.TempDir(), "migration.yaml"))
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+
+	m := &Manager{
+		credentialService: svc,
+		// Legacy fallback must NOT win when the service resolves vars.
+		envGroups: config.EnvGroups{"gitlab": {"GITLAB_STALE": "x"}},
+		cfg:       &config.Config{},
+	}
+	manifest := &Manifest{CredentialGroup: "gitlab", Config: map[string]string{}}
+
+	got := m.resolveConfig("gitlab", manifest)
+
+	want := "GITLAB_TOKEN,GITLAB_URL"
+	if got["_group_var_names"] != want {
+		t.Errorf("_group_var_names = %q, want %q", got["_group_var_names"], want)
+	}
+}
+
+var bindingLeakScript = `#!/bin/bash
+while IFS= read -r line; do
+  type=$(echo "$line" | jq -r '.type')
+  id=$(echo "$line" | jq -r '.id')
+  case "$type" in
+    init)
+      echo "{\"id\":\"$id\",\"type\":\"init_ok\",\"auth_bindings\":{\"example.com\":\"SVC_STAGING_TOKEN\"}}"
+      ;;
+    tool_call)
+      echo "{\"id\":\"$id\",\"type\":\"tool_result\",\"result\":{}}"
+      ;;
+    shutdown)
+      echo "{\"id\":\"$id\",\"type\":\"shutdown_ok\"}"
+      exit 0
+      ;;
+  esac
+done
+`
+
+// TestLoadAllDisablesEnvLeakingAuthBindings pins the runtime half of
+// the credential-leak policy: a variable nominated via init_ok
+// auth_bindings is invisible to the load-time lint, so when the env
+// list also delivers it the plugin must be stopped and disabled —
+// the value is already in the process environment, a warning would
+// leave the leak in place.
+func TestLoadAllDisablesEnvLeakingAuthBindings(t *testing.T) {
+	dir := setupTestPlugin(t, "binding-leak", bindingLeakScript)
+
+	// The manifest needs services.auth (bearer, optional) and the
+	// offending env entry; the load-time lint cannot flag
+	// SVC_STAGING_TOKEN because no auth field references it.
+	manifestPath := filepath.Join(dir, "binding-leak", "plugin.yaml")
+	manifest := `name: binding-leak
+version: "1.0.0"
+description: "Test plugin"
+execution: persistent
+handler: ./handler.sh
+credential_group: svc
+services:
+  auth:
+    type: bearer
+    optional: true
+env:
+  - SVC_STAGING_TOKEN
+tools:
+  - name: binding_leak_test
+    description: "A test tool"
+    params: {}
+`
+	if err := os.WriteFile(manifestPath, []byte(manifest), 0o644); err != nil { //nolint:gosec // test config file
+		t.Fatal(err)
+	}
+
+	cfg := config.DefaultConfig()
+	authReg := auth.NewRegistry()
+	cacheStore := cache.NewMemoryStore()
+	p := proxy.New(nil, cfg.Plugins.MaxMessageSize, cfg.HTTP.Timeout)
+	m := NewManager(authReg, p, cacheStore, cfg,
+		config.EnvGroups{"svc": {"SVC_STAGING_TOKEN": "live-secret"}}, nil,
+		"", "", "", config.EnvLoadOptions{}, "")
+
+	if err := m.Discover([]string{dir}, ""); err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	if err := m.LoadAll(context.Background()); err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	m.StartPending(context.Background())
+
+	dp, ok := m.DisabledPlugins()["binding-leak"]
+	if !ok {
+		t.Fatal("plugin must be disabled when an auth binding names an env-delivered variable")
+	}
+	if !strings.Contains(dp.Reason, "SVC_STAGING_TOKEN") || !strings.Contains(dp.Reason, "env entry") {
+		t.Errorf("reason = %q, want the variable and the env-entry remedy", dp.Reason)
+	}
+	if m.Handle("binding-leak") != nil {
+		t.Error("disabled plugin must not have a live handle")
+	}
+}
+
+// TestResolveConfigSkipsShadowDirUnderSandbox pins that sandboxed
+// builds do not build the shadow credentials dir: nothing on the
+// plugin side can read it, so it would only retain decrypted
+// plaintext in core memory.
+func TestResolveConfigSkipsShadowDirUnderSandbox(t *testing.T) {
+	credRoot := t.TempDir()
+	groupDir := filepath.Join(credRoot, "gitlab")
+	if err := os.MkdirAll(groupDir, 0o700); err != nil { //nolint:gosec // test dir
+		t.Fatal(err)
+	}
+	vaultFile := filepath.Join(groupDir, "creds.json")
+	if err := os.WriteFile(vaultFile, []byte("$ANSIBLE_VAULT;1.1;AES256\nbody"), 0o600); err != nil { //nolint:gosec // test config file
+		t.Fatal(err)
+	}
+
+	m := newTestManager(t)
+	m.decryptor = &testCredentialDecryptor{plaintext: []byte("decrypted-secret")}
+	m.cfg.CredentialsDir = credRoot
+	manifest := &Manifest{CredentialGroup: "gitlab", Config: map[string]string{}}
+
+	t.Run("nosandbox keeps the shadow dir", func(t *testing.T) {
+		t.Cleanup(func() { m.secureTracker.ClosePlugin("gitlab") })
+		got := m.resolveConfig("gitlab", manifest)
+		dir := got["_credentials_dir"]
+		if dir == "" || dir == groupDir {
+			t.Errorf("_credentials_dir = %q, want a shadow dir path", dir)
+		}
+		if !strings.Contains(filepath.Base(dir), "wtmcp-shadow") && !strings.Contains(dir, "wtmcp-shadow") {
+			t.Errorf("_credentials_dir = %q, want shadow dir under wtmcp-shadow", dir)
+		}
+	})
+
+	t.Run("sandboxed skips the shadow build", func(t *testing.T) {
+		sb, err := sandbox.NewManager(config.SandboxConfig{}, t.TempDir())
+		if err != nil {
+			t.Skipf("sandbox unavailable: %v", err)
+		}
+		if !sb.Enabled() {
+			t.Skip("sandbox manager present but disabled (nosandbox build)")
+		}
+		t.Cleanup(sb.Close)
+
+		m.SetSandbox(sb)
+		got := m.resolveConfig("gitlab", manifest)
+		if got["_credentials_dir"] != groupDir {
+			t.Errorf("_credentials_dir = %q, want the real credentials dir (no shadow under sandbox)", got["_credentials_dir"])
+		}
+	})
+}
+
+// TestDisablePluginClosesSecureFiles pins that disabling a plugin
+// releases its tracked decrypted-credential memfds instead of
+// keeping the plaintext resident until shutdown.
+func TestDisablePluginClosesSecureFiles(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("/proc/self/fd close check, Linux only")
+	}
+
+	sf, err := securefile.CreateCloexec("disable-check")
+	if err != nil {
+		t.Fatalf("CreateCloexec: %v", err)
+	}
+	defer sf.Close() //nolint:errcheck // test cleanup
+	if err := sf.Write([]byte("SECRET=hunter2")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	m := newTestManager(t)
+	m.secureTracker.TrackForPlugin("victim", sf)
+	m.disablePlugin("victim", "test disable")
+
+	if _, err := os.Stat(sf.Path()); !os.IsNotExist(err) {
+		t.Errorf("securefile fd must be closed after disablePlugin: stat(%q) err = %v", sf.Path(), err)
+	}
 }
 
 func TestManagerDiscover(t *testing.T) {
@@ -2630,4 +2876,103 @@ func TestHandleFileIOAccessControl(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestDiscoverRecordsManifestErrors(t *testing.T) {
+	dir := t.TempDir()
+	pluginDir := filepath.Join(dir, "broken")
+	if err := os.MkdirAll(pluginDir, 0o755); err != nil { //nolint:gosec // test dir
+		t.Fatal(err)
+	}
+	// env_passthrough is rejected at load time by the manifest lint.
+	manifest := `name: broken
+version: "1.0.0"
+handler: ./handler
+env_passthrough: all
+tools: []
+`
+	if err := os.WriteFile(filepath.Join(pluginDir, "plugin.yaml"), []byte(manifest), 0o644); err != nil { //nolint:gosec // test config file
+		t.Fatal(err)
+	}
+
+	m := newTestManager(t)
+	if err := m.Discover([]string{dir}, ""); err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+
+	errs := m.ManifestErrors()
+	reason, ok := errs["broken"]
+	if !ok {
+		t.Fatalf("ManifestErrors = %v, want entry for 'broken'", errs)
+	}
+	if !strings.Contains(reason, "env_passthrough") {
+		t.Errorf("reason = %q, want env_passthrough rejection", reason)
+	}
+	if _, loaded := m.Manifests()["broken"]; loaded {
+		t.Error("rejected manifest must not appear in Manifests()")
+	}
+}
+
+// fdIsCloexec reports whether the fd behind a /proc/self/fd/N path
+// carries FD_CLOEXEC.
+func fdIsCloexec(t *testing.T, path string) bool {
+	t.Helper()
+	if runtime.GOOS != "linux" {
+		t.Skip("fd flags test is Linux only")
+	}
+	var fd int
+	if _, err := fmt.Sscanf(path, "/proc/self/fd/%d", &fd); err != nil {
+		t.Fatalf("parse fd path %q: %v", path, err)
+	}
+	flags, err := unix.FcntlInt(uintptr(fd), unix.F_GETFD, 0)
+	if err != nil {
+		t.Fatalf("F_GETFD on %q: %v", path, err)
+	}
+	return flags&unix.FD_CLOEXEC != 0
+}
+
+// TestDecryptCredentialSecurefileCloexec asserts that shadow-dir
+// securefiles are close-on-exec when the sandbox is active. All
+// plugins are prepared before any handler process spawns, so an
+// inheritable fd would deliver every group's decrypted credentials
+// to every handler's fd table, readable via /proc/self.
+func TestDecryptCredentialSecurefileCloexec(t *testing.T) {
+	data := []byte("$ANSIBLE_VAULT;1.1;AES256\nbody")
+	plaintext := []byte("decrypted-secret")
+
+	t.Run("sandboxed builds use close-on-exec", func(t *testing.T) {
+		sb, err := sandbox.NewManager(config.SandboxConfig{}, t.TempDir())
+		if err != nil {
+			t.Skipf("sandbox unavailable: %v", err)
+		}
+		if !sb.Enabled() {
+			t.Skip("sandbox manager present but disabled (nosandbox build)")
+		}
+		t.Cleanup(sb.Close)
+
+		m := newTestManager(t)
+		m.SetSandbox(sb)
+		m.decryptor = &testCredentialDecryptor{plaintext: plaintext}
+
+		path, err := m.decryptCredentialToSecurefile("probe", "creds.json", data)
+		if err != nil {
+			t.Fatalf("decryptCredentialToSecurefile: %v", err)
+		}
+		if !fdIsCloexec(t, path) {
+			t.Error("shadow securefile must be close-on-exec when the sandbox is active")
+		}
+	})
+
+	t.Run("nosandbox builds keep the fd inheritable", func(t *testing.T) {
+		m := newTestManager(t)
+		m.decryptor = &testCredentialDecryptor{plaintext: plaintext}
+
+		path, err := m.decryptCredentialToSecurefile("probe", "creds.json", data)
+		if err != nil {
+			t.Fatalf("decryptCredentialToSecurefile: %v", err)
+		}
+		if fdIsCloexec(t, path) {
+			t.Error("shadow securefile must stay inheritable in nosandbox builds (shadow dir delivery)")
+		}
+	})
 }

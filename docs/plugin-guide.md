@@ -32,10 +32,12 @@ handler: ./handler.py
 # Scopes env.d access — matches env.d/my-service.env
 credential_group: my-service
 
-# Env vars to pass to handler from credential group's env.d file
+# Env vars to pass to handler from credential group's env.d file.
+# Credential vars (anything referenced from services.auth) must not
+# appear here — the proxy injects auth, the handler never needs the
+# raw value, and manifests that pass them are rejected at load time.
 env:
   - MY_API_URL
-  - MY_TOKEN
 
 # Services the core provides to this plugin
 services:
@@ -340,6 +342,7 @@ Core → Plugin:  {"id": "init-1", "type": "init", "protocol": "1.0",
                   "config": {"_session_dir": "/home/user/project",
                              "_output_dir": "/home/user/project/.wtmcp-data/myplugin",
                              "_credentials_dir": "/home/user/.config/wtmcp/credentials/mygroup",
+                             "_group_var_names": "MY_API_TOKEN,MY_API_URL",
                              "MY_API_URL": "https://api.example.com", ...}}
 Plugin → Core:  {"id": "init-1", "type": "init_ok"}
 ...tool calls...
@@ -360,7 +363,7 @@ If the handler cannot initialize, respond with `init_error`:
 The `protocol` field contains the wire protocol version (`"1.0"`).
 The `config` object contains resolved environment variables and
 internal config values (`_session_dir`, `_output_dir`,
-`_credentials_dir`).
+`_credentials_dir`, `_group_var_names`).
 
 ### Tool Calls
 
@@ -950,31 +953,70 @@ file are passed to the handler process:
 credential_group: jira
 env:
   - JIRA_URL
-  - JIRA_TOKEN
 ```
 
 Only vars listed here AND present in `env.d/jira.env` reach the
-handler. Shell-exported variables are ignored.
+handler. Shell-exported variables are ignored. Credential vars
+referenced from `services.auth` must not be listed — see
+"Credential vars never reach the handler" below.
 
-### env_passthrough: all
-
-For plugins that discover configuration dynamically (e.g., scanning
-env vars for multiple instances), list all group vars explicitly
-is impossible. Use `env_passthrough: all` to pass everything from
-the credential group's env.d file:
+Entries may contain `*` to match group vars by pattern — useful
+when var names are dynamic (for example per-instance
+`GITLAB_<NAME>_URL` vars):
 
 ```yaml
-credential_group: gitlab
-env_passthrough: all
-
 env:
-  # Listed for documentation only — not used as filter
-  - GITLAB_TOKEN
   - GITLAB_URL
+  - GITLAB_*_URL
 ```
 
-The `env:` field still serves as documentation of expected vars for
-setup wizards and human readers.
+Glob entries may contain only letters, digits, underscores, and
+`*`; a bare `*` is rejected. Do not use globs to pass credential
+vars to the handler — the HTTP proxy handles auth, and manifests
+whose auth credential vars reach the handler env are rejected at
+load time.
+
+### Credential vars never reach the handler
+
+The HTTP proxy resolves and injects auth, so a handler never needs
+the raw value of a token, password, or client key. Manifests are
+rejected at load time if a credential variable — any `${VAR}`
+referenced from `services.auth` credential fields (token, username,
+password, client_id, private_key, in the base config and all
+`variants`), from `services.http.tls.client_key`, or any var marked
+`secret: true` under `setup.credentials` — would reach the handler,
+either through the `env:` list (exact name or glob match) or through
+a `config:` value reference.
+
+This is a hard error with a clear message, not a warning: a
+handler that can read its token from its own environment or init
+config is one bug away from leaking it through tool output.
+
+The classification is deliberately stricter than "secret": usernames
+and emails count as credentials — they are half of a basic-auth or
+API-key pair — so vars like `JIRA_EMAIL` or `JENKINS_USER` are
+rejected from env lists even though they are not confidential on
+their own. Pass non-secret configuration (URLs, paths) instead; if a
+handler genuinely needs the username for display purposes, read it
+from `config:` with a non-credential var.
+
+The classification is what the manifest declares. Two classes are
+beyond static checking: variables nominated only at runtime
+(per-instance auth bindings declared in `init_ok`) and secret
+values the manifest never references. For the first, the core
+refuses the plugin when a runtime auth binding names a variable
+the env list also delivers — the process is stopped and disabled
+with the fix in the reason, because the value is already in its
+environment. For the second, do not list vars you consider secret
+in `env:` or `config:` — globs like `SVC_*` match everything the
+credential group defines, including secrets you never referenced.
+
+`env_passthrough` used to bypass the env list and copy every group
+variable — tokens included — into the handler environment. It is
+no longer accepted. Plugins that need to know which credentials
+are configured (for example, multi-instance service discovery)
+should use the `_group_var_names` init config signal, which lists
+variable names without values.
 
 ### ${VAR} resolution
 
@@ -988,8 +1030,7 @@ env.d file — never from the process environment. This means
 The server automatically injects `_credentials_dir` into the
 resolved config for plugins that declare a `credential_group`. This
 is the per-group credentials directory path (e.g.,
-`~/.config/wtmcp/credentials/google/`). Go plugin handlers can read
-it from the init config to find credential files:
+`~/.config/wtmcp/credentials/google/`):
 
 ```go
 p.OnInit(func(cfgRaw json.RawMessage) error {
@@ -1001,8 +1042,40 @@ p.OnInit(func(cfgRaw json.RawMessage) error {
 })
 ```
 
-Python plugins that use the HTTP proxy don't need this — the server
-handles credential injection automatically.
+**This is a path hint only.** In sandboxed (default) builds the
+credentials directory is not in the sandbox read profile — plugin
+processes cannot read credential files, not even their own
+group's. Auth and TLS are handled by the core proxy; handlers
+that need to know which credentials are configured should use
+`_group_var_names`. Treat `_credentials_dir` as a way to derive
+related paths (for example, locating a sibling `env.d/` file),
+not as readable storage.
+
+Historically the guide advertised reading credential files
+directly from this directory. In sandboxed builds that capability
+is gone: token
+files for groups not migrated to the keyring are plaintext on
+disk, and a compromised handler must not be able to read them.
+
+### _group_var_names
+
+The server injects `_group_var_names` into the resolved config for
+plugins with a `credential_group`: a sorted, comma-separated list of
+the **names** of the group's configured variables (variables with
+empty values are excluded). Values are never included — this exists
+so plugins can discover what is configured (for example, which
+instances of a service have tokens) without receiving the
+credentials themselves:
+
+```go
+p.OnInit(func(cfgRaw json.RawMessage) error {
+    var cfg map[string]string
+    json.Unmarshal(cfgRaw, &cfg)
+    configured := strings.Split(cfg["_group_var_names"], ",")
+    // configured = ["GITLAB_TOKEN", "GITLAB_URL", ...]
+    ...
+})
+```
 
 ### _session_dir and _output_dir
 

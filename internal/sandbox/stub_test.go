@@ -12,7 +12,7 @@ func TestStubNewManagerWithoutEnvVar(t *testing.T) {
 	cfg := testConfig()
 	t.Setenv("WTMCP_UNSANDBOXED", "")
 
-	_, err := NewManager(cfg, "", t.TempDir())
+	_, err := NewManager(cfg, t.TempDir())
 	if err == nil {
 		t.Fatal("NewManager without WTMCP_UNSANDBOXED=1 should error")
 	}
@@ -25,7 +25,7 @@ func TestStubNewManagerWithEnvVar(t *testing.T) {
 	cfg := testConfig()
 	t.Setenv("WTMCP_UNSANDBOXED", "1")
 
-	mgr, err := NewManager(cfg, "", t.TempDir())
+	mgr, err := NewManager(cfg, t.TempDir())
 	if err != nil {
 		t.Fatalf("WTMCP_UNSANDBOXED=1 should allow startup: %v", err)
 	}
@@ -38,7 +38,7 @@ func TestStubNewManagerWithEnvVar(t *testing.T) {
 
 func TestStubEnabled(t *testing.T) {
 	t.Setenv("WTMCP_UNSANDBOXED", "1")
-	mgr, _ := NewManager(testConfig(), "", t.TempDir())
+	mgr, _ := NewManager(testConfig(), t.TempDir())
 	defer mgr.Close()
 
 	if mgr.Enabled() {
@@ -48,7 +48,7 @@ func TestStubEnabled(t *testing.T) {
 
 func TestStubLaunchReturnsError(t *testing.T) {
 	t.Setenv("WTMCP_UNSANDBOXED", "1")
-	mgr, _ := NewManager(testConfig(), "", t.TempDir())
+	mgr, _ := NewManager(testConfig(), t.TempDir())
 	defer mgr.Close()
 
 	info := PluginInfo{Name: "test", Dir: "/tmp", Handler: "./handler"}
@@ -60,7 +60,7 @@ func TestStubLaunchReturnsError(t *testing.T) {
 
 func TestStubCloseIdempotent(t *testing.T) {
 	t.Setenv("WTMCP_UNSANDBOXED", "1")
-	mgr, _ := NewManager(testConfig(), "", t.TempDir())
+	mgr, _ := NewManager(testConfig(), t.TempDir())
 	mgr.Close()
 	mgr.Close()
 }

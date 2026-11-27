@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -67,34 +68,64 @@ func TestBuildPluginEnvIgnoresProcessEnv(t *testing.T) {
 	}
 }
 
-func TestBuildPluginEnvPassthroughAll(t *testing.T) {
+func TestBuildPluginEnvPassthroughIgnored(t *testing.T) {
+	// env_passthrough is rejected at validation time; if a Manifest
+	// reaches buildPluginEnv with it set anyway, it must be ignored —
+	// only env-listed vars may pass.
 	m := &Manifest{
 		Name:           "test-gitlab",
 		EnvPassthrough: "all",
-		Env:            []string{"GITLAB_TOKEN"}, // listed but not used as filter
+		Env:            []string{"GITLAB_URL"},
 	}
 
 	groupVars := map[string]string{
+		"GITLAB_URL":            "https://gitlab.com",
 		"GITLAB_TOKEN":          "tok1",
 		"GITLAB_INTERNAL_TOKEN": "tok2",
+	}
+	env := buildPluginEnvMap(m, groupVars)
+
+	if env["GITLAB_URL"] != "https://gitlab.com" {
+		t.Errorf("GITLAB_URL = %q, want the group var value", env["GITLAB_URL"])
+	}
+	for key := range groupVars {
+		if key == "GITLAB_URL" {
+			continue
+		}
+		if _, present := env[key]; present {
+			t.Errorf("%s should not be passed, env = %v", key, env)
+		}
+	}
+}
+
+func TestBuildPluginEnvGlob(t *testing.T) {
+	m := &Manifest{
+		Name: "test-gitlab",
+		Env:  []string{"GITLAB_URL", "GITLAB_*_URL"},
+	}
+
+	groupVars := map[string]string{
+		"GITLAB_URL":            "https://gitlab.com",
 		"GITLAB_INTERNAL_URL":   "https://internal.example.com",
-		"GITLAB_SSL_VERIFY":     "false",
+		"GITLAB_STAGING_URL":    "https://staging.example.com",
+		"GITLAB_TOKEN":          "tok",
+		"GITLAB_INTERNAL_TOKEN": "tok2",
+		"OTHER_URL":             "https://other.example.com",
 	}
-	env := buildPluginEnv(m, groupVars)
+	env := buildPluginEnvMap(m, groupVars)
 
-	envMap := make(map[string]string)
-	for _, e := range env {
-		parts := splitEnvVar(e)
-		if len(parts) == 2 {
-			envMap[parts[0]] = parts[1]
+	for key := range groupVars {
+		nameMatch := key == "GITLAB_URL" || strings.HasSuffix(key, "_URL") && strings.HasPrefix(key, "GITLAB_")
+		_, present := env[key]
+		if nameMatch && !present {
+			t.Errorf("%s should be passed via glob, env = %v", key, env)
+		}
+		if !nameMatch && present {
+			t.Errorf("%s should not be passed (token vars must stay out), env = %v", key, env)
 		}
 	}
-
-	// All group vars should be passed when env_passthrough is "all"
-	for key, want := range groupVars {
-		if envMap[key] != want {
-			t.Errorf("%s = %q, want %q", key, envMap[key], want)
-		}
+	if env["GITLAB_INTERNAL_URL"] != "https://internal.example.com" {
+		t.Errorf("GITLAB_INTERNAL_URL = %q, want the group var value", env["GITLAB_INTERNAL_URL"])
 	}
 }
 
@@ -102,7 +133,7 @@ func TestBuildPluginEnvStripsDBus(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
 	t.Setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1000/bus")
 
-	m := &Manifest{Name: "test-plugin", EnvPassthrough: "all"}
+	m := &Manifest{Name: "test-plugin", Env: []string{"DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR", "SOME_TOKEN"}}
 	groupVars := map[string]string{
 		"DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/1000/bus",
 		"XDG_RUNTIME_DIR":          "/run/user/1000",

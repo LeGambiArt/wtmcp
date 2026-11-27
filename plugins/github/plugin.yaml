@@ -21,7 +21,6 @@ env:
   #     Fine-grained: Issues (write), Pull requests (write)
   #   Notifications (my_notifications):
   #     Classic PAT: notifications (not supported by fine-grained PATs)
-  - GITHUB_TOKEN
   - GITHUB_URL
 
 services:

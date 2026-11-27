@@ -12,8 +12,12 @@ import (
 func main() {
 	p := handler.New()
 
-	p.OnInit(func(_ json.RawMessage) error {
-		if err := discoverInstances(p); err != nil {
+	p.OnInit(func(cfgRaw json.RawMessage) error {
+		var cfg map[string]string
+		if err := json.Unmarshal(cfgRaw, &cfg); err != nil {
+			return fmt.Errorf("parse init config: %w", err)
+		}
+		if err := discoverInstances(p, cfg); err != nil {
 			return err
 		}
 		for _, inst := range instances {

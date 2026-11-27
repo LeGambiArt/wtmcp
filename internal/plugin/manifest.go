@@ -9,11 +9,13 @@ import (
 	"maps"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
 
+	"github.com/LeGambiArt/wtmcp/internal/config"
 	"github.com/LeGambiArt/wtmcp/internal/domaincheck"
 	"gopkg.in/yaml.v3"
 )
@@ -22,6 +24,112 @@ const (
 	maxToolDescriptionLen  = 4096
 	maxParamDescriptionLen = 1024
 )
+
+// envGlobNamePattern matches an env list glob entry with every '*'
+// replaced by '_'. Restricting the charset (no '?', '[', '\\') keeps
+// path.Match semantics down to plain star matching and prevents
+// malformed patterns.
+var envGlobNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// isGlobEntry reports whether an env list entry is a glob pattern.
+// Any path.Match metacharacter makes it one; variable names cannot
+// contain these characters, so the only valid use is pattern matching.
+func isGlobEntry(entry string) bool {
+	return strings.ContainsAny(entry, "*?[\\")
+}
+
+// validateEnvEntry checks a single env list entry. Entries without
+// glob metacharacters are passed through unchecked (historically
+// unvalidated); glob entries must be well-formed and must not be a
+// bare wildcard.
+func validateEnvEntry(entry string) error {
+	if !isGlobEntry(entry) {
+		return nil
+	}
+	if strings.Trim(entry, "*") == "" {
+		return fmt.Errorf("env entry %q: bare wildcard is not allowed", entry)
+	}
+	if !envGlobNamePattern.MatchString(strings.ReplaceAll(entry, "*", "_")) {
+		return fmt.Errorf("env entry %q: glob may contain only letters, digits, underscores and '*', and must not start with a digit", entry)
+	}
+	return nil
+}
+
+// credentialVarRefs collects the ${VAR} names referenced from
+// credential-bearing auth fields (base config and all variants) and
+// the HTTP TLS client key. These variables must never reach the
+// handler: the proxy resolves and injects them itself.
+func (m *Manifest) credentialVarRefs() []string {
+	authCfgs := make([]AuthServiceConfig, 0, len(m.Services.Auth.Variants)+1)
+	authCfgs = append(authCfgs, m.Services.Auth)
+	for _, v := range m.Services.Auth.Variants {
+		authCfgs = append(authCfgs, v)
+	}
+
+	var refs []string
+	for _, a := range authCfgs {
+		for _, field := range []string{a.Token, a.Username, a.Password, a.ClientID, a.PrivateKey} {
+			refs = append(refs, config.ExtractVarRefs(field)...)
+		}
+	}
+	refs = append(refs, config.ExtractVarRefs(m.Services.HTTP.TLS.ClientKey)...)
+
+	// Vars the manifest itself declares secret through setup.credentials
+	// are credentials too, even when no auth field references them.
+	for name, meta := range m.Setup.Credentials {
+		if meta.Secret {
+			refs = append(refs, name)
+		}
+	}
+
+	slices.Sort(refs)
+	return slices.Compact(refs)
+}
+
+// validateNoCredentialLeaks rejects manifests that would deliver a
+// credential variable to the handler process, through the env list
+// (exact name or glob match) or through a config value reference.
+// The proxy handles auth; a handler that can read its token from
+// its own environment or init config is one bug away from leaking
+// it through tool output.
+func (m *Manifest) validateNoCredentialLeaks() error {
+	refs := m.credentialVarRefs()
+	if len(refs) == 0 {
+		return nil
+	}
+
+	for _, name := range refs {
+		if entry, ok := m.envDelivers(name); ok {
+			return fmt.Errorf("env entry %q passes credential variable %q to the handler; the HTTP proxy injects auth, handlers never need the raw value", entry, name)
+		}
+		for key, val := range m.Config {
+			for _, ref := range config.ExtractVarRefs(val) {
+				if ref == name {
+					return fmt.Errorf("config %q references credential variable %q; the HTTP proxy injects auth, handlers never need the raw value", key, name)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// envDelivers reports whether the env list would pass varName to the
+// handler — an exact entry or a glob entry that matches it — and which
+// entry does. Used by the load-time lint and by the runtime
+// auth-binding check.
+func (m *Manifest) envDelivers(varName string) (entry string, ok bool) {
+	for _, e := range m.Env {
+		if e == varName {
+			return e, true
+		}
+		if isGlobEntry(e) {
+			if matched, err := path.Match(e, varName); err == nil && matched {
+				return e, true
+			}
+		}
+	}
+	return "", false
+}
 
 // pluginNamePattern defines valid plugin names:
 // lowercase alphanumeric, hyphens, underscores, 2-64 chars.
@@ -49,7 +157,7 @@ type Manifest struct {
 
 	DependsOn       []string `yaml:"depends_on"`
 	CredentialGroup string   `yaml:"credential_group"` // scopes env.d access
-	EnvPassthrough  string   `yaml:"env_passthrough"`  // "all" to pass all group vars
+	EnvPassthrough  string   `yaml:"env_passthrough"`  // rejected by Validate; kept so legacy manifests get a clear error
 	Env             []string `yaml:"env"`              // env vars to pass from credential group
 
 	Services ServiceConfig     `yaml:"services"`
@@ -158,7 +266,8 @@ type OutputConfig struct {
 }
 
 // SetupConfig holds human-facing metadata for configuration wizards.
-// The core parses it but does not act on it — consumed by CLI tools.
+// The core parses it and enforces the secret flag in the credential
+// leak lint; the descriptions and examples are consumed by CLI tools.
 type SetupConfig struct {
 	Credentials      map[string]CredentialMeta `yaml:"credentials"`
 	Variants         map[string]SetupVariant   `yaml:"variants"`
@@ -447,8 +556,18 @@ func (m *Manifest) Validate() error {
 		return fmt.Errorf("invalid credential_group %q: must match [a-z0-9][a-z0-9_-]{0,62}[a-z0-9]", m.CredentialGroup)
 	}
 
-	if m.EnvPassthrough != "" && m.EnvPassthrough != "all" {
-		return fmt.Errorf("env_passthrough must be 'all' or empty, got %q", m.EnvPassthrough)
+	if m.EnvPassthrough != "" {
+		return fmt.Errorf("env_passthrough is no longer supported: it copies every group variable, including credentials, into the handler environment; use env list globs and the _group_var_names init config signal instead")
+	}
+
+	for _, entry := range m.Env {
+		if err := validateEnvEntry(entry); err != nil {
+			return err
+		}
+	}
+
+	if err := m.validateNoCredentialLeaks(); err != nil {
+		return err
 	}
 
 	if m.ProvidesResources() && m.Execution == "oneshot" {
