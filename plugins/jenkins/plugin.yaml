@@ -36,8 +36,6 @@ config:
   jenkins_url: "${JENKINS_URL}"
 
 env:
-  - JENKINS_USER
-  - JENKINS_TOKEN
   - JENKINS_AUTH_TYPE
   - JENKINS_URL
 

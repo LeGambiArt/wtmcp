@@ -27,7 +27,6 @@ services:
     default_ttl: 60
 
 env:
-  - TESTING_FARM_API_TOKEN
   - TF_API_URL
   - TF_SSH_KEY_PATH
 
