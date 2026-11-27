@@ -957,6 +957,22 @@ env:
 Only vars listed here AND present in `env.d/jira.env` reach the
 handler. Shell-exported variables are ignored.
 
+Entries may contain `*` to match group vars by pattern — useful
+when var names are dynamic (for example per-instance
+`GITLAB_<NAME>_URL` vars):
+
+```yaml
+env:
+  - GITLAB_URL
+  - GITLAB_*_URL
+```
+
+Glob entries may contain only letters, digits, underscores, and
+`*`; a bare `*` is rejected. Do not use globs to pass credential
+vars to the handler — the HTTP proxy handles auth, and manifests
+whose auth credential vars reach the handler env are rejected at
+load time.
+
 ### env_passthrough: all
 
 For plugins that discover configuration dynamically (e.g., scanning

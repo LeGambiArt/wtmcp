@@ -23,6 +23,36 @@ const (
 	maxParamDescriptionLen = 1024
 )
 
+// envGlobNamePattern matches an env list glob entry with every '*'
+// replaced by '_'. Restricting the charset (no '?', '[', '\\') keeps
+// path.Match semantics down to plain star matching and prevents
+// malformed patterns.
+var envGlobNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// isGlobEntry reports whether an env list entry is a glob pattern.
+// Any path.Match metacharacter makes it one; variable names cannot
+// contain these characters, so the only valid use is pattern matching.
+func isGlobEntry(entry string) bool {
+	return strings.ContainsAny(entry, "*?[\\")
+}
+
+// validateEnvEntry checks a single env list entry. Entries without
+// glob metacharacters are passed through unchecked (historically
+// unvalidated); glob entries must be well-formed and must not be a
+// bare wildcard.
+func validateEnvEntry(entry string) error {
+	if !isGlobEntry(entry) {
+		return nil
+	}
+	if strings.Trim(entry, "*") == "" {
+		return fmt.Errorf("env entry %q: bare wildcard is not allowed", entry)
+	}
+	if !envGlobNamePattern.MatchString(strings.ReplaceAll(entry, "*", "_")) {
+		return fmt.Errorf("env entry %q: glob may contain only letters, digits, underscores and '*', and must not start with a digit", entry)
+	}
+	return nil
+}
+
 // pluginNamePattern defines valid plugin names:
 // lowercase alphanumeric, hyphens, underscores, 2-64 chars.
 var pluginNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,62}[a-z0-9]$`)
@@ -449,6 +479,12 @@ func (m *Manifest) Validate() error {
 
 	if m.EnvPassthrough != "" && m.EnvPassthrough != "all" {
 		return fmt.Errorf("env_passthrough must be 'all' or empty, got %q", m.EnvPassthrough)
+	}
+
+	for _, entry := range m.Env {
+		if err := validateEnvEntry(entry); err != nil {
+			return err
+		}
 	}
 
 	if m.ProvidesResources() && m.Execution == "oneshot" {

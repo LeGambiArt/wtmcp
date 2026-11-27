@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -95,6 +96,37 @@ func TestBuildPluginEnvPassthroughAll(t *testing.T) {
 		if envMap[key] != want {
 			t.Errorf("%s = %q, want %q", key, envMap[key], want)
 		}
+	}
+}
+
+func TestBuildPluginEnvGlob(t *testing.T) {
+	m := &Manifest{
+		Name: "test-gitlab",
+		Env:  []string{"GITLAB_URL", "GITLAB_*_URL"},
+	}
+
+	groupVars := map[string]string{
+		"GITLAB_URL":            "https://gitlab.com",
+		"GITLAB_INTERNAL_URL":   "https://internal.example.com",
+		"GITLAB_STAGING_URL":    "https://staging.example.com",
+		"GITLAB_TOKEN":          "tok",
+		"GITLAB_INTERNAL_TOKEN": "tok2",
+		"OTHER_URL":             "https://other.example.com",
+	}
+	env := buildPluginEnvMap(m, groupVars)
+
+	for key := range groupVars {
+		nameMatch := key == "GITLAB_URL" || strings.HasSuffix(key, "_URL") && strings.HasPrefix(key, "GITLAB_")
+		_, present := env[key]
+		if nameMatch && !present {
+			t.Errorf("%s should be passed via glob, env = %v", key, env)
+		}
+		if !nameMatch && present {
+			t.Errorf("%s should not be passed (token vars must stay out), env = %v", key, env)
+		}
+	}
+	if env["GITLAB_INTERNAL_URL"] != "https://internal.example.com" {
+		t.Errorf("GITLAB_INTERNAL_URL = %q, want the group var value", env["GITLAB_INTERNAL_URL"])
 	}
 }
 

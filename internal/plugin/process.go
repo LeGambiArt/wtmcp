@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path"
 	"syscall"
 	"time"
 
@@ -402,6 +403,17 @@ func buildPluginEnvMap(manifest *Manifest, groupVars map[string]string) map[stri
 		}
 	} else {
 		for _, key := range manifest.Env {
+			if isGlobEntry(key) {
+				// Glob entry: match group var names by pattern.
+				// Names never contain path separators, so path.Match
+				// reduces to star semantics here.
+				for gk, val := range groupVars {
+					if ok, err := path.Match(key, gk); err == nil && ok {
+						env[gk] = val
+					}
+				}
+				continue
+			}
 			if val, ok := groupVars[key]; ok {
 				env[key] = val
 			}

@@ -94,6 +94,58 @@ enabled: true
 	}
 }
 
+func TestValidateEnvEntry(t *testing.T) {
+	tests := []struct {
+		entry string
+		want  string // "" means valid
+	}{
+		{entry: "JIRA_URL"},
+		{entry: "weird-name.ok"}, // exact entries stay unvalidated
+		{entry: "GITLAB_*_URL"},
+		{entry: "*_URL"},
+		{entry: "GITLAB_*"},
+		{entry: "*", want: "bare wildcard is not allowed"},
+		{entry: "**", want: "bare wildcard is not allowed"},
+		{entry: "GITLAB_[AB]_URL", want: "glob may contain only"},
+		{entry: "GITLAB_?_URL", want: "glob may contain only"},
+		{entry: "GITLAB_*_URL|x", want: "glob may contain only"},
+		{entry: "1BAD*_URL", want: "glob may contain only"},
+	}
+	for _, tt := range tests {
+		err := validateEnvEntry(tt.entry)
+		if tt.want == "" && err != nil {
+			t.Errorf("validateEnvEntry(%q) = %v, want nil", tt.entry, err)
+		}
+		if tt.want != "" && (err == nil || !strings.Contains(err.Error(), tt.want)) {
+			t.Errorf("validateEnvEntry(%q) = %v, want error containing %q", tt.entry, err, tt.want)
+		}
+	}
+}
+
+func TestLoadManifestEnvGlobs(t *testing.T) {
+	dir := t.TempDir()
+	handlerPath := filepath.Join(dir, "handler")
+	if err := os.WriteFile(handlerPath, []byte("#!/bin/bash\n"), 0o755); err != nil { //nolint:gosec // test needs executable
+		t.Fatal(err)
+	}
+	manifest := `name: glob-plugin
+version: "1.0.0"
+handler: ./handler
+env:
+  - GITLAB_URL
+  - GITLAB_*_URL
+  - odd-exact.name
+tools: []
+`
+	path := filepath.Join(dir, "plugin.yaml")
+	if err := os.WriteFile(path, []byte(manifest), 0o644); err != nil { //nolint:gosec // test config file
+		t.Fatal(err)
+	}
+	if _, err := LoadManifest(path); err != nil {
+		t.Fatalf("LoadManifest with env globs failed: %v", err)
+	}
+}
+
 func TestLoadManifestDefaults(t *testing.T) {
 	dir := t.TempDir()
 	handlerPath := filepath.Join(dir, "handler")
@@ -201,6 +253,16 @@ func TestManifestValidation(t *testing.T) {
 			name:    "invalid env_passthrough",
 			yaml:    `name: ok-name` + "\nversion: '1.0'\nhandler: ./handler\nenv_passthrough: 'YES'\ntools: []",
 			wantErr: "env_passthrough must be 'all' or empty",
+		},
+		{
+			name:    "env bare wildcard",
+			yaml:    `name: ok-name` + "\nversion: '1.0'\nhandler: ./handler\ntools: []\nenv:\n  - '*'",
+			wantErr: "bare wildcard is not allowed",
+		},
+		{
+			name:    "env glob with bad charset",
+			yaml:    `name: ok-name` + "\nversion: '1.0'\nhandler: ./handler\ntools: []\nenv:\n  - 'GITLAB_[AB]_URL'",
+			wantErr: "glob may contain only letters, digits, underscores and '*'",
 		},
 		{
 			name:    "allow_private_ips without domains or base_url",
