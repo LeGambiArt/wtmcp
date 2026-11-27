@@ -1030,8 +1030,7 @@ env.d file — never from the process environment. This means
 The server automatically injects `_credentials_dir` into the
 resolved config for plugins that declare a `credential_group`. This
 is the per-group credentials directory path (e.g.,
-`~/.config/wtmcp/credentials/google/`). Go plugin handlers can read
-it from the init config to find credential files:
+`~/.config/wtmcp/credentials/google/`):
 
 ```go
 p.OnInit(func(cfgRaw json.RawMessage) error {
@@ -1043,8 +1042,20 @@ p.OnInit(func(cfgRaw json.RawMessage) error {
 })
 ```
 
-Python plugins that use the HTTP proxy don't need this — the server
-handles credential injection automatically.
+**This is a path hint only.** In sandboxed (default) builds the
+credentials directory is not in the sandbox read profile — plugin
+processes cannot read credential files, not even their own
+group's. Auth and TLS are handled by the core proxy; handlers
+that need to know which credentials are configured should use
+`_group_var_names`. Treat `_credentials_dir` as a way to derive
+related paths (for example, locating a sibling `env.d/` file),
+not as readable storage.
+
+Historically the guide advertised reading credential files
+directly from this directory. In sandboxed builds that capability
+is gone: token
+files for groups not migrated to the keyring are plaintext on
+disk, and a compromised handler must not be able to read them.
 
 ### _group_var_names
 

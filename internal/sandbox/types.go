@@ -35,7 +35,6 @@ type ResourceUsage struct {
 // embedded by both the arapuca and nosandbox implementations.
 type base struct {
 	cfg     config.SandboxConfig
-	credDir string
 	dataDir string
 }
 

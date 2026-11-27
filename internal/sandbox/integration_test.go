@@ -106,7 +106,7 @@ func integrationTestManager(t *testing.T) *Manager {
 		t.Skip("network namespace isolation unavailable (unshare --user --net not permitted)")
 	}
 	dataDir := filepath.Join(t.TempDir(), "data")
-	mgr, err := NewManager(cfg, "", dataDir)
+	mgr, err := NewManager(cfg, dataDir)
 	if err != nil {
 		t.Logf("NOTICE: sandbox integration tests skipping — sandbox init failed: %v", err)
 		t.Skipf("sandbox unavailable: %v", err)
@@ -310,6 +310,10 @@ func TestIntegration_CannotReadOtherPluginCredentials(t *testing.T) {
 	if err := os.WriteFile(secretFile, []byte("SECRET=hunter2"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	ownSecret := filepath.Join(groupA, "token.env")
+	if err := os.WriteFile(ownSecret, []byte("SECRET=hunter2"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	if runtime.GOOS == "linux" && !netNSAvailable() {
 		t.Skip("network namespace isolation unavailable (unshare --user --net not permitted)")
@@ -319,7 +323,7 @@ func TestIntegration_CannotReadOtherPluginCredentials(t *testing.T) {
 			MaxMemoryMB: 256, MaxCPUPct: 100, MaxPIDs: 32, MaxFileSizeMB: 10,
 		},
 	}
-	mgr, err := NewManager(cfg, credDir, filepath.Join(t.TempDir(), "data"))
+	mgr, err := NewManager(cfg, filepath.Join(t.TempDir(), "data"))
 	if err != nil {
 		t.Skipf("sandbox unavailable: %v", err)
 	}
@@ -336,9 +340,17 @@ func TestIntegration_CannotReadOtherPluginCredentials(t *testing.T) {
 	if resp.OK {
 		t.Error("plugin-a should NOT be able to read plugin-b's credentials")
 	}
+
+	// The credentials dir is not part of the sandbox read profile at
+	// all: plugins cannot read their own group's credential files
+	// either. Auth and TLS are handled by the core proxy.
+	resp = runProbe(t, mgr, info, nil, probeRequest{Cmd: "read_file", Path: ownSecret})
+	if resp.OK {
+		t.Error("plugin-a should NOT be able to read its own credential group's files")
+	}
 }
 
-func TestIntegration_EnvPassthrough(t *testing.T) {
+func TestIntegration_LaunchEnv(t *testing.T) {
 	skipIfIntegrationDisabled(t)
 
 	bin := buildProbe(t)

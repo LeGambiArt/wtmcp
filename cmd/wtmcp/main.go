@@ -268,14 +268,31 @@ func run(forceStdio bool) error {
 	}
 
 	mgrOpts.Decryptor = decryptor
-	mgr := plugin.NewManager(authReg, httpProxy, cacheStore, cfg, envResult.Groups, envResult.Errors, envResult.DirError, wd, envDir, envOpts, sessionDir, mgrOpts)
 
 	dataDir := filepath.Join(wd, "data")
-	sbMgr, err := sandbox.NewManager(cfg.Sandbox, cfg.CredentialsDir, dataDir)
+	sbMgr, err := sandbox.NewManager(cfg.Sandbox, dataDir)
 	if err != nil {
 		return fmt.Errorf("sandbox init: %w", err)
 	}
 	defer sbMgr.Close()
+
+	// The session directory is granted to every sandboxed plugin's
+	// Landlock read profile. If credentials or env.d resolve under
+	// it, that grant would hand every plugin every group's secrets,
+	// bypassing the env allowlist entirely — drop the session grant
+	// (same fallback as a too-broad session directory).
+	if sessionDir != "" && sbMgr.Enabled() {
+		for _, dir := range []string{cfg.CredentialsDir, envDir} {
+			if dirWithin(sessionDir, dir) {
+				log.Printf("WARNING: session directory %s contains %s", sessionDir, dir)
+				log.Printf("WARNING: the sandbox grants the session directory to every plugin; file I/O disabled to keep credentials isolated")
+				sessionDir = ""
+				break
+			}
+		}
+	}
+
+	mgr := plugin.NewManager(authReg, httpProxy, cacheStore, cfg, envResult.Groups, envResult.Errors, envResult.DirError, wd, envDir, envOpts, sessionDir, mgrOpts)
 	mgr.SetSandbox(sbMgr)
 
 	if err := mgr.Discover(cfg.PluginDirs, cfg.UserPluginDir); err != nil {
@@ -430,7 +447,7 @@ func runCheck() error {
 
 	fmt.Printf("wtmcp %s\n", Version)
 	if sandbox.Built() {
-		sbMgr, err := sandbox.NewManager(result.Config.Sandbox, result.Config.CredentialsDir, "")
+		sbMgr, err := sandbox.NewManager(result.Config.Sandbox, "")
 		if err != nil {
 			fmt.Printf("sandbox: built-in (runtime init FAILED: %v)\n", err)
 		} else {
@@ -496,6 +513,19 @@ func runCheck() error {
 
 // isHomeDir reports whether dir is the user's home directory,
 // comparing canonical paths to handle symlinked homes.
+// dirWithin reports whether dir is parent itself or lies inside
+// parent (both must be absolute, clean paths).
+func dirWithin(parent, dir string) bool {
+	if parent == "" || dir == "" {
+		return false
+	}
+	rel, err := filepath.Rel(parent, dir)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator)))
+}
+
 func isHomeDir(dir string) bool {
 	canonDir, dirErr := filepath.EvalSymlinks(dir)
 

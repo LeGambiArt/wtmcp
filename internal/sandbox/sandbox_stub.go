@@ -26,7 +26,7 @@ type Manager struct {
 // NewManager creates a degraded-mode sandbox manager. Requires
 // WTMCP_UNSANDBOXED=1 in the environment to start, and loudly
 // warns about the lack of isolation.
-func NewManager(cfg config.SandboxConfig, credDir, dataDir string) (*Manager, error) {
+func NewManager(cfg config.SandboxConfig, dataDir string) (*Manager, error) {
 	if os.Getenv("WTMCP_UNSANDBOXED") != "1" {
 		return nil, fmt.Errorf(
 			"binary built without sandbox support (libarapuca not linked)\n" +
@@ -37,7 +37,7 @@ func NewManager(cfg config.SandboxConfig, credDir, dataDir string) (*Manager, er
 	fmt.Fprintln(os.Stderr,
 		"WARNING: UNSANDBOXED MODE — binary built without libarapuca, plugins run without OS-level isolation. This mode is intended for development and debugging only.")
 
-	return &Manager{base: base{cfg: cfg, credDir: credDir, dataDir: dataDir}}, nil
+	return &Manager{base: base{cfg: cfg, dataDir: dataDir}}, nil
 }
 
 // Close is a no-op.

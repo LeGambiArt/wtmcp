@@ -28,14 +28,14 @@ type Manager struct {
 }
 
 // NewManager creates a sandbox manager.
-func NewManager(cfg config.SandboxConfig, credDir, dataDir string) (*Manager, error) {
+func NewManager(cfg config.SandboxConfig, dataDir string) (*Manager, error) {
 	arapuca.EnableSelfExecMode()
 	sb, err := arapuca.New()
 	if err != nil {
 		return nil, fmt.Errorf("create sandbox: %w", err)
 	}
 	return &Manager{
-		base: base{cfg: cfg, credDir: credDir, dataDir: dataDir},
+		base: base{cfg: cfg, dataDir: dataDir},
 		sb:   sb,
 	}, nil
 }
@@ -57,11 +57,6 @@ func (m *Manager) buildProfile(info PluginInfo) arapuca.Profile {
 
 	read := systemReadPaths()
 	read = append(read, info.Dir)
-
-	if m.credDir != "" && info.CredentialGroup != "" {
-		groupDir := filepath.Join(m.credDir, info.CredentialGroup)
-		read = append(read, groupDir)
-	}
 
 	if isPython(info.Handler) {
 		read = append(read, pythonReadPaths()...)

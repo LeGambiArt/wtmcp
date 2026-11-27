@@ -12,7 +12,7 @@ import (
 
 func TestBuildProfileReadPaths(t *testing.T) {
 	m := &Manager{
-		base: base{cfg: testConfig(), credDir: "/creds", dataDir: "/data"},
+		base: base{cfg: testConfig(), dataDir: "/data"},
 	}
 
 	info := PluginInfo{
@@ -26,7 +26,6 @@ func TestBuildProfileReadPaths(t *testing.T) {
 
 	mustContain := []string{
 		"/opt/wtmcp/plugins/gitlab",
-		"/creds/gitlab",
 		"/usr",
 		"/lib",
 		"/proc/self",
@@ -36,6 +35,17 @@ func TestBuildProfileReadPaths(t *testing.T) {
 	for _, p := range mustContain {
 		if !contains(profile.ReadPaths, p) {
 			t.Errorf("ReadPaths missing %q", p)
+		}
+	}
+
+	// Credential directories are never readable, not even the
+	// plugin's own group: the proxy handles auth and TLS, and token
+	// files for non-keyring groups are plaintext. Match both the
+	// fixture name and the default dir name ("credentials") so a
+	// re-added grant is caught wherever it points.
+	for _, p := range profile.ReadPaths {
+		if strings.Contains(p, "creds") || strings.Contains(p, "credentials") {
+			t.Errorf("ReadPaths must not include credential dirs, got %q", p)
 		}
 	}
 
@@ -240,14 +250,14 @@ func contains(slice []string, s string) bool {
 }
 
 func TestBuildProfileNoCredentialGroup(t *testing.T) {
-	m := &Manager{base: base{cfg: testConfig(), credDir: "/creds", dataDir: "/data"}}
+	m := &Manager{base: base{cfg: testConfig(), dataDir: "/data"}}
 	info := PluginInfo{Name: "test", Dir: "/p", Handler: "./handler"}
 
 	profile := m.buildProfile(info)
 
 	for _, p := range profile.ReadPaths {
-		if strings.HasPrefix(p, "/creds") {
-			t.Errorf("ReadPaths should not include creds dir when no credential group: %v", p)
+		if strings.Contains(p, "creds") || strings.Contains(p, "credentials") {
+			t.Errorf("ReadPaths should not include credential dirs when no credential group: %v", p)
 		}
 	}
 }
