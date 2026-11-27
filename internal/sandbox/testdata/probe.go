@@ -9,6 +9,7 @@
 //	{"cmd": "tmpdir"}
 //	{"cmd": "stat", "path": "/some/dir"}
 //	{"cmd": "eval_symlinks", "path": "/some/dir"}
+//	{"cmd": "read_fd", "key": "7"}
 package main
 
 import (
@@ -84,6 +85,16 @@ func main() {
 			return
 		}
 		writeResponse(response{OK: true, Data: fmt.Sprintf("mode=%s size=%d", info.Mode(), info.Size())})
+
+	case "read_fd":
+		// Opens /proc/self/fd/<N> from inside the sandboxed child:
+		// how the fd-table leak tests observe inherited memfds.
+		data, err := os.ReadFile("/proc/self/fd/" + req.Key)
+		if err != nil {
+			writeResponse(response{Error: err.Error()})
+			return
+		}
+		writeResponse(response{OK: true, Data: string(data)})
 
 	case "eval_symlinks":
 		resolved, err := filepath.EvalSymlinks(req.Path)

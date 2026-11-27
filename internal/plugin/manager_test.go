@@ -8,12 +8,16 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/LeGambiArt/wtmcp/internal/auth"
 	"github.com/LeGambiArt/wtmcp/internal/cache"
@@ -21,6 +25,7 @@ import (
 	"github.com/LeGambiArt/wtmcp/internal/credentials"
 	"github.com/LeGambiArt/wtmcp/internal/protocol"
 	"github.com/LeGambiArt/wtmcp/internal/proxy"
+	"github.com/LeGambiArt/wtmcp/internal/sandbox"
 	"github.com/LeGambiArt/wtmcp/internal/secrets/securefile"
 )
 
@@ -282,6 +287,82 @@ tools:
 	}
 	if m.Handle("binding-leak") != nil {
 		t.Error("disabled plugin must not have a live handle")
+	}
+}
+
+// TestResolveConfigSkipsShadowDirUnderSandbox pins that sandboxed
+// builds do not build the shadow credentials dir: nothing on the
+// plugin side can read it, so it would only retain decrypted
+// plaintext in core memory.
+func TestResolveConfigSkipsShadowDirUnderSandbox(t *testing.T) {
+	credRoot := t.TempDir()
+	groupDir := filepath.Join(credRoot, "gitlab")
+	if err := os.MkdirAll(groupDir, 0o700); err != nil { //nolint:gosec // test dir
+		t.Fatal(err)
+	}
+	vaultFile := filepath.Join(groupDir, "creds.json")
+	if err := os.WriteFile(vaultFile, []byte("$ANSIBLE_VAULT;1.1;AES256\nbody"), 0o600); err != nil { //nolint:gosec // test config file
+		t.Fatal(err)
+	}
+
+	m := newTestManager(t)
+	m.decryptor = &testCredentialDecryptor{plaintext: []byte("decrypted-secret")}
+	m.cfg.CredentialsDir = credRoot
+	manifest := &Manifest{CredentialGroup: "gitlab", Config: map[string]string{}}
+
+	t.Run("nosandbox keeps the shadow dir", func(t *testing.T) {
+		t.Cleanup(func() { m.secureTracker.ClosePlugin("gitlab") })
+		got := m.resolveConfig("gitlab", manifest)
+		dir := got["_credentials_dir"]
+		if dir == "" || dir == groupDir {
+			t.Errorf("_credentials_dir = %q, want a shadow dir path", dir)
+		}
+		if !strings.Contains(filepath.Base(dir), "wtmcp-shadow") && !strings.Contains(dir, "wtmcp-shadow") {
+			t.Errorf("_credentials_dir = %q, want shadow dir under wtmcp-shadow", dir)
+		}
+	})
+
+	t.Run("sandboxed skips the shadow build", func(t *testing.T) {
+		sb, err := sandbox.NewManager(config.SandboxConfig{}, t.TempDir())
+		if err != nil {
+			t.Skipf("sandbox unavailable: %v", err)
+		}
+		if !sb.Enabled() {
+			t.Skip("sandbox manager present but disabled (nosandbox build)")
+		}
+		t.Cleanup(sb.Close)
+
+		m.SetSandbox(sb)
+		got := m.resolveConfig("gitlab", manifest)
+		if got["_credentials_dir"] != groupDir {
+			t.Errorf("_credentials_dir = %q, want the real credentials dir (no shadow under sandbox)", got["_credentials_dir"])
+		}
+	})
+}
+
+// TestDisablePluginClosesSecureFiles pins that disabling a plugin
+// releases its tracked decrypted-credential memfds instead of
+// keeping the plaintext resident until shutdown.
+func TestDisablePluginClosesSecureFiles(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("/proc/self/fd close check, Linux only")
+	}
+
+	sf, err := securefile.CreateCloexec("disable-check")
+	if err != nil {
+		t.Fatalf("CreateCloexec: %v", err)
+	}
+	defer sf.Close() //nolint:errcheck // test cleanup
+	if err := sf.Write([]byte("SECRET=hunter2")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	m := newTestManager(t)
+	m.secureTracker.TrackForPlugin("victim", sf)
+	m.disablePlugin("victim", "test disable")
+
+	if _, err := os.Stat(sf.Path()); !os.IsNotExist(err) {
+		t.Errorf("securefile fd must be closed after disablePlugin: stat(%q) err = %v", sf.Path(), err)
 	}
 }
 
@@ -2830,4 +2911,68 @@ tools: []
 	if _, loaded := m.Manifests()["broken"]; loaded {
 		t.Error("rejected manifest must not appear in Manifests()")
 	}
+}
+
+// fdIsCloexec reports whether the fd behind a /proc/self/fd/N path
+// carries FD_CLOEXEC.
+func fdIsCloexec(t *testing.T, path string) bool {
+	t.Helper()
+	if runtime.GOOS != "linux" {
+		t.Skip("fd flags test is Linux only")
+	}
+	var fd int
+	if _, err := fmt.Sscanf(path, "/proc/self/fd/%d", &fd); err != nil {
+		t.Fatalf("parse fd path %q: %v", path, err)
+	}
+	flags, err := unix.FcntlInt(uintptr(fd), unix.F_GETFD, 0)
+	if err != nil {
+		t.Fatalf("F_GETFD on %q: %v", path, err)
+	}
+	return flags&unix.FD_CLOEXEC != 0
+}
+
+// TestDecryptCredentialSecurefileCloexec asserts that shadow-dir
+// securefiles are close-on-exec when the sandbox is active. All
+// plugins are prepared before any handler process spawns, so an
+// inheritable fd would deliver every group's decrypted credentials
+// to every handler's fd table, readable via /proc/self.
+func TestDecryptCredentialSecurefileCloexec(t *testing.T) {
+	data := []byte("$ANSIBLE_VAULT;1.1;AES256\nbody")
+	plaintext := []byte("decrypted-secret")
+
+	t.Run("sandboxed builds use close-on-exec", func(t *testing.T) {
+		sb, err := sandbox.NewManager(config.SandboxConfig{}, t.TempDir())
+		if err != nil {
+			t.Skipf("sandbox unavailable: %v", err)
+		}
+		if !sb.Enabled() {
+			t.Skip("sandbox manager present but disabled (nosandbox build)")
+		}
+		t.Cleanup(sb.Close)
+
+		m := newTestManager(t)
+		m.SetSandbox(sb)
+		m.decryptor = &testCredentialDecryptor{plaintext: plaintext}
+
+		path, err := m.decryptCredentialToSecurefile("probe", "creds.json", data)
+		if err != nil {
+			t.Fatalf("decryptCredentialToSecurefile: %v", err)
+		}
+		if !fdIsCloexec(t, path) {
+			t.Error("shadow securefile must be close-on-exec when the sandbox is active")
+		}
+	})
+
+	t.Run("nosandbox builds keep the fd inheritable", func(t *testing.T) {
+		m := newTestManager(t)
+		m.decryptor = &testCredentialDecryptor{plaintext: plaintext}
+
+		path, err := m.decryptCredentialToSecurefile("probe", "creds.json", data)
+		if err != nil {
+			t.Fatalf("decryptCredentialToSecurefile: %v", err)
+		}
+		if fdIsCloexec(t, path) {
+			t.Error("shadow securefile must stay inheritable in nosandbox builds (shadow dir delivery)")
+		}
+	})
 }
