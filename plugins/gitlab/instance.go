@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/LeGambiArt/wtmcp/pkg/handler"
@@ -26,27 +27,52 @@ var instances map[string]*instance
 // or when no instance param is provided.
 var defaultInstance string
 
+// parseGroupVarNames splits the _group_var_names config value into
+// a variable-name slice. The core only lists configured (non-empty)
+// group variables, so presence in this list means the variable is
+// set.
+func parseGroupVarNames(s string) []string {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	names := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			names = append(names, p)
+		}
+	}
+	return names
+}
+
 // discoverInstances sets up GitLab clients using the core's HTTP
 // proxy for auth and transport. Supports both single-instance
 // (GITLAB_TOKEN + GITLAB_URL) and multi-instance
 // (GITLAB_{NAME}_TOKEN + GITLAB_{NAME}_URL).
 //
+// Token variables never reach the handler environment; their
+// configured-ness is discovered through the _group_var_names init
+// config signal (names only, no values). URL variables are
+// non-secret and still arrive via the handler environment.
+//
 // For multi-instance, per-domain auth bindings are registered so
 // the core proxy injects the correct PRIVATE-TOKEN per domain.
 // The go-gitlab SDK sends an empty Private-Token header which the
 // proxy strips before re-injecting the real token.
-func discoverInstances(p *handler.Plugin) error {
+func discoverInstances(p *handler.Plugin, cfg map[string]string) error {
 	instances = make(map[string]*instance)
 	defaultInstance = ""
 
 	transport := handler.NewProxyTransport(p)
 
-	multi := scanMultiInstance()
+	names := parseGroupVarNames(cfg["_group_var_names"])
+
+	multi := scanMultiInstance(names)
 
 	if len(multi) > 0 {
 		return setupMultiInstance(p, transport.Client(), multi)
 	}
-	return setupSingleInstance(p, transport.Client())
+	return setupSingleInstance(p, transport.Client(), names)
 }
 
 // multiInstanceEntry holds a discovered multi-instance configuration.
@@ -56,19 +82,16 @@ type multiInstanceEntry struct {
 	TokenVar string
 }
 
-// scanMultiInstance scans the environment for GITLAB_{NAME}_TOKEN
-// patterns that indicate multi-instance configuration.
-func scanMultiInstance() []multiInstanceEntry {
+// scanMultiInstance scans the configured group variable names for
+// GITLAB_{NAME}_TOKEN patterns that indicate multi-instance
+// configuration. Names only — token values stay with the core.
+func scanMultiInstance(names []string) []multiInstanceEntry {
 	var entries []multiInstanceEntry
-	for _, env := range os.Environ() {
-		key, value, ok := strings.Cut(env, "=")
-		if !ok || value == "" {
-			continue
-		}
+	for _, key := range names {
 		if !strings.HasPrefix(key, "GITLAB_") || !strings.HasSuffix(key, "_TOKEN") {
 			continue
 		}
-		if key == "GITLAB_TOKEN" || key == "GITLAB_SSL_VERIFY" {
+		if key == "GITLAB_TOKEN" {
 			continue
 		}
 
@@ -126,7 +149,7 @@ func setupMultiInstance(p *handler.Plugin, httpClient *http.Client, entries []mu
 
 // setupSingleInstance uses the static services.auth token from
 // plugin.yaml — no auth bindings needed (single token, single domain).
-func setupSingleInstance(p *handler.Plugin, httpClient *http.Client) error {
+func setupSingleInstance(p *handler.Plugin, httpClient *http.Client, names []string) error {
 	gitlabURL := os.Getenv("GITLAB_URL")
 	if gitlabURL == "" {
 		gitlabURL = "https://gitlab.com"
@@ -145,7 +168,7 @@ func setupSingleInstance(p *handler.Plugin, httpClient *http.Client) error {
 			Name:          "default",
 			URL:           gitlabURL,
 			Client:        client,
-			Authenticated: os.Getenv("GITLAB_TOKEN") != "",
+			Authenticated: slices.Contains(names, "GITLAB_TOKEN"),
 		},
 	}
 	defaultInstance = "default"
