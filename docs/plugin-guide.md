@@ -340,6 +340,7 @@ Core → Plugin:  {"id": "init-1", "type": "init", "protocol": "1.0",
                   "config": {"_session_dir": "/home/user/project",
                              "_output_dir": "/home/user/project/.wtmcp-data/myplugin",
                              "_credentials_dir": "/home/user/.config/wtmcp/credentials/mygroup",
+                             "_group_var_names": "MY_API_TOKEN,MY_API_URL",
                              "MY_API_URL": "https://api.example.com", ...}}
 Plugin → Core:  {"id": "init-1", "type": "init_ok"}
 ...tool calls...
@@ -360,7 +361,7 @@ If the handler cannot initialize, respond with `init_error`:
 The `protocol` field contains the wire protocol version (`"1.0"`).
 The `config` object contains resolved environment variables and
 internal config values (`_session_dir`, `_output_dir`,
-`_credentials_dir`).
+`_credentials_dir`, `_group_var_names`).
 
 ### Tool Calls
 
@@ -1003,6 +1004,26 @@ p.OnInit(func(cfgRaw json.RawMessage) error {
 
 Python plugins that use the HTTP proxy don't need this — the server
 handles credential injection automatically.
+
+### _group_var_names
+
+The server injects `_group_var_names` into the resolved config for
+plugins with a `credential_group`: a sorted, comma-separated list of
+the **names** of the group's configured variables (variables with
+empty values are excluded). Values are never included — this exists
+so plugins can discover what is configured (for example, which
+instances of a service have tokens) without receiving the
+credentials themselves:
+
+```go
+p.OnInit(func(cfgRaw json.RawMessage) error {
+    var cfg map[string]string
+    json.Unmarshal(cfgRaw, &cfg)
+    configured := strings.Split(cfg["_group_var_names"], ",")
+    // configured = ["GITLAB_TOKEN", "GITLAB_URL", ...]
+    ...
+})
+```
 
 ### _session_dir and _output_dir
 

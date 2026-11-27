@@ -18,6 +18,7 @@ import (
 	"github.com/LeGambiArt/wtmcp/internal/auth"
 	"github.com/LeGambiArt/wtmcp/internal/cache"
 	"github.com/LeGambiArt/wtmcp/internal/config"
+	"github.com/LeGambiArt/wtmcp/internal/credentials"
 	"github.com/LeGambiArt/wtmcp/internal/protocol"
 	"github.com/LeGambiArt/wtmcp/internal/proxy"
 	"github.com/LeGambiArt/wtmcp/internal/secrets/securefile"
@@ -118,6 +119,89 @@ func TestResolveConfigSessionDir(t *testing.T) {
 			t.Error("_output_dir should not be set when sessionDir is empty")
 		}
 	})
+}
+
+func TestResolveConfigGroupVarNames(t *testing.T) {
+	t.Run("injects sorted non-empty names from env group", func(t *testing.T) {
+		m := &Manager{
+			envGroups: config.EnvGroups{
+				"gitlab": {
+					"GITLAB_URL":         "https://gitlab.com",
+					"GITLAB_TOKEN":       "tok",
+					"GITLAB_STAGING_URL": "https://staging.gitlab.com",
+					"GITLAB_EMPTY":       "",
+					"BAD,NAME":           "x",
+				},
+			},
+			cfg: &config.Config{},
+		}
+		manifest := &Manifest{CredentialGroup: "gitlab", Config: map[string]string{}}
+
+		got := m.resolveConfig("gitlab", manifest)
+
+		want := "GITLAB_STAGING_URL,GITLAB_TOKEN,GITLAB_URL"
+		if got["_group_var_names"] != want {
+			t.Errorf("_group_var_names = %q, want %q", got["_group_var_names"], want)
+		}
+	})
+
+	t.Run("omits when group has no vars", func(t *testing.T) {
+		m := &Manager{cfg: &config.Config{}}
+		manifest := &Manifest{Config: map[string]string{}}
+
+		got := m.resolveConfig("hello", manifest)
+
+		if _, ok := got["_group_var_names"]; ok {
+			t.Error("_group_var_names should not be set without group vars")
+		}
+	})
+
+	t.Run("omits when all vars are empty or malformed", func(t *testing.T) {
+		m := &Manager{
+			envGroups: config.EnvGroups{"gitlab": {"GITLAB_TOKEN": "", "BAD,NAME": "x"}},
+			cfg:       &config.Config{},
+		}
+		manifest := &Manifest{CredentialGroup: "gitlab", Config: map[string]string{}}
+
+		got := m.resolveConfig("gitlab", manifest)
+
+		if _, ok := got["_group_var_names"]; ok {
+			t.Errorf("_group_var_names = %q, want omitted", got["_group_var_names"])
+		}
+	})
+}
+
+// TestResolveConfigGroupVarNamesCredentialService pins the manager
+// wiring: when a credential service is available, _group_var_names
+// must come from it (env.d resolution via GetAll), not from the
+// legacy envGroups fallback.
+func TestResolveConfigGroupVarNamesCredentialService(t *testing.T) {
+	envDir := t.TempDir()
+	envFile := filepath.Join(envDir, "gitlab.env")
+	content := "GITLAB_TOKEN=tok\nGITLAB_URL=https://gitlab.example.com\n"
+	if err := os.WriteFile(envFile, []byte(content), 0o600); err != nil { //nolint:gosec // test config file
+		t.Fatal(err)
+	}
+
+	svc, err := credentials.NewService(envDir, filepath.Join(t.TempDir(), "migration.yaml"))
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+
+	m := &Manager{
+		credentialService: svc,
+		// Legacy fallback must NOT win when the service resolves vars.
+		envGroups: config.EnvGroups{"gitlab": {"GITLAB_STALE": "x"}},
+		cfg:       &config.Config{},
+	}
+	manifest := &Manifest{CredentialGroup: "gitlab", Config: map[string]string{}}
+
+	got := m.resolveConfig("gitlab", manifest)
+
+	want := "GITLAB_TOKEN,GITLAB_URL"
+	if got["_group_var_names"] != want {
+		t.Errorf("_group_var_names = %q, want %q", got["_group_var_names"], want)
+	}
 }
 
 func TestManagerDiscover(t *testing.T) {

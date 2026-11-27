@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -1248,7 +1249,11 @@ func (m *Manager) pluginVars(manifest *Manifest) map[string]string {
 }
 
 func (m *Manager) resolveConfig(name string, manifest *Manifest) map[string]string {
-	resolved := config.ResolveVarsMap(manifest.Config, m.pluginVars(manifest))
+	groupVars := m.pluginVars(manifest)
+	resolved := config.ResolveVarsMap(manifest.Config, groupVars)
+	if names := groupVarNames(groupVars); names != "" {
+		resolved["_group_var_names"] = names
+	}
 	if m.cfg.CredentialsDir != "" && manifest.CredentialGroup != "" {
 		credDir := filepath.Join(m.cfg.CredentialsDir, manifest.CredentialGroup)
 		if hasVaultFiles(credDir) {
@@ -1276,6 +1281,42 @@ func (m *Manager) resolveConfig(name string, manifest *Manifest) map[string]stri
 		}
 	}
 	return resolved
+}
+
+// envVarNamePattern matches environment variable names that are safe
+// to embed in the comma-separated _group_var_names list. Keys that do
+// not match (for example names containing commas) are skipped to keep
+// the list unambiguous.
+var envVarNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// groupVarNames renders the sorted, comma-separated list of
+// non-empty group variable names injected as _group_var_names.
+// Names only -- values never cross the process boundary. Variables
+// with empty values are excluded so consumers cannot distinguish
+// "declared but empty" from "configured".
+func groupVarNames(vars map[string]string) string {
+	if len(vars) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(vars))
+	var skipped []string
+	for key, val := range vars {
+		if val == "" {
+			continue
+		}
+		if !envVarNamePattern.MatchString(key) {
+			skipped = append(skipped, key)
+			continue
+		}
+		names = append(names, key)
+	}
+	if len(skipped) > 0 {
+		sort.Strings(skipped)
+		log.Printf("credentials: excluding non-conforming variable names from _group_var_names: %s",
+			strings.Join(skipped, ","))
+	}
+	sort.Strings(names)
+	return strings.Join(names, ",")
 }
 
 // discoverSSHPublicKeys reads SSH public keys from ~/.ssh/id_*.pub.
