@@ -204,6 +204,87 @@ func TestResolveConfigGroupVarNamesCredentialService(t *testing.T) {
 	}
 }
 
+var bindingLeakScript = `#!/bin/bash
+while IFS= read -r line; do
+  type=$(echo "$line" | jq -r '.type')
+  id=$(echo "$line" | jq -r '.id')
+  case "$type" in
+    init)
+      echo "{\"id\":\"$id\",\"type\":\"init_ok\",\"auth_bindings\":{\"example.com\":\"SVC_STAGING_TOKEN\"}}"
+      ;;
+    tool_call)
+      echo "{\"id\":\"$id\",\"type\":\"tool_result\",\"result\":{}}"
+      ;;
+    shutdown)
+      echo "{\"id\":\"$id\",\"type\":\"shutdown_ok\"}"
+      exit 0
+      ;;
+  esac
+done
+`
+
+// TestLoadAllDisablesEnvLeakingAuthBindings pins the runtime half of
+// the credential-leak policy: a variable nominated via init_ok
+// auth_bindings is invisible to the load-time lint, so when the env
+// list also delivers it the plugin must be stopped and disabled —
+// the value is already in the process environment, a warning would
+// leave the leak in place.
+func TestLoadAllDisablesEnvLeakingAuthBindings(t *testing.T) {
+	dir := setupTestPlugin(t, "binding-leak", bindingLeakScript)
+
+	// The manifest needs services.auth (bearer, optional) and the
+	// offending env entry; the load-time lint cannot flag
+	// SVC_STAGING_TOKEN because no auth field references it.
+	manifestPath := filepath.Join(dir, "binding-leak", "plugin.yaml")
+	manifest := `name: binding-leak
+version: "1.0.0"
+description: "Test plugin"
+execution: persistent
+handler: ./handler.sh
+credential_group: svc
+services:
+  auth:
+    type: bearer
+    optional: true
+env:
+  - SVC_STAGING_TOKEN
+tools:
+  - name: binding_leak_test
+    description: "A test tool"
+    params: {}
+`
+	if err := os.WriteFile(manifestPath, []byte(manifest), 0o644); err != nil { //nolint:gosec // test config file
+		t.Fatal(err)
+	}
+
+	cfg := config.DefaultConfig()
+	authReg := auth.NewRegistry()
+	cacheStore := cache.NewMemoryStore()
+	p := proxy.New(nil, cfg.Plugins.MaxMessageSize, cfg.HTTP.Timeout)
+	m := NewManager(authReg, p, cacheStore, cfg,
+		config.EnvGroups{"svc": {"SVC_STAGING_TOKEN": "live-secret"}}, nil,
+		"", "", "", config.EnvLoadOptions{}, "")
+
+	if err := m.Discover([]string{dir}, ""); err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	if err := m.LoadAll(context.Background()); err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	m.StartPending(context.Background())
+
+	dp, ok := m.DisabledPlugins()["binding-leak"]
+	if !ok {
+		t.Fatal("plugin must be disabled when an auth binding names an env-delivered variable")
+	}
+	if !strings.Contains(dp.Reason, "SVC_STAGING_TOKEN") || !strings.Contains(dp.Reason, "env entry") {
+		t.Errorf("reason = %q, want the variable and the env-entry remedy", dp.Reason)
+	}
+	if m.Handle("binding-leak") != nil {
+		t.Error("disabled plugin must not have a live handle")
+	}
+}
+
 func TestManagerDiscover(t *testing.T) {
 	dir := setupTestPlugin(t, "hello", echoScript)
 
@@ -2713,5 +2794,40 @@ func TestHandleFileIOAccessControl(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestDiscoverRecordsManifestErrors(t *testing.T) {
+	dir := t.TempDir()
+	pluginDir := filepath.Join(dir, "broken")
+	if err := os.MkdirAll(pluginDir, 0o755); err != nil { //nolint:gosec // test dir
+		t.Fatal(err)
+	}
+	// env_passthrough is rejected at load time by the manifest lint.
+	manifest := `name: broken
+version: "1.0.0"
+handler: ./handler
+env_passthrough: all
+tools: []
+`
+	if err := os.WriteFile(filepath.Join(pluginDir, "plugin.yaml"), []byte(manifest), 0o644); err != nil { //nolint:gosec // test config file
+		t.Fatal(err)
+	}
+
+	m := newTestManager(t)
+	if err := m.Discover([]string{dir}, ""); err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+
+	errs := m.ManifestErrors()
+	reason, ok := errs["broken"]
+	if !ok {
+		t.Fatalf("ManifestErrors = %v, want entry for 'broken'", errs)
+	}
+	if !strings.Contains(reason, "env_passthrough") {
+		t.Errorf("reason = %q, want env_passthrough rejection", reason)
+	}
+	if _, loaded := m.Manifests()["broken"]; loaded {
+		t.Error("rejected manifest must not appear in Manifests()")
 	}
 }

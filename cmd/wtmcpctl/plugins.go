@@ -148,6 +148,14 @@ func buildPluginEntries(result *plugin.DiscoveryResult) []pluginEntry {
 	}
 
 	var entries []pluginEntry
+	// Plugins whose manifest failed to load surface with their error
+	// so they do not silently disappear from the list.
+	for name, reason := range result.Manager.ManifestErrors() {
+		entries = append(entries, pluginEntry{
+			Name: name, Version: "?",
+			Description: "invalid manifest: " + reason, Enabled: false,
+		})
+	}
 	for _, m := range result.Manager.Manifests() {
 		var enabled bool
 		if allowlist {

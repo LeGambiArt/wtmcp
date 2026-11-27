@@ -527,6 +527,16 @@ func registerManagementTools(deps *serverDeps) {
 					"deferred":    deferredCount,
 				})
 			}
+			// Plugins whose manifest failed to load have no tools,
+			// but the operator needs to see why they are missing.
+			for name, reason := range mgr.ManifestErrors() {
+				plugins = append(plugins, map[string]any{
+					"name":   name,
+					"status": "invalid",
+					"reason": reason,
+					"tools":  0,
+				})
+			}
 			data, _ := json.Marshal(plugins)
 			return sanitizedTextResult(string(data)), nil
 		},
@@ -673,6 +683,12 @@ func excludedToolNames() []string {
 func ReloadPlugin(ctx context.Context, srv *mcpserver.MCPServer, mgr *plugin.Manager, cfg *config.Config, name string, index *ToolIndex, collector *stats.Collector, auditor *audit.Logger, rateLimiter *ratelimit.Registry, framer *OutputFramer, toolOwners *ToolOwnerMap) error {
 	deps := &serverDeps{srv, mgr, cfg, index, collector, auditor, rateLimiter, framer, toolOwners}
 	progressive := cfg.Tools.Discovery == "progressive"
+
+	// A rejected manifest is not an unknown plugin: name the load
+	// error so the operator knows what to fix.
+	if reason, ok := mgr.ManifestErrors()[name]; ok {
+		return fmt.Errorf("plugin %s failed to load: %s", name, reason)
+	}
 
 	// Collect old tool names, context URIs, and provided resource URIs.
 	// Check both loaded plugins (Manifests) and disabled plugins

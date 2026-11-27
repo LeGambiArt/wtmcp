@@ -32,10 +32,12 @@ handler: ./handler.py
 # Scopes env.d access — matches env.d/my-service.env
 credential_group: my-service
 
-# Env vars to pass to handler from credential group's env.d file
+# Env vars to pass to handler from credential group's env.d file.
+# Credential vars (anything referenced from services.auth) must not
+# appear here — the proxy injects auth, the handler never needs the
+# raw value, and manifests that pass them are rejected at load time.
 env:
   - MY_API_URL
-  - MY_TOKEN
 
 # Services the core provides to this plugin
 services:
@@ -951,11 +953,12 @@ file are passed to the handler process:
 credential_group: jira
 env:
   - JIRA_URL
-  - JIRA_TOKEN
 ```
 
 Only vars listed here AND present in `env.d/jira.env` reach the
-handler. Shell-exported variables are ignored.
+handler. Shell-exported variables are ignored. Credential vars
+referenced from `services.auth` must not be listed — see
+"Credential vars never reach the handler" below.
 
 Entries may contain `*` to match group vars by pattern — useful
 when var names are dynamic (for example per-instance
@@ -973,25 +976,47 @@ vars to the handler — the HTTP proxy handles auth, and manifests
 whose auth credential vars reach the handler env are rejected at
 load time.
 
-### env_passthrough: all
+### Credential vars never reach the handler
 
-For plugins that discover configuration dynamically (e.g., scanning
-env vars for multiple instances), list all group vars explicitly
-is impossible. Use `env_passthrough: all` to pass everything from
-the credential group's env.d file:
+The HTTP proxy resolves and injects auth, so a handler never needs
+the raw value of a token, password, or client key. Manifests are
+rejected at load time if a credential variable — any `${VAR}`
+referenced from `services.auth` credential fields (token, username,
+password, client_id, private_key, in the base config and all
+`variants`), from `services.http.tls.client_key`, or any var marked
+`secret: true` under `setup.credentials` — would reach the handler,
+either through the `env:` list (exact name or glob match) or through
+a `config:` value reference.
 
-```yaml
-credential_group: gitlab
-env_passthrough: all
+This is a hard error with a clear message, not a warning: a
+handler that can read its token from its own environment or init
+config is one bug away from leaking it through tool output.
 
-env:
-  # Listed for documentation only — not used as filter
-  - GITLAB_TOKEN
-  - GITLAB_URL
-```
+The classification is deliberately stricter than "secret": usernames
+and emails count as credentials — they are half of a basic-auth or
+API-key pair — so vars like `JIRA_EMAIL` or `JENKINS_USER` are
+rejected from env lists even though they are not confidential on
+their own. Pass non-secret configuration (URLs, paths) instead; if a
+handler genuinely needs the username for display purposes, read it
+from `config:` with a non-credential var.
 
-The `env:` field still serves as documentation of expected vars for
-setup wizards and human readers.
+The classification is what the manifest declares. Two classes are
+beyond static checking: variables nominated only at runtime
+(per-instance auth bindings declared in `init_ok`) and secret
+values the manifest never references. For the first, the core
+refuses the plugin when a runtime auth binding names a variable
+the env list also delivers — the process is stopped and disabled
+with the fix in the reason, because the value is already in its
+environment. For the second, do not list vars you consider secret
+in `env:` or `config:` — globs like `SVC_*` match everything the
+credential group defines, including secrets you never referenced.
+
+`env_passthrough` used to bypass the env list and copy every group
+variable — tokens included — into the handler environment. It is
+no longer accepted. Plugins that need to know which credentials
+are configured (for example, multi-instance service discovery)
+should use the `_group_var_names` init config signal, which lists
+variable names without values.
 
 ### ${VAR} resolution
 
